@@ -9,6 +9,9 @@ import { CommandBlock, GuideLink } from './SessionScreen';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
+/** Where the project lives, for the invitation to contribute. */
+const REPO_URL = 'https://github.com/fcavallari/gameleira';
+
 const when = (iso: string): string => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
@@ -204,6 +207,15 @@ export function StartScreen() {
               what each process wrote; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
             <p className="small guide-pointer">New to macOS investigations? <a href={guideHref()}>Read the guide</a>: how to
               capture, what the events and fields mean, what an intrusion looks like, and a safe practice run.</p>
+          </section>
+
+          <section className="howto contribute" aria-labelledby="contrib-h">
+            <h2 id="contrib-h">Help it grow</h2>
+            <p className="muted">Gameleira is open source, under the MIT licence. If a rule misfires, a capture will not load, or you
+              know a technique it should catch, open an issue or send a pull request. New rules, fixes and better explanations
+              are all welcome.</p>
+            <p><a href={REPO_URL} target="_blank" rel="noreferrer noopener">
+              <span className="mono">github.com/fcavallari/gameleira</span></a></p>
           </section>
         </section>
 
