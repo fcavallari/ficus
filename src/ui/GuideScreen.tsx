@@ -218,8 +218,8 @@ export function GuideScreen({ section }: { section: string }) {
                 it). <a href="#guide/capture" onClick={e => { e.preventDefault(); goTo('capture'); }}>How</a></li>
               <li><strong>Rebuild the tree.</strong> Drop the file into a session here. Gameleira links every process to the
                 processes that started it.</li>
-              <li><strong>Triage.</strong> Work the queue of flagged processes: confirm, dismiss, take notes.</li>
-              <li><strong>Scope.</strong> From each confirmed process, follow its roots up and its children down until you know
+              <li><strong>Triage.</strong> Work the queue of flagged processes: mark each suspicious or benign, take notes.</li>
+              <li><strong>Scope.</strong> From each suspicious process, follow its roots up and its children down until you know
                 where the intrusion began and everything it touched.</li>
             </ol>
             <p>You need a Mac on macOS 13 or later, an administrator account, and about an hour for the practice capture in
@@ -455,11 +455,11 @@ export function GuideScreen({ section }: { section: string }) {
                 this browser; the capture is read here and never uploaded.</li>
               <li><strong>Drop the capture</strong> into the session. More captures of the same Mac can join it.</li>
               <li><strong>Triage.</strong> The queue lists what the rules flagged, high first. Pick a row and read <em>Why
-                flagged</em>, then <em>Launched by</em>, which draws each root of the process side by side. Confirm it,
-                dismiss it as benign, or leave a note.</li>
+                flagged</em>, then <em>Launched by</em>, which draws each root of the process side by side, then <em>What it
+                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.</li>
               <li><strong>Tree.</strong> Every process, hung from the root you choose. Unflagged processes fold into grey rows;
-                search keeps the matches and their ancestors.</li>
-              <li><strong>Confirmed.</strong> Your confirmed processes across every capture, and the export: the session as
+                search keeps the matches and their ancestors. <em>Back to Triage</em> returns to the row you came from.</li>
+              <li><strong>Suspicious.</strong> The processes you marked suspicious across every capture, and the export: the session as
                 JSON, with command lines redacted if you ask.</li>
             </ol>
             <h3>Keys on the Triage tab</h3>
@@ -477,7 +477,7 @@ export function GuideScreen({ section }: { section: string }) {
               <div><dt>routine</dt><dd>A program you marked as normal on this Mac. Its runs are hidden, except rows with a high or
                 persistence finding, which always stay.</dd></div>
             </dl>
-            <h3>Scoping: questions to answer for every confirmed process</h3>
+            <h3>Scoping: questions to answer for every suspicious process</h3>
             <ul className="gchecks">
               <li>What was the <em>first</em> suspicious process, and where did it really come from? Compare its three
                 roots.</li>

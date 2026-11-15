@@ -17,6 +17,8 @@ import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from './triage-mode
 
 export type View = 'triage' | 'tree' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
+/** The last verdict pressed (button or key), so it can be taken back: on which capture, from what, to what. */
+export interface LastVerdict { procKey: string; fingerprint: string; from: Status; to: Status; name: string }
 
 export interface SessionCtx {
   store: Store;
@@ -107,7 +109,18 @@ export interface SessionCtx {
   selectProc(id: ProcId | null): void;
   /** Selects a persistence-only item by its queue key. */
   selectItem(key: string): void;
-  showInTree(id: ProcId): void;
+  /**
+   * Switches to the Tree with `id` selected and revealed. `origin`, given when the trip starts from Triage, is the
+   * triage row (process id or queue key) to come back to; a call without it keeps the one already set.
+   */
+  showInTree(id: ProcId, origin?: string): void;
+  /** The triage row the current Tree visit started from, until the user goes back or picks another capture. */
+  triageOrigin: string | null;
+  /** Back to Triage, with the row the Tree visit started from selected again. */
+  returnToTriage(): void;
+  lastVerdict: LastVerdict | null;
+  /** Puts the last pressed verdict back to what it was, and selects its row again when its capture is on screen. */
+  undoLastVerdict(): Promise<void>;
 }
 
 export const SessionContext = createContext<SessionCtx | null>(null);
@@ -148,6 +161,8 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const [selected, setSelected] = useState<ProcId | null>(null);
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ id: ProcId; n: number } | null>(null);
+  const [triageOrigin, setTriageOrigin] = useState<string | null>(null);
+  const [lastVerdict, setLastVerdict] = useState<LastVerdict | null>(null);
   const [triageFilters, setTriageFilters] = useState<TriageFilters>(DEFAULT_FILTERS);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -232,6 +247,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     stored.current = new Map();
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
     setAllVerdicts([]); setRoutine([]); setCaptureFiles(new Map()); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
+    setTriageOrigin(null); setLastVerdict(null);
     void refreshSessions();
   }, [refreshSessions]);
 
@@ -257,6 +273,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
       rememberedCaptureFiles(id).then(m => { if (token === openToken.current) setCaptureFiles(m); }, () => { /* see above */ });
     }
     setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
+    setTriageOrigin(null); setLastVerdict(null);
   }, [store, report]);
 
   const renameSession = useCallback(async (id: string, name: string) => {
@@ -311,6 +328,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     setSelected(null);
     setSelectedItem(null);
     setFocus(null);
+    setTriageOrigin(null);
   }, [store]);
 
   const loadFiles = useCallback((files: File[], handles?: (CaptureFileHandle | null)[]): Promise<void> => {
@@ -371,16 +389,36 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   }, [store, openSession, loadFiles]);
 
   const setActive = useCallback((fp: string) => {
-    setActiveFp(fp); setSelected(null); setSelectedItem(null); setFocus(null);
+    setActiveFp(fp); setSelected(null); setSelectedItem(null); setFocus(null); setTriageOrigin(null);
     setCaptures(m => touch(m, fp));   // on screen = recently used
   }, []);
   const selectProc = useCallback((id: ProcId | null) => { setSelected(id); setSelectedItem(null); setFocus(null); }, []);
   const selectItem = useCallback((key: string) => { setSelected(null); setSelectedItem(key); setFocus(null); }, []);
-  const showInTree = useCallback((id: ProcId) => {
+  const showInTree = useCallback((id: ProcId, origin?: string) => {
     setSelected(id);
     setSelectedItem(null);
     setFocus(f => ({ id, n: (f?.n ?? 0) + 1 }));
+    if (origin !== undefined) setTriageOrigin(origin);
     setView('tree');
+  }, []);
+  /** A row key from Triage: a persistence-only item's queue key starts with `i:`; anything else is a process id. */
+  const selectKey = useCallback((key: string) => {
+    if (key.startsWith('i:')) { setSelected(null); setSelectedItem(key); }
+    else { setSelected(key); setSelectedItem(null); }
+    setFocus(null);
+  }, []);
+  const originRef = useRef(triageOrigin);
+  originRef.current = triageOrigin;
+  const returnToTriage = useCallback(() => {
+    const o = originRef.current;
+    if (o !== null) selectKey(o);
+    setTriageOrigin(null);
+    setView('triage');
+  }, [selectKey]);
+  const changeView = useCallback((v: View) => {
+    // Leaving the Tree by its tab ends the visit: the Back link would otherwise outlive the trip it belongs to.
+    if (v !== 'tree') setTriageOrigin(null);
+    setView(v);
   }, []);
   const setExportOpts = useCallback((patch: Partial<{ includeEnv: boolean; redactArgs: boolean }>) => { setExportOptsState(o => ({ ...o, ...patch })); }, []);
   const updateTriageFilters = useCallback((patch: Partial<TriageFilters>) => { setTriageFilters(f => ({ ...f, ...patch })); }, []);
@@ -463,10 +501,32 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     (procId: ProcId, status: Status, note?: string, fingerprint?: string) =>
       save(procId, fingerprint, prev => ({ status, note: note ?? prev?.note ?? '' })),
     [save]);
-  const toggleVerdict = useCallback(
-    (procId: ProcId, pressed: 'confirmed' | 'benign', fingerprint?: string) =>
-      save(procId, fingerprint, prev => ({ status: toggleStatus(prev?.status ?? 'unreviewed', pressed), note: prev?.note ?? '' })),
-    [save]);
+  const toggleVerdict = useCallback((procId: ProcId, pressed: 'confirmed' | 'benign', fingerprint?: string) => {
+    let change = null as { from: Status; to: Status } | null;
+    // save() runs `change` synchronously, before its first await: the step is known by the time it returns.
+    const done = save(procId, fingerprint, prev => {
+      const from = prev?.status ?? 'unreviewed';
+      const to = toggleStatus(from, pressed);
+      change = { from, to };
+      return { status: to, note: prev?.note ?? '' };
+    });
+    const fp = fingerprint ?? latest.current.active;
+    if (change !== null && fp !== null) {
+      const { from, to } = change;
+      const name = verdictRef.current.find(x => x.fingerprint === fp && x.procKey === procId)?.snapshot.name ?? procId;
+      setLastVerdict({ procKey: procId, fingerprint: fp, from, to, name });
+    }
+    return done;
+  }, [save]);
+  const lastVerdictRef = useRef(lastVerdict);
+  lastVerdictRef.current = lastVerdict;
+  const undoLastVerdict = useCallback(async () => {
+    const lv = lastVerdictRef.current;
+    if (!lv) return;
+    setLastVerdict(null);
+    if (lv.fingerprint === latest.current.active) selectKey(lv.procKey);
+    await save(lv.procKey, lv.fingerprint, prev => ({ status: lv.from, note: prev?.note ?? '' }));
+  }, [save, selectKey]);
   const setNote = useCallback(
     (procId: ProcId, note: string, fingerprint: string) =>
       save(procId, fingerprint, prev => ({ status: prev?.status ?? 'unreviewed', note })),
@@ -507,7 +567,8 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     reimportSession: reimport, saveFolder, chooseSaveFolder,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
-    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, captureFiles, reloadCaptures, setActive, setView,
+    triageOrigin, returnToTriage, lastVerdict, undoLastVerdict,
+    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, captureFiles, reloadCaptures, setActive, setView: changeView,
     setVerdict, toggleVerdict, setNote, addRoutine, removeRoutine, selectProc, selectItem, showInTree,
   };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

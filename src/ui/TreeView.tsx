@@ -7,9 +7,9 @@ import type { Status } from '../session/store';
 import { DetailPane } from './DetailPane';
 import { STATUS_ICON } from './QueueList';
 import { useSession } from './session-context';
-import { rowArgs } from './triage-model';
+import { itemName, rowArgs, VERDICT_LABEL } from './triage-model';
 import {
-  flatten, forestOf, keepSet, makeFoldInfo, revealKeys, searchSet,
+  flatten, forestOf, keepSet, makeFoldInfo, nodeKey, revealKeys, ROOT, searchSet, UNREACHABLE,
   type FoldRow, type GroupRow, type NodeRow, type TreeRow,
 } from './tree-model';
 import { useVirtualRows } from './virtual';
@@ -25,7 +25,10 @@ const NO_OVERRIDES: Map<string, boolean> = new Map();
 
 const indent = (depth: number): number => 8 + Math.min(depth, MAX_INDENT) * 16;
 
-interface RowProps { style?: CSSProperties; onToggle(key: string, open: boolean): void }
+/** Where a row stands to the selected process: one of its ancestors, or under it. */
+type Lineage = 'anc' | 'desc' | null;
+interface RowProps { style?: CSSProperties; onToggle(key: string, open: boolean): void; lineage?: Lineage }
+const linClass = (l: Lineage | undefined): string => (l ? ` lin-${l}` : '');
 
 /** One hanging line per ancestor level, through the twisty of each ancestor: the roots the row hangs from. */
 function Guides({ depth }: { depth: number }) {
@@ -37,7 +40,7 @@ function Twisty({ show, open, onClick }: { show: boolean; open: boolean; onClick
   return <span className="twisty" aria-hidden="true" onClick={onClick}>{show ? (open ? '▾' : '▸') : ''}</span>;
 }
 
-function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, onToggle }: RowProps & {
+function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, onToggle, lineage }: RowProps & {
   row: NodeRow; cap: LoadedCapture; flag: QueueItem | undefined; routine: boolean; status: Status | undefined;
   selected: boolean; onSelect(id: ProcId): void;
 }) {
@@ -49,13 +52,17 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
   return (
     <div role="treeitem" aria-level={row.depth + 1} aria-selected={selected} aria-expanded={row.expandable ? row.expanded : undefined}
       style={{ ...style, paddingLeft: indent(row.depth) }}
-      className={`trow${selected ? ' sel' : ''}${routine ? ' routine' : ''}${proc?.ghost ? ' ghost' : ''}`}
+      className={`trow${selected ? ' sel' : ''}${linClass(lineage)}${routine ? ' routine' : ''}${proc?.ghost ? ' ghost' : ''}`}
       onClick={() => { onSelect(row.id); }}>
       <Guides depth={row.depth} />
       <Twisty show={row.expandable} open={row.expanded}
         onClick={row.expandable ? () => { onToggle(row.key, !row.expanded); } : undefined} />
       {flag && <span className={`badge sev-${flag.severity}`}>{flag.severity}</span>}
-      {flag && <span className={`status st-${st}`} title={st} aria-label={st}>{STATUS_ICON[st]}</span>}
+      {flag && (
+        <span className={`status st-${st}`} title={`Verdict: ${VERDICT_LABEL[st]}`}>
+          <span aria-hidden="true">{STATUS_ICON[st]}</span><span className="sr-only">Verdict: {VERDICT_LABEL[st]}</span>
+        </span>
+      )}
       <span className="tname truncate" title={label}>{label}</span>{' '}
       {proc && !proc.ghost && <span className="tpid muted">pid {proc.pid}</span>}
       {flag?.reconBurst && (
@@ -69,11 +76,11 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
 }
 
 /** The grey rows: a fold of unflagged processes, or the group of processes caught in a parent cycle. */
-function GreyItem({ row, text, count, style, onToggle }: RowProps & { row: FoldRow | GroupRow; text: string; count?: string }) {
+function GreyItem({ row, text, count, style, onToggle, lineage }: RowProps & { row: FoldRow | GroupRow; text: string; count?: string }) {
   const flip = () => { onToggle(row.key, !row.expanded); };
   return (
     <div role="treeitem" aria-level={row.depth + 1} aria-selected={false} aria-expanded={row.expanded} tabIndex={0}
-      style={{ ...style, paddingLeft: indent(row.depth) }} className="trow fold" onClick={flip}
+      style={{ ...style, paddingLeft: indent(row.depth) }} className={`trow fold${linClass(lineage)}`} onClick={flip}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } }}>
       <Guides depth={row.depth} />
       <Twisty show open={row.expanded} />
@@ -128,17 +135,27 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
     });
   }, [search]);
 
-  /** Opens just enough of the tree under `m` to show `id`; the scroll follows once those rows exist. */
-  const reveal = useCallback((id: ProcId, m: ParentMode, resetSearch: boolean) => {
+  /**
+   * Opens just enough of the tree under `m` to show `id`; the scroll follows once those rows exist. `withChildren` also
+   * opens the process itself, so what it started is on screen beside it.
+   */
+  const reveal = useCallback((id: ProcId, m: ParentMode, resetSearch: boolean, withChildren = false) => {
     const f = forestOf(cap.model, m);
     if (!f.parent.has(id)) return;
-    open(revealKeys(f, keepSet(f, flagged), fold, id), resetSearch);
+    const keys = revealKeys(f, keepSet(f, flagged), fold, id);
+    if (withChildren && (f.kids.get(id)?.length ?? 0) > 0) keys.push(nodeKey(id));
+    open(keys, resetSearch);
     setRevealTo(id);
   }, [cap, flagged, fold, open]);
+  /** Set by "Show in tree": the tree takes the keys once the reveal lands, so the arrows work straight away. */
+  const focusAfterReveal = useRef(false);
 
-  // "Show in tree": reveal the process, whatever hid it (collapsed ancestors, a fold, the search).
+  // "Show in tree": reveal the process and what it started, whatever hid it (collapsed ancestors, a fold, the search).
   useEffect(() => {
-    if (c.focusId !== null) reveal(c.focusId, mode, true);
+    if (c.focusId === null) return;
+    // Arriving from Triage hands the keys to the tree; a link followed inside the Tree's own pane leaves focus there.
+    focusAfterReveal.current = c.triageOrigin !== null && c.triageOrigin === c.focusId;
+    reveal(c.focusId, mode, true, true);
   }, [c.focusNonce, cap]);
 
   const changeMode = (m: ParentMode) => {
@@ -173,7 +190,30 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
     if (revealTo === null || vmode === 'pending') return;
     scrollTo(revealTo, true);
     setRevealTo(null);
+    if (focusAfterReveal.current) { focusAfterReveal.current = false; scroller.current?.focus({ preventScroll: true }); }
   }, [revealTo, rows, vmode]);
+
+  /**
+   * The selected process's lineage under the current mode: its ancestors by id, and the rows under it, which are the
+   * rows right after it that sit deeper (one contiguous run, so no subtree walk however large it is).
+   */
+  const selRow = selected !== null ? rows.findIndex(r => r.kind === 'node' && r.id === selected) : -1;
+  const ancestors = useMemo(() => {
+    const s = new Set<ProcId>();
+    if (selected === null) return s;
+    let cur = forest.parent.get(selected);
+    while (cur !== undefined && cur !== ROOT && cur !== UNREACHABLE && !s.has(cur)) { s.add(cur); cur = forest.parent.get(cur); }
+    return s;
+  }, [forest, selected]);
+  const descEnd = useMemo(() => {
+    if (selRow < 0) return selRow;
+    const d = rows[selRow]!.depth;
+    let j = selRow + 1;
+    while (j < rows.length && rows[j]!.depth > d) j++;
+    return j;
+  }, [rows, selRow]);
+  const lineageOf = (i: number, row: TreeRow): Lineage =>
+    (selRow >= 0 && i > selRow && i < descEnd ? 'desc' : row.kind === 'node' && ancestors.has(row.id) ? 'anc' : null);
 
   const select = useCallback((id: ProcId) => {
     setRevealTo(null);
@@ -209,19 +249,32 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
     }
   };
 
-  const renderRow = (row: TreeRow, style?: CSSProperties) => {
-    if (row.kind === 'fold') return <GreyItem key={row.key} row={row} text={row.label} count={`${fmt(row.total)} processes`} style={style} onToggle={toggle} />;
+  const renderRow = (row: TreeRow, i: number, style?: CSSProperties) => {
+    const lineage = lineageOf(i, row);
+    if (row.kind === 'fold') return <GreyItem key={row.key} row={row} text={row.label} count={`${fmt(row.total)} processes`} style={style} onToggle={toggle} lineage={lineage} />;
     if (row.kind === 'group') return <GreyItem key={row.key} row={row} text={`unreachable (parent cycle) ×${row.total}`} style={style} onToggle={toggle} />;
     const flag = badge.get(row.id);
     return <NodeItem key={row.key} row={row} cap={cap} flag={flag} routine={flag !== undefined && !flaggedSet.has(row.id)}
-      status={verdicts.get(row.id)?.status} selected={row.id === selected} style={style} onToggle={toggle} onSelect={select} />;
+      status={verdicts.get(row.id)?.status} selected={row.id === selected} style={style} onToggle={toggle} onSelect={select} lineage={lineage} />;
   };
+  const origin = c.triageOrigin ?? null;
+  const originName = (() => {
+    if (origin === null) return null;
+    const q = cap.analysis.queue.find(x => x.procId === origin || x.key === origin);
+    return q ? itemName(cap, q) : displayName(cap.model, origin);
+  })();
   const rowStyle = (start: number): CSSProperties =>
     ({ position: 'absolute', top: 0, left: 0, right: 0, height: ROW_H, transform: `translateY(${start}px)` });
 
   return (
     <div className="triage tree">
       <section className="queue" aria-label="Process tree view">
+        {origin !== null && (
+          <div className="origin-bar small">
+            <button className="link" onClick={c.returnToTriage}>← Back to Triage</button>
+            <span className="muted truncate">opened from <strong>{originName}</strong>{selected !== origin ? ' · you have moved on in the tree' : ''}</span>
+          </div>
+        )}
         <div className="qtools">
           <input type="text" aria-label="Search processes" placeholder="Search name, path, args, signing ID, pid" value={search}
             onChange={e => {
@@ -244,10 +297,10 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
         <div ref={scroller} role="tree" aria-label="Process tree" tabIndex={0} className={`qscroll tscroll roots-${mode}`} onKeyDown={onKey}>
           {vmode === 'virtual' && (
             <div style={{ height: v.getTotalSize(), position: 'relative' }}>
-              {v.getVirtualItems().map(vi => renderRow(rows[vi.index]!, rowStyle(vi.start)))}
+              {v.getVirtualItems().map(vi => renderRow(rows[vi.index]!, vi.index, rowStyle(vi.start)))}
             </div>
           )}
-          {vmode === 'plain' && rows.map(r => renderRow(r, { height: ROW_H }))}
+          {vmode === 'plain' && rows.map((r, i) => renderRow(r, i, { height: ROW_H }))}
         </div>
         {rows.length === 0 && <p className="muted qempty">{found ? 'Nothing matches the search.' : 'No processes.'}</p>}
         <div className="qfoot small muted">
@@ -256,6 +309,9 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
               ? `${found.matches} ${found.matches === 1 ? 'match' : 'matches'} · other processes are hidden while searching`
               : `${fmt(cap.model.processes.size)} processes · ${fmt(folded)} folded into ${foldRows} grey ${foldRows === 1 ? 'row' : 'rows'} (click to expand)`}
           </span>
+          {selRow >= 0 && (ancestors.size > 0 || descEnd > selRow + 1) && (
+            <span className="lin-key"><span className="lin-swatch anc" aria-hidden="true" />ancestors <span className="lin-swatch desc" aria-hidden="true" />under it</span>
+          )}
           {forest.unreachable > 0 && <span>{forest.unreachable} in a parent cycle</span>}
         </div>
       </section>

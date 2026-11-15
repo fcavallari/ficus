@@ -37,6 +37,7 @@ export class ModelBuilder {
   private latestByPid = new Map<number, Process>();
   private persistence: CaptureModel['persistence'] = [];
   private otherEvents = new Map<string, number>();
+  private kinds = new Map<string, number>();
 
   addLine(line: string): void {
     this.lines++;
@@ -57,6 +58,7 @@ export class ModelBuilder {
     const stats: CaptureStats = {
       lines: this.lines, events: events.length, badLines: this.badLines,
       otherEvents: Object.fromEntries(this.otherEvents),
+      kinds: Object.fromEntries(this.kinds),
       versions: [...new Set(events.map(e => e.version))].sort((a, b) => a - b),
       firstSeq: first ? first.seq : null,
       firstTime: first ? first.time : null,
@@ -111,6 +113,7 @@ export class ModelBuilder {
 
   private apply(ev: NormEvent): void {
     const p = this.ensure(ev.proc, ev.seq, ev.time);
+    if (ev.kind !== 'other') this.kinds.set(ev.rawType, (this.kinds.get(ev.rawType) ?? 0) + 1);
     switch (ev.kind) {
       case 'fork': {
         const child = ev.child!;
@@ -119,7 +122,7 @@ export class ModelBuilder {
           this.processes.get(existing)!.forkParent = p.id;
           break;
         }
-        const c = newProcess(child, { ...imageFrom(child, ev.seq), inherited: true }, ev.seq);
+        const c = newProcess(child, { ...imageFrom(child, ev.seq), time: ev.time, inherited: true }, ev.seq);
         c.forkParent = p.id;
         this.add(c, child.token);
         break;
@@ -136,6 +139,7 @@ export class ModelBuilder {
       }
       case 'exit':
         p.exitTime = ev.time;
+        p.exitSeq = ev.seq;
         break;
       case 'create': case 'rename': case 'unlink': case 'write': case 'setextattr': {
         if (ev.path === undefined) break;

@@ -114,15 +114,15 @@ export function ConfirmedTab() {
   return (
     <div className="confirmed-tab">
       <section aria-labelledby="confirmed-h">
-        <h2 id="confirmed-h">Confirmed in this session <span className="muted num">{confirmed.length}</span></h2>
+        <h2 id="confirmed-h">Marked suspicious in this session <span className="muted num">{confirmed.length}</span></h2>
         {confirmed.length === 0 ? (
-          <p className="empty">Nothing confirmed yet in this session. Press <kbd>c</kbd> on a row in Triage to confirm it.</p>
+          <p className="empty">Nothing marked suspicious yet in this session. Press <kbd>c</kbd> on a row in Triage to give it that verdict.</p>
         ) : (
-          <ul className="list" aria-label="Confirmed processes">
+          <ul className="list" aria-label="Suspicious processes">
             {confirmed.map(v => (
               <li key={`${v.fingerprint}|${v.procKey}`} className="confirmed">
                 <div className="row">
-                  {v.snapshot.severity && <span className={`badge sev-${v.snapshot.severity}`}>{v.snapshot.severity}</span>}
+                  {v.snapshot.severity && <span className={`badge sev-${v.snapshot.severity}`} title="Severity when the verdict was saved">{v.snapshot.severity}</span>}
                   <strong>{v.snapshot.name}</strong>
                   <span className="chip">{fileName(v.fingerprint)}</span>
                 </div>
@@ -152,7 +152,7 @@ export function ConfirmedTab() {
         </p>
         {leftOut > 0 && (
           <p className="warn small">
-            Details for {leftOut} confirmed {leftOut === 1 ? 'process is' : 'processes are'} left out because {leftOut === 1 ? 'its capture isn’t' : 'their captures aren’t'} loaded; re-add {leftOut === 1 ? 'it' : 'them'} to include.
+            Details for {leftOut} suspicious {leftOut === 1 ? 'process is' : 'processes are'} left out because {leftOut === 1 ? 'its capture isn’t' : 'their captures aren’t'} loaded; re-add {leftOut === 1 ? 'it' : 'them'} to include.
           </p>
         )}
         {hasLaunchItems && <p className="muted small">Launch items are exported from their snapshot.</p>}

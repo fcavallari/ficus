@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import { useVirtualRows } from './virtual';
 import type { QueueItem } from '../rules/engine';
 import type { Status } from '../session/store';
+import { SEVERITY_LABEL, VERDICT_LABEL } from './triage-model';
 
 export interface QueueRow {
   item: QueueItem;
   name: string;
   args: string;
+  /** Shown at the end of the row; null for a launch item no process owns, or a process known only by pid. */
+  pid: number | null;
   status: Status;
   /** Hidden by a routine mark; only listed (greyed) when the user asks to see them. */
   routine: boolean;
@@ -16,6 +19,8 @@ export interface QueueRow {
 
 const ROW_H = 32;
 export const STATUS_ICON: Record<Status, string> = { unreviewed: '○', confirmed: '●', benign: '–' };
+/** The DOM id of a queue row, for the listbox's aria-activedescendant. */
+export const optionId = (key: string): string => `qopt-${key}`;
 
 /** The full text of a cell the row cuts short, shown under it while the pointer is on it. */
 interface Tip { text: string; left: number; top: number }
@@ -26,11 +31,13 @@ function Row({ row, selected, onSelect, style, showTip, hideTip }: {
 }) {
   const { item } = row;
   return (
-    <div role="option" aria-selected={selected} style={style}
+    <div role="option" id={optionId(item.key)} aria-selected={selected} style={style}
       className={`qrow${selected ? ' sel' : ''}${row.routine ? ' routine' : ''}`}
       onClick={() => { onSelect(item); }}>
-      <span className={`badge sev-${item.severity}`}>{item.severity}</span>
-      <span className={`status st-${row.status}`} title={row.status} aria-label={row.status}>{STATUS_ICON[row.status]}</span>
+      <span className={`badge sev-${item.severity}`} title={`Severity: ${SEVERITY_LABEL[item.severity]}`}>{item.severity}</span>
+      <span className={`status st-${row.status}`} title={`Verdict: ${VERDICT_LABEL[row.status]}`}>
+        <span aria-hidden="true">{STATUS_ICON[row.status]}</span><span className="sr-only">Verdict: {VERDICT_LABEL[row.status]}</span>
+      </span>
       <span className="qname truncate" onMouseEnter={e => { showTip(e.currentTarget, row.name); }} onMouseLeave={hideTip}>{row.name}</span>
       <span className="args truncate" onMouseEnter={e => { showTip(e.currentTarget, row.args); }} onMouseLeave={hideTip}>{row.args}</span>
       {row.routineKept !== null && (
@@ -41,6 +48,7 @@ function Row({ row, selected, onSelect, style, showTip, hideTip }: {
       {item.reconBurst && (
         <span className="chain-mark" title="One of 3 or more different reconnaissance tools run under the same parent within 60 seconds">recon burst</span>
       )}
+      {row.pid !== null && <span className="qpid muted">{row.pid}</span>}
     </div>
   );
 }
@@ -73,7 +81,10 @@ export function QueueList({ rows, selectedKey, onSelect }: {
 
   return (
     <>
-    <div ref={scroller} role="listbox" aria-label="Flagged processes" className="qscroll" onScroll={hideTip}>
+    {/* Focusable, so the queue is a tab stop; the selected row is its active descendant. The keys work anywhere on
+        the screen (see TriageView), and focus never moves into the rows, which the virtual list recycles. */}
+    <div ref={scroller} role="listbox" aria-label="Flagged processes" className="qscroll" onScroll={hideTip} tabIndex={0}
+      aria-activedescendant={selectedKey !== null && rows.some(r => r.item.key === selectedKey) ? optionId(selectedKey) : undefined}>
       {mode === 'virtual' && (
         <div style={{ height: v.getTotalSize(), position: 'relative' }}>
           {v.getVirtualItems().map(vi => {
