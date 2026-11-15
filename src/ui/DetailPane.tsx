@@ -5,27 +5,36 @@ import type { ProcId, Process } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { MITRE_NAMES } from '../rules/mitre';
-import type { Severity } from '../rules/rules';
+import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { LaunchItem } from './LaunchItem';
+import { STATUS_ICON } from './QueueList';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, TRIAGE_KEYS, verdictKey } from './triage-model';
+import { processTimeline, RAW_TYPE, recordedCounts, recordedSpan, type TimelineEvent, type TimelineKind } from './timeline';
+import {
+  coverage, fmtArgs, fmtClock, fmtTime, overview, SEVERITY_LABEL, TRIAGE_KEYS, VERDICT_LABEL, verdictKey,
+} from './triage-model';
 
 const SHOW_FIRST = 40;
+const TIMELINE_FIRST = 60;
+const TIMELINE_STEP = 200;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
-const STATUS_TEXT: Record<Status, string> = { unreviewed: 'Unreviewed', confirmed: 'Confirmed suspicious', benign: 'Marked benign' };
+const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <section aria-labelledby={id} className="dsec">
-      <h3 id={id}>{title}</h3>
+      <h3 id={id} tabIndex={-1}>{title}</h3>
       {children}
     </section>
   );
 }
 
-function Sev({ s }: { s: Severity }) { return <span className={`badge sev-${s}`}>{s}</span>; }
+/** A severity badge: the short form in lists, the full word (`full`) where there is room. */
+function Sev({ s, full }: { s: Severity; full?: boolean }) {
+  return <span className={`badge sev-${s}${full ? ' full' : ''}`} title={`Severity: ${SEVERITY_LABEL[s]}`}>{full ? SEVERITY_LABEL[s] : s}</span>;
+}
 
 /** One finding, written for a learner: what it means first, then the technique, then the evidence. */
 function FindingBlock({ f }: { f: Finding }) {
@@ -127,7 +136,24 @@ function Dl({ rows }: { rows: [string, ReactNode][] }) {
   );
 }
 
-function Details({ p }: { p: Process }) {
+/** A process link with its pid, or the bare pid when the capture has no process for it. */
+function ProcLink({ cap, id, onSelect }: { cap: LoadedCapture; id: ProcId | null; onSelect(id: ProcId): void }) {
+  if (id === null) return <span className="muted">not recorded</span>;
+  const q = cap.model.processes.get(id);
+  return (
+    <span>
+      <button className="link" onClick={() => { onSelect(id); }}>{displayName(cap.model, id)}</button>
+      {q && !q.ghost && <span className="muted small"> pid {q.pid}</span>}
+    </span>
+  );
+}
+
+const COUNT_WORDS: [TimelineKind[], string][] = [
+  [['exec'], 'exec'], [['image'], 'program change without exec'], [['spawn'], 'fork'],
+  [['create', 'rename', 'unlink', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
+];
+
+function Details({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
   const img = latestImage(p);
   const exec = [...p.images].reverse().find(i => i.args !== null);
   const history = p.images.filter(i => !i.inherited);
@@ -139,7 +165,16 @@ function Details({ p }: { p: Process }) {
       </Section>
     );
   }
+  const span = recordedSpan(own);
+  const counts = recordedCounts(own);
+  const countText = COUNT_WORDS.map(([kinds, word]) => [kinds.reduce((a, k) => a + (counts[k] ?? 0), 0), word] as const)
+    .filter(([n]) => n > 0).map(([n, w]) => plural(n, w)).join(' · ');
+  const ppid = p.originalPpid !== null && p.ppid !== null && p.originalPpid !== p.ppid
+    ? `${p.originalPpid} at launch, ${p.ppid} later` : String(p.originalPpid ?? p.ppid ?? '');
   const rows: [string, ReactNode][] = [
+    ['PID', <span className="mono">{p.pid}</span>],
+    ['Parent PID', ppid ? <span className="mono">{ppid}</span> : <span className="muted">not recorded</span>],
+    ['Parent', <ProcLink cap={cap} id={p.originalParent} onSelect={onSelect} />],
     ['Command line', exec?.args ? <code className="mono wrap">{fmtArgs(exec.args)}</code> : <span className="muted">no exec event captured</span>],
     ['Working dir', exec?.cwd ? <code className="mono wrap">{exec.cwd}</code> : <span className="muted">unknown</span>],
     ['Program', <code className="mono wrap">{img.path ?? 'unknown'}</code>],
@@ -152,13 +187,99 @@ function Details({ p }: { p: Process }) {
     ['Ad-hoc signed', yesNo((img.csFlags & 0x2) !== 0)],
     ['Started', <span className="mono">{fmtTime(p.startTime)}</span>],
     ['Exited', <span className="mono">{p.exitTime ? fmtTime(p.exitTime) : 'not seen (still running, or the capture ended first)'}</span>],
+    ['Recorded activity', span
+      ? <span className="mono">{span.first === span.last ? fmtTime(span.first)
+        : `${fmtTime(span.first)} → ${span.first.slice(0, 10) === span.last.slice(0, 10) ? fmtClock(span.last) : fmtTime(span.last)}`}</span>
+      : <span className="muted">no timed events</span>],
+    ['Recorded events', countText || <span className="muted">none of its own</span>],
   );
   return <Section id="d-details" title="Details"><Dl rows={rows} /></Section>;
 }
 
+/** One timeline entry: when, which event, what it touched, and the finding it carries, if one cites exactly this event. */
+function TimelineRow({ cap, e, self, multiDay, onSelect }: {
+  cap: LoadedCapture; e: TimelineEvent; self: ProcId; multiDay: boolean; onSelect(id: ProcId): void;
+}) {
+  const link = (id: ProcId) => <ProcLink cap={cap} id={id} onSelect={onSelect} />;
+  let body: ReactNode;
+  switch (e.kind) {
+    case 'fork': body = <>forked by {link(e.other!)}</>; break;
+    case 'spawn': body = <>forked {link(e.other!)}</>; break;
+    case 'exec': body = <code className="mono wrap">{e.args && e.args.length > 0 ? fmtArgs(e.args) : (e.path ?? '?')}</code>; break;
+    case 'image': body = <><code className="mono wrap">{e.path ?? '?'}</code> <span className="muted small">(its exec is not in the capture)</span></>; break;
+    case 'rename': body = <code className="mono wrap">{e.path} <span className="muted">→</span> {e.toPath ?? '?'}</code>; break;
+    case 'setextattr': body = <code className="mono wrap">{e.path}{e.xattr !== undefined && <span className="muted"> ({e.xattr})</span>}</code>; break;
+    case 'btm_add': case 'btm_remove': {
+      const verb = e.kind === 'btm_add' ? 'added' : 'removed';
+      const role = e.role === 'app' ? `its app: launch item ${verb}` : e.role === 'instigator' ? `asked for: launch item ${verb}` : `reported: launch item ${verb}`;
+      body = <><span className="muted small">{role}</span> <code className="mono wrap">{e.path ?? '(no path recorded)'}</code></>;
+      break;
+    }
+    case 'exit': body = <span className="muted">exited</span>; break;
+    default: body = <code className="mono wrap">{e.path}</code>;
+  }
+  const worst = e.findings.reduce<Severity | null>((w, f) => (w === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), null);
+  return (
+    <li className={`tl-row k-${e.kind}${worst ? ` flagged sev-border-${worst}` : ''}`}>
+      <time className="tl-t mono" dateTime={e.time ?? undefined} title={e.time ? fmtTime(e.time) : 'no time recorded'}>{e.time ? `${multiDay ? `${e.time.slice(5, 10)} ` : ''}${fmtClock(e.time)}` : '—'}</time>
+      <span className="tl-k">{RAW_TYPE[e.kind]}</span>
+      <span className="tl-body">
+        {e.proc !== self && <span className="tl-who">{link(e.proc)}</span>}
+        {body}
+        {e.findings.length > 0 && (
+          <span className="tl-why">
+            {e.findings.map((f, i) => <span key={i} className="row"><Sev s={f.severity} /><span className="small">{f.title}</span></span>)}
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}
+
+/**
+ * What the process did, in capture order: every recorded event that belongs to it (and, on request, to every process
+ * under it). Built from the capture alone; event types the viewer does not model are counted elsewhere, never placed.
+ */
+function Timeline({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelect(id: ProcId): void }) {
+  const [withKids, setWithKids] = useState(false);
+  const [limit, setLimit] = useState(TIMELINE_FIRST);
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const tl = useMemo(() => processTimeline(cap, p.id, withKids), [cap, p.id, withKids]);
+  const list = flaggedOnly ? tl.events.filter(e => e.findings.length > 0 || e.kind === 'exec' || e.kind === 'btm_add') : tl.events;
+  const shown = list.slice(0, limit);
+  const span = recordedSpan(tl.events);
+  const multiDay = span !== null && span.first.slice(0, 10) !== span.last.slice(0, 10);
+  // eslogger writes UTC (a trailing Z); only then is the zone named.
+  const utc = tl.events.every(e => !e.time || e.time.endsWith('Z'));
+  return (
+    <>
+      <div className="row tl-tools">
+        <h4>Timeline</h4>
+        <label className="inline small"><input type="checkbox" checked={withKids} onChange={e => { setWithKids(e.target.checked); setLimit(TIMELINE_FIRST); }} />Include descendants</label>
+        <label className="inline small"><input type="checkbox" checked={flaggedOnly} onChange={e => { setFlaggedOnly(e.target.checked); setLimit(TIMELINE_FIRST); }} />Execs, launch items and flagged events only</label>
+      </div>
+      <p className="muted small tl-meta">
+        {plural(list.length, 'event')}{withKids && ` across ${plural(tl.processes, 'process', 'processes')}`}
+        {span && ` · ${multiDay ? `${span.first.slice(0, 10)} to ${span.last.slice(0, 10)}` : span.first.slice(0, 10)}${utc ? ', UTC' : ''}`}
+        {tl.truncated && <span className="warn"> · stopped at the first {tl.processes.toLocaleString('en-US')} processes of the subtree</span>}
+      </p>
+      {list.length === 0 ? <p className="muted small">No events recorded{flaggedOnly ? ' of these kinds' : ''}.</p> : (
+        <ol className="tl" aria-label={`Timeline of ${displayName(cap.model, p.id)}`}>
+          {shown.map(e => <TimelineRow key={e.key} cap={cap} e={e} self={p.id} multiDay={multiDay} onSelect={onSelect} />)}
+        </ol>
+      )}
+      {/* In steps: a subtree can hold tens of thousands of events, and mounting them all at once stalls the pane. */}
+      {list.length > shown.length && (
+        <button onClick={() => { setLimit(l => l + TIMELINE_STEP); }}>
+          Show {Math.min(TIMELINE_STEP, list.length - shown.length).toLocaleString('en-US')} more ({(list.length - shown.length).toLocaleString('en-US')} left)
+        </button>
+      )}
+    </>
+  );
+}
+
 function DidWhat({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelect(id: ProcId): void }) {
   const [allKids, setAllKids] = useState(false);
-  const [allOps, setAllOps] = useState(false);
   const kids = useMemo(() => childrenIndex(cap.model, 'original').get(p.id) ?? [], [cap, p.id]);
   const severity = useMemo(() => {
     const m = new Map<ProcId, Severity>();
@@ -166,7 +287,6 @@ function DidWhat({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelec
     return m;
   }, [cap]);
   const kidsShown = allKids ? kids : kids.slice(0, SHOW_FIRST);
-  const opsShown = allOps ? p.fileOps : p.fileOps.slice(0, SHOW_FIRST);
   return (
     <Section id="d-did" title="What it did">
       <h4>Started {kids.length} {kids.length === 1 ? 'process' : 'processes'}</h4>
@@ -186,25 +306,7 @@ function DidWhat({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelec
         </ul>
       )}
       {kids.length > SHOW_FIRST && !allKids && <button onClick={() => { setAllKids(true); }}>Show all {kids.length}</button>}
-      <h4>File activity ({p.fileOps.length})</h4>
-      {p.fileOps.length === 0 ? <p className="muted small">None recorded.</p> : (
-        <table className="ops">
-          <thead><tr><th>Kind</th><th>Path</th></tr></thead>
-          <tbody>
-            {opsShown.map(op => (
-              <tr key={op.seq}>
-                <td>{op.kind}</td>
-                <td className="mono wrap">
-                  {op.path}
-                  {op.toPath !== undefined && <> <span className="muted">→</span> {op.toPath}</>}
-                  {op.xattr !== undefined && <span className="muted"> ({op.xattr})</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {p.fileOps.length > SHOW_FIRST && !allOps && <button onClick={() => { setAllOps(true); }}>Show all {p.fileOps.length}</button>}
+      <Timeline key={p.id} cap={cap} p={p} onSelect={onSelect} />
     </Section>
   );
 }
@@ -280,20 +382,20 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
   const keptWhy = pkey !== null && c.routineKeys.has(pkey) ? c.triage?.kept.get(`p:${vkey}`) : undefined;
   return (
     <Section id="d-actions" title="Actions">
-      <p className="small status-line"><span className="muted">Status: </span><strong className={`st-${status}`}>{STATUS_TEXT[status]}</strong></p>
+      <p className="small status-line"><span className="muted">Verdict: </span><strong className={`st-${status}`}>{VERDICT_LABEL[status]}</strong></p>
       <div className="row">
-        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.toggleVerdict(vkey, 'confirmed'); }}>Confirm suspicious <kbd>c</kbd></button>
-        <button aria-pressed={status === 'benign'} onClick={() => { void c.toggleVerdict(vkey, 'benign'); }}>Benign <kbd>b</kbd></button>
+        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.toggleVerdict(vkey, 'confirmed'); }}>Mark suspicious <kbd>c</kbd></button>
+        <button aria-pressed={status === 'benign'} onClick={() => { void c.toggleVerdict(vkey, 'benign'); }}>Mark benign <kbd>b</kbd></button>
         {p && (pkey !== null && c.routineKeys.has(pkey)
           ? <button onClick={() => { void c.removeRoutine(pkey); }}>Stop treating as routine</button>
           : <button disabled={noIdentity} title={noIdentity ? 'No signing ID, team ID or path: it cannot be told apart from other programs' : undefined}
               onClick={() => { if (img) void c.addRoutine(img); }}>Treat as routine</button>)}
-        {p && <button onClick={() => { c.showInTree(p.id); }}>Show in tree <kbd>t</kbd></button>}
+        {p && <button onClick={() => { c.showInTree(p.id, c.view === 'triage' ? vkey : undefined); }}>Show in tree <kbd>t</kbd></button>}
       </div>
       {p && <p className="muted small">“Treat as routine” hides every run of this program, in every capture of this session, except rows with a high or persistence finding.</p>}
       {keptWhy && <p className="small warn">This program is marked routine, but this row stays visible: {keptWhy}.</p>}
       <Note key={`${fingerprint}:${vkey}`} vkey={vkey} fingerprint={fingerprint} saved={verdict?.note ?? ''} noteRef={noteRef} />
-      <p className="muted small">Press <kbd>n</kbd> to jump to the note. Press Confirm or Benign again to go back to unreviewed.</p>
+      <p className="muted small">Press <kbd>n</kbd> to jump to the note. Pressing the verdict it already has takes it back to unreviewed; <kbd>u</kbd> undoes the last verdict you set.</p>
     </Section>
   );
 }
@@ -302,11 +404,16 @@ function PersistenceDetail({ cap, q, onSelect, noteRef }: {
   cap: LoadedCapture; q: QueueItem; onSelect(id: ProcId): void; noteRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const item = cap.model.persistence.find(i => i.id === q.persistenceId);
+  const status = useSession().verdicts.get(q.key)?.status ?? 'unreviewed';
   return (
     <>
       <header className="dhead">
         <h2>{`persistence: ${basename(item?.plistPath ?? null) || q.key}`}</h2>
         <p className="muted small">A launch item registered while the capture ran. No captured process is tied to it, so there is no launch chain.</p>
+        <div className="row assess">
+          <span className="assess-chip">Severity <Sev s={q.severity} full /></span>
+          <span className="assess-chip">Verdict <strong className={`st-${status}`}>{VERDICT_LABEL[status]}</strong></span>
+        </div>
       </header>
       <Why findings={q.findings} item={q} />
       <Section id="d-details" title="Details">
@@ -329,7 +436,6 @@ function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Pr
   );
 }
 
-/** Before anything is selected: what is left to review, by severity, and the keys that work through it. */
 /**
  * The unreviewed rows as one bar split by severity, each part as wide as its share, its count printed above it. The
  * label and the bar share one column template, so each count stands over its own part.
@@ -338,9 +444,9 @@ function SeverityBar({ counts }: { counts: (readonly [Severity, number])[] }) {
   const parts = counts.filter(([, n]) => n > 0);
   const cols = parts.map(([, n]) => `minmax(64px, ${n}fr)`).join(' ');
   return (
-    <div className="sev-split" role="img" aria-label={`Unreviewed by severity: ${counts.map(([s, n]) => `${s} ${n}`).join(', ')}`}>
+    <div className="sev-split" role="img" aria-label={`Unreviewed by severity: ${counts.map(([s, n]) => `${SEVERITY_LABEL[s]} ${n}`).join(', ')}`}>
       <div className="sevbar-labels" style={{ gridTemplateColumns: cols }}>
-        {parts.map(([s, n]) => <span key={s} className={`sev-${s}`}><span>{s}</span> <b className="num">{n}</b></span>)}
+        {parts.map(([s, n]) => <span key={s} className={`sev-${s}`}><span>{SEVERITY_LABEL[s]}</span> <b className="num">{n}</b></span>)}
       </div>
       <div className="sevbar" style={{ gridTemplateColumns: cols }}>
         {parts.map(([s]) => <span key={s} className={`seg ${s}`} />)}
@@ -349,20 +455,168 @@ function SeverityBar({ counts }: { counts: (readonly [Severity, number])[] }) {
   );
 }
 
-function NothingSelected() {
-  const { triage, verdicts } = useSession();
-  const queue = triage?.queue ?? [];
-  const open = queue.filter(q => (verdicts.get(verdictKey(q))?.status ?? 'unreviewed') === 'unreviewed');
-  const by = (s: Severity) => open.filter(q => q.severity === s).length;
+const SEVERITIES: Severity[] = ['high', 'med', 'low'];
+const VERDICTS: Status[] = ['unreviewed', 'confirmed', 'benign'];
+
+/** A count with a bar as wide as its share of `of`; the button narrows the queue to it. */
+function DistRow({ label, n, of, cls, title, onPick }: { label: ReactNode; n: number; of: number; cls: string; title: string; onPick(): void }) {
   return (
-    <div className="detail-empty">
-      <p className="lead-figure"><span className="num">{open.length}</span> of {queue.length} flagged {queue.length === 1 ? 'row is' : 'rows are'} unreviewed</p>
-      {open.length > 0 && <SeverityBar counts={(['high', 'med', 'low'] as const).map(s => [s, by(s)] as const)} />}
-      <p className="muted">Select a flagged process on the left to see why it was flagged. Rows run high first, then by time.</p>
-      <dl className="keys">
-        {TRIAGE_KEYS.map(k => <div key={k.key}><dt><kbd>{k.key}</kbd></dt><dd>{k.what}</dd></div>)}
-      </dl>
+    <li>
+      <button className="dist-row" onClick={onPick} title={title}>
+        <span className="dist-label">{label}</span>
+        <span className="dist-bar" aria-hidden="true"><span className={cls} style={{ width: of > 0 ? `${(n / of) * 100}%` : 0 }} /></span>
+        <b className="num">{n.toLocaleString('en-US')}</b>
+      </button>
+    </li>
+  );
+}
+
+/** Before anything is selected: where the investigation stands, what the capture can show, and the keys. */
+function NothingSelected() {
+  const c = useSession();
+  const { capture: cap, triage, verdicts } = c;
+  const queue = triage?.queue ?? [];
+  const o = useMemo(() => (cap ? overview(cap, queue, verdicts) : null), [cap, queue, verdicts]);
+  const cov = useMemo(() => (cap ? coverage(cap.model) : null), [cap]);
+  if (!cap || !o || !cov) return null;
+  const open = o.byVerdict.unreviewed;
+  const set = c.updateTriageFilters;
+  const warns = cov.notes.filter(x => x.level === 'warn');
+  return (
+    <div className="detail-empty overview">
+      <p className="lead-figure"><span className="num">{open}</span> of {queue.length} flagged {queue.length === 1 ? 'row is' : 'rows are'} unreviewed</p>
+      {open > 0 && <SeverityBar counts={SEVERITIES.map(s => [s, o.bySeverity[s].open] as const)} />}
+      <p className="muted">Select a flagged process on the left to see why it was flagged, where it came from and what it did. Rows run high first, then by time.</p>
+
+      {queue.length > 0 && (
+        <div className="ov-grid">
+          <section aria-labelledby="ov-sev">
+            <h3 id="ov-sev">Severity <span className="muted small">what the rules found</span></h3>
+            <ul className="dist">
+              {SEVERITIES.map(s => (
+                <DistRow key={s} label={SEVERITY_LABEL[s]} n={o.bySeverity[s].total} of={queue.length} cls={`seg ${s}`}
+                  title={`Show only ${SEVERITY_LABEL[s].toLowerCase()} severity rows`} onPick={() => { set({ sev: new Set([s]) }); }} />
+              ))}
+            </ul>
+          </section>
+          <section aria-labelledby="ov-verdict">
+            <h3 id="ov-verdict">Verdict <span className="muted small">what you decided</span></h3>
+            <ul className="dist">
+              {VERDICTS.map(v => (
+                <DistRow key={v} label={<><span className={`status st-${v}`} aria-hidden="true">{STATUS_ICON[v]}</span> {VERDICT_LABEL[v]}</>}
+                  n={o.byVerdict[v]} of={queue.length} cls={`vseg ${v}`}
+                  title={`Show only ${VERDICT_LABEL[v].toLowerCase()} rows`} onPick={() => { set({ status: v }); }} />
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
+
+      {o.top.length > 0 && (
+        <section aria-labelledby="ov-top">
+          <h3 id="ov-top">Most flagged</h3>
+          <ol className="top-list">
+            {o.top.map(t => (
+              <li key={t.name}>
+                <Sev s={t.severity} />
+                <button className="link" title={`Search the queue for ${t.name}`} onClick={() => { set({ search: t.name }); }}>{t.name}</button>
+                <span className="muted small num">{plural(t.count, 'row')}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      <section aria-labelledby="ov-cov">
+        <h3 id="ov-cov">Capture coverage</h3>
+        <p className="small">
+          {cov.versions.length > 0 ? `eslogger schema ${cov.versions.map(v => `v${v}`).join(', ')}` : 'No schema version recorded'}
+          {' · '}{cap.model.stats.events.toLocaleString('en-US')} events read
+        </p>
+        {cov.notes.length > 0 ? (
+          <ul className="cov-brief">
+            {cov.notes.map(x => <li key={x.id} className={`lvl-${x.level}`}>{x.title}</li>)}
+          </ul>
+        ) : <p className="muted small">Nothing to flag about the file itself.</p>}
+        <p className="muted small">
+          {warns.length > 0 ? `${plural(warns.length, 'note')} above can hide findings. ` : ''}
+          <button className="link" onClick={() => { openCoverage(); }}>What this capture can and cannot show</button>
+        </p>
+      </section>
+
+      <section aria-labelledby="ov-keys">
+        <h3 id="ov-keys">Keys</h3>
+        <dl className="keys">
+          {TRIAGE_KEYS.map(k => <div key={k.key}><dt><kbd>{k.key}</kbd></dt><dd>{k.what}</dd></div>)}
+        </dl>
+      </section>
     </div>
+  );
+}
+
+/** Opens the capture coverage panel under the session header and brings it into view. */
+function openCoverage(): void {
+  const d = document.getElementById('coverage') as HTMLDetailsElement | null;
+  if (!d) return;
+  d.open = true;
+  d.scrollIntoView?.({ block: 'nearest' });
+  d.querySelector('summary')?.focus();
+}
+
+/** Jump links for a long pane: the three questions in the order the pane answers them. */
+const JUMPS: [string, string][] = [['d-why', 'Why flagged'], ['d-launch', 'Where it came from'], ['d-did', 'What it did'], ['d-actions', 'Verdict']];
+
+function Jumps() {
+  return (
+    <nav className="jumps small" aria-label="Sections">
+      {JUMPS.map(([id, label]) => (
+        <button key={id} className="link" onClick={() => {
+          const el = document.getElementById(id);
+          // The heading takes focus too, so Tab carries on from the section rather than from the link.
+          el?.focus({ preventScroll: true });
+          el?.scrollIntoView?.({ block: 'start' });
+        }}>{label}</button>
+      ))}
+    </nav>
+  );
+}
+
+function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
+  cap: LoadedCapture; p: Process; onSelectProc(id: ProcId): void; noteRef: RefObject<HTMLTextAreaElement | null>;
+}) {
+  const { verdicts } = useSession();
+  const img = latestImage(p);
+  const findings = cap.analysis.findings.get(p.id) ?? [];
+  const item = cap.analysis.queue.find(x => x.procId === p.id);
+  const own = useMemo(() => processTimeline(cap, p.id, false).events, [cap, p.id]);
+  const status = verdicts.get(p.id)?.status ?? 'unreviewed';
+  return (
+    <>
+      <header className="dhead">
+        <h2>{displayName(cap.model, p.id)}</h2>
+        <p className="muted small">
+          {p.ghost ? 'started before the capture' : `pid ${p.pid}`}
+          {!p.ghost && (p.originalPpid ?? p.ppid) !== null ? ` · parent pid ${p.originalPpid ?? p.ppid}` : ''}
+          {img?.signingId ? ` · ${img.signingId}` : ''}
+          {img?.isPlatform ? ' · Apple platform binary' : ''}
+        </p>
+        {img?.path && <p className="dpath mono">{img.path}</p>}
+        <div className="row assess">
+          {item
+            ? <span className="assess-chip">Severity <Sev s={item.severity} full /></span>
+            : <span className="assess-chip muted">Not in the queue</span>}
+          <span className="assess-chip">Verdict <strong className={`st-${status}`}>{VERDICT_LABEL[status]}</strong></span>
+        </div>
+        <Jumps />
+      </header>
+      <Why findings={findings} item={item} />
+      <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
+      <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
+      <Details cap={cap} p={p} own={own} onSelect={onSelectProc} />
+      <DidWhat cap={cap} p={p} onSelect={onSelectProc} />
+      <ContextOnly findings={cap.analysis.contextOnly.get(p.id) ?? []} />
+      <Actions vkey={p.id} p={p} noteRef={noteRef} />
+    </>
   );
 }
 
@@ -378,25 +632,5 @@ export function DetailPane({ selKey, onSelectProc, noteRef }: {
     const q = cap.analysis.queue.find(x => x.key === selKey && x.kind === 'persistence');
     return q ? <PersistenceDetail cap={cap} q={q} onSelect={onSelectProc} noteRef={noteRef} /> : null;
   }
-  const img = latestImage(p);
-  const findings = cap.analysis.findings.get(p.id) ?? [];
-  return (
-    <>
-      <header className="dhead">
-        <h2>{displayName(cap.model, p.id)}</h2>
-        <p className="muted small">
-          {p.ghost ? 'started before the capture' : `pid ${p.pid}`}
-          {img?.signingId ? ` · ${img.signingId}` : ''}
-          {img?.isPlatform ? ' · Apple platform binary' : ''}
-        </p>
-      </header>
-      <Why findings={findings} item={cap.analysis.queue.find(x => x.procId === p.id)} />
-      <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
-      <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
-      <Details p={p} />
-      <DidWhat cap={cap} p={p} onSelect={onSelectProc} />
-      <ContextOnly findings={cap.analysis.contextOnly.get(p.id) ?? []} />
-      <Actions vkey={p.id} p={p} noteRef={noteRef} />
-    </>
-  );
+  return <ProcessDetail key={p.id} cap={cap} p={p} onSelectProc={onSelectProc} noteRef={noteRef} />;
 }

@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { handlesSupported, pickCaptureFiles, sourcedFromDrop } from '../session/capture-files';
 import { Mark, Wordmark } from './Brand';
 import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
@@ -7,7 +7,7 @@ import { StoreErrorBanner } from './StoreErrorBanner';
 import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
-import { captureInfo } from './triage-model';
+import { captureInfo, checkTitles, coverage } from './triage-model';
 
 // The command the capture screen tells the user to run: the events the rules and the tree need.
 const CAPTURE_CMD =
@@ -16,7 +16,7 @@ const CAPTURE_CMD =
 const TABS: { id: View; label: string }[] = [
   { id: 'triage', label: 'Triage' },
   { id: 'tree', label: 'Tree' },
-  { id: 'confirmed', label: 'Confirmed' },
+  { id: 'confirmed', label: 'Suspicious' },
 ];
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
@@ -161,7 +161,7 @@ function SaveInfo({ saver }: { saver: ReturnType<typeof useSaveSession> }) {
         {redacted
           ? 'Save session redacts command-line arguments.'
           : <><span className="warn">Save session includes full command lines, which can hold secrets such as passwords.</span> Redact them on
-            the <button className="link" onClick={() => { setOpen(false); c.setView('confirmed'); }}>Confirmed tab</button>.</>}
+            the <button className="link" onClick={() => { setOpen(false); c.setView('confirmed'); }}>Suspicious tab</button>.</>}
         {' '}<SaveFolderNote s={saver} />
       </span>
     </span>
@@ -206,7 +206,7 @@ function Counts() {
   return (
     <div className="counts" role="group" aria-label="Capture counts">
       <span className="lead">{fmt(c.triage.queue.length)} flagged</span>
-      <span className="lead">{fmt(confirmed)} confirmed</span>
+      <span className="lead">{fmt(confirmed)} suspicious</span>
       <span>{fmt(c.triage.hiddenCount)} routine hidden</span>
       <span>{fmt(c.capture.model.stats.events)} events</span>
       <span>{fmt(c.capture.model.processes.size)} processes</span>
@@ -228,6 +228,45 @@ function CaptureInfo() {
   );
 }
 
+/**
+ * What this capture can and cannot show, closed by default: what is missing from the file, why it matters and which
+ * checks it silences. It never calls a capture complete: the file cannot tell what eslogger was not asked for.
+ */
+function Coverage() {
+  const c = useSession();
+  const cov = useMemo(() => (c.capture ? coverage(c.capture.model) : null), [c.capture]);
+  if (!c.capture || !cov) return null;
+  const warns = cov.notes.filter(x => x.level === 'warn').length;
+  return (
+    <details id="coverage" className={`coverage${warns > 0 ? ' attention' : ''}`}>
+      <summary>
+        Capture coverage
+        <span className="muted"> · {cov.versions.length > 0 ? `schema ${cov.versions.map(v => `v${v}`).join(', ')}` : 'no schema version'}</span>
+        {cov.notes.length > 0 && <span className={warns > 0 ? 'warn' : 'muted'}> · {cov.notes.length} {cov.notes.length === 1 ? 'note' : 'notes'}{warns > 0 ? `, ${warns} that can hide findings` : ''}</span>}
+      </summary>
+      <div className="coverage-body">
+        {cov.notes.length > 0 ? (
+          <ul className="cov-notes">
+            {cov.notes.map(x => (
+              <li key={x.id} className={`lvl-${x.level}`}>
+                <strong>{x.title}</strong>
+                <p>{x.detail}</p>
+                {x.checks.length > 0 && (
+                  <p className="small"><span className="muted">Checks affected: </span>{checkTitles(x.checks).join(', ')}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="small">Every event type the capture command asks for is present, and every line was read.</p>}
+        <p className="muted small">
+          A capture holds only the event types eslogger was asked for, and only while it ran. Nothing here can show that
+          an event did not happen: an empty timeline or a quiet process is the absence of a record, not proof of innocence.
+        </p>
+      </div>
+    </details>
+  );
+}
+
 export function SessionScreen() {
   const c = useSession();
   const session = c.session!;
@@ -237,7 +276,7 @@ export function SessionScreen() {
   const saver = useSaveSession();
   const { save, error: saveError } = saver;
   const bigDrop = !c.capture && c.view !== 'confirmed';
-  // The Confirmed tab imports sessions, so a file dropped there is not taken for a capture: only its own control takes it.
+  // The Suspicious tab imports sessions, so a file dropped there is not taken for a capture: only its own control takes it.
   const takesCaptures = c.view !== 'confirmed';
 
   const hasFiles = (e: DragEvent): boolean => e.dataTransfer.types.includes('Files');
@@ -295,11 +334,11 @@ export function SessionScreen() {
           )}
           <ReloadAll />
           {!bigDrop && <FilePicker label="Add capture files" />}
-          {/* The Confirmed tab has the same download as "Export session", next to its options. */}
+          {/* The Suspicious tab has the same download as "Export session", next to its options. */}
           {c.view !== 'confirmed' && (
             <span className="save-group">
               <button onClick={() => { void save(); }}
-                title="Save this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Confirmed tab.">Save session</button>
+                title="Save this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Suspicious tab.">Save session</button>
               <SaveInfo saver={saver} />
             </span>
           )}
@@ -308,16 +347,28 @@ export function SessionScreen() {
         {saveError && <p role="alert" className="error">{saveError}</p>}
         <Counts />
         <CaptureInfo />
+        <Coverage />
         {!bigDrop && <LoadStatus />}
 
-        <div role="tablist" className="tabs">
+        {/* Tabs behave as tabs: one stop in the tab order (the selected one), arrows, Home and End move between them. */}
+        <div role="tablist" className="tabs" aria-label="Views"
+          onKeyDown={e => {
+            const i = TABS.findIndex(t => t.id === c.view);
+            const to = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i - 1 + TABS.length) % TABS.length
+              : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+            if (to < 0) return;
+            e.preventDefault();
+            c.setView(TABS[to]!.id);
+            document.getElementById(`tab-${TABS[to]!.id}`)?.focus();
+          }}>
           {TABS.map(t => (
-            <button key={t.id} role="tab" aria-selected={c.view === t.id} className={c.view === t.id ? 'on' : ''}
+            <button key={t.id} id={`tab-${t.id}`} role="tab" aria-selected={c.view === t.id} aria-controls="view-panel"
+              tabIndex={c.view === t.id ? 0 : -1} className={c.view === t.id ? 'on' : ''}
               onClick={() => { c.setView(t.id); }}>{t.label}</button>
           ))}
         </div>
 
-        <section role="tabpanel" className={`tabpanel${c.view !== 'confirmed' && !bigDrop ? ' panes' : ''}`}>
+        <section role="tabpanel" id="view-panel" aria-labelledby={`tab-${c.view}`} className={`tabpanel${c.view !== 'confirmed' && !bigDrop ? ' panes' : ''}`}>
           {c.view === 'confirmed' ? <ConfirmedTab /> : bigDrop ? <DropZone over={over} /> : c.view === 'triage' ? <TriageView /> : <TreeView />}
         </section>
       </main>

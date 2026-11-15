@@ -82,11 +82,11 @@ code, pre, .mono { font-family: var(--mono); }
 .num, .counts { font-variant-numeric: tabular-nums; }
 
 /* Controls: one height, near-black primary, quiet secondary. */
-button, select, input[type="text"], input:not([type]) {
+button, select, input[type="text"], input[type="search"], input:not([type]) {
   font: inherit; font-size: 13px; color: inherit; background: var(--sheet); border: 1px solid var(--control);
   border-radius: var(--radius-control); min-height: var(--control-h); padding: 0 12px;
 }
-input[type="text"], input:not([type]) { padding: 0 10px; }
+input[type="text"], input[type="search"], input:not([type]) { padding: 0 10px; }
 input::placeholder { color: var(--faint); }
 select { padding: 0 8px; }
 button { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; transition: background-color .12s, border-color .12s; }
@@ -298,7 +298,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .queue, .detail { border: 1px solid var(--border); border-radius: var(--radius-card); min-width: 0; background: var(--sheet); }
 .queue { display: flex; flex-direction: column; overflow: hidden; }
 .qtools { display: grid; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
-.qtools input[type="text"] { width: 100%; }
+.qtools input[type="text"], .qtools input[type="search"] { width: 100%; }
 .qtools .row { gap: 6px 14px; font-size: 13px; color: var(--muted); }
 .qtools .row label { color: var(--text); }
 .qtools .row[role="group"] label, .qtools .row[role="radiogroup"] label { text-transform: none; }
@@ -306,7 +306,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .qrow { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; padding: 0 12px; cursor: pointer;
   border-bottom: 1px solid var(--rule); font-size: 13px; overflow: hidden; }
 .qrow:hover { background: var(--raised); }
-.qrow.sel { background: var(--active); box-shadow: inset 2px 0 0 var(--accent); }
+.qrow.sel { background: var(--accent-pale); box-shadow: inset 4px 0 0 var(--accent); }
 .qrow.routine { opacity: .5; }
 .qrow .badge { width: 40px; }
 .status { flex: none; width: 14px; text-align: center; font-size: 12px; }
@@ -697,3 +697,116 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
   .gtable td:first-child { width: 100%; font-weight: 600; }
   .gtoc ol { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---- Investigation workspace ------------------------------------------------------------------------------------ */
+
+/* Queue tools: each filter group carries its own name, so severity (the rules) and verdict (you) never blur. */
+.search-field { position: relative; }
+.search-field input { padding-right: 34px; }
+.search-key { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; opacity: .7; }
+.search-field input:focus + .search-key, .search-field input:not(:placeholder-shown) + .search-key { display: none; }
+.filter-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; }
+.filter-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.qlist-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.qscroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.qpid { flex: none; margin-left: auto; font: 11px var(--mono); font-variant-numeric: tabular-nums; }
+.qfoot .qpos { color: var(--text); font-weight: 600; }
+.undo-line { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 0 12px; border-top: 1px solid var(--border); }
+/* Empty, it collapses but stays in the page (not display: none), so what is put in it later is announced. */
+.undo-line:empty { border-top: 0; }
+.undo-line:not(:empty) { min-height: 32px; background: var(--sheet); }
+.undo-line button.link { font-size: 12px; flex: none; }
+
+/* The selected row has to read at a glance in a list of thousands, and in forced colours too, where shadows vanish. */
+@media (forced-colors: active) {
+  .qrow.sel, .trow.sel { outline: 2px solid Highlight; outline-offset: -2px; }
+  .trow.lin-anc, .trow.lin-desc { border-left: 2px solid CanvasText; }
+}
+
+/* Detail header: what the process is, then the two separate judgements, side by side but never merged. */
+.dpath { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.assess { gap: 8px; margin-top: 10px; }
+.assess-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-control); }
+.assess-chip strong { font-size: 12px; color: var(--text); padding-right: 4px; }
+.assess-chip strong.st-confirmed { color: var(--danger); }
+.jumps { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--rule); }
+.jumps button.link { font-size: 12px; font-weight: 400; color: var(--muted); }
+.jumps button.link:hover { color: var(--text); }
+.why.sev-border-high { box-shadow: inset 3px 0 0 var(--high-mark); }
+.why.sev-border-med { box-shadow: inset 3px 0 0 var(--med-mark); }
+.why.sev-border-low { box-shadow: inset 3px 0 0 var(--low-mark); }
+
+/* Overview (nothing selected). */
+.overview { max-width: 620px; gap: 18px; }
+.overview h3 { margin: 0 0 8px; font-size: 13px; }
+.overview h3 .small { font-weight: 400; margin-left: 6px; }
+.ov-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+@container (max-width: 460px) { .ov-grid { grid-template-columns: minmax(0, 1fr); } }
+.dist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+button.dist-row { width: 100%; display: grid; grid-template-columns: 96px minmax(0, 1fr) 40px; align-items: center; gap: 10px;
+  min-height: 28px; padding: 0 6px; border: 0; border-radius: var(--radius-control); background: none; font-size: 13px; text-align: left; }
+button.dist-row:hover { background: var(--raised); }
+.dist-label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.dist-bar { height: 8px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.dist-bar > span { display: block; height: 100%; }
+.dist-row .num { text-align: right; }
+.seg.high { background: var(--high-mark); } .seg.med { background: var(--med-mark); } .seg.low { background: var(--low-mark); }
+/* Verdicts are drawn in the product's own greens and greys, never in the severity hues. */
+.vseg.unreviewed { background: var(--control); } .vseg.confirmed { background: var(--danger); } .vseg.benign { background: var(--accent); }
+.top-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.top-list li { display: flex; align-items: center; gap: 10px; }
+.top-list .badge { width: 40px; }
+.cov-brief { margin: 4px 0 6px; padding-left: 18px; display: grid; gap: 2px; font-size: 13px; }
+.cov-brief li.lvl-warn::marker { color: var(--med-mark); }
+.cov-brief li.lvl-info { color: var(--muted); }
+
+/* Capture coverage, under the counts: closed by default, amber when something in it can hide findings. */
+.coverage { margin-top: 6px; font-size: 12px; }
+.coverage > summary { cursor: pointer; width: fit-content; padding: 2px 0; color: var(--text); }
+.coverage.attention > summary::marker { color: var(--med-mark); }
+.coverage-body { margin: 6px 0 4px; padding: 12px 14px; background: var(--raised); border-radius: var(--radius-card); max-width: 860px; }
+.coverage-body p { margin: 4px 0 0; }
+.cov-notes { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 10px; }
+.cov-notes li { display: block; padding-left: 12px; border-left: 3px solid var(--control); font-size: 13px; }
+.cov-notes li.lvl-warn { border-left-color: var(--med-mark); }
+.cov-notes p { margin: 2px 0 0; max-width: 80ch; }
+
+/* Timeline: time, event type, then what it touched. A finding that cites an event marks its row. */
+.tl-tools { margin-top: 14px; gap: 6px 16px; }
+.tl-tools h4 { margin: 0; }
+.tl-meta { margin: 4px 0 6px; }
+.tl { list-style: none; margin: 0 0 8px; padding: 0; border-left: 2px solid var(--root-line); }
+.tl-row { position: relative; display: grid; grid-template-columns: 92px 112px minmax(0, 1fr); gap: 8px; align-items: baseline;
+  padding: 4px 0 4px 12px; border-bottom: 1px solid var(--rule); font-size: 12px; }
+.tl-row::before { content: ''; position: absolute; left: -5px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--root-line); }
+.tl-row.k-exec::before, .tl-row.k-fork::before, .tl-row.k-spawn::before { background: var(--limb); }
+.tl-row.k-btm_add::before { background: var(--node); }
+.tl-row.flagged.sev-border-high::before { background: var(--high-mark); }
+.tl-row.flagged.sev-border-med::before { background: var(--med-mark); }
+.tl-row.flagged.sev-border-low::before { background: var(--low-mark); }
+.tl-row.flagged { background: color-mix(in srgb, var(--raised) 70%, transparent); }
+.tl-t { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tl-k { color: var(--muted); font: 11px var(--mono); overflow-wrap: anywhere; }
+.tl-body { min-width: 0; display: grid; gap: 2px; }
+.tl-who { font-size: 12px; }
+.tl-why { display: grid; gap: 2px; margin-top: 2px; }
+.tl-why .row { gap: 6px; }
+@container (max-width: 520px) {
+  .tl-row { display: block; }
+  .tl-t::after { content: ' · '; }
+  .tl-t, .tl-k { display: inline; }
+}
+
+/* Tree: the selected process's lineage stands out from the rest: ancestors in the root colour, what it started tinted. */
+.trow.lin-anc { background: color-mix(in srgb, var(--accent) 13%, var(--sheet)); }
+.trow.lin-anc .tname { font-weight: 600; }
+.trow.lin-desc { background: color-mix(in srgb, var(--node) 12%, var(--sheet)); }
+.trow.fold.lin-desc { background: color-mix(in srgb, var(--node) 9%, var(--raised)); }
+.trow.sel { background: var(--accent-pale); box-shadow: inset 4px 0 0 var(--accent); }
+.lin-key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.lin-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--border); }
+.lin-swatch.anc { background: color-mix(in srgb, var(--accent) 18%, var(--sheet)); }
+.lin-swatch.desc { background: color-mix(in srgb, var(--node) 22%, var(--sheet)); margin-left: 6px; }
+.origin-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--accent-pale); border-bottom: 1px solid var(--border); }
+.origin-bar button.link { flex: none; font-size: 12px; }

@@ -30,7 +30,7 @@ export interface Image {
   isPlatform: boolean; csFlags: number;
   args: string[] | null; cwd: string | null; env: string[] | null;   // null when not from an exec event
   stdinIsPipe: boolean | null; script: string | null;
-  time: string | null; seq: number;
+  time: string | null; seq: number;   // for an inherited image: the fork event's time and seq
   inherited: boolean;   // true for the copy a fork child starts with; rules skip these
 }
 export interface FileOp { kind: 'create' | 'rename' | 'unlink' | 'write' | 'setextattr';
@@ -42,6 +42,8 @@ export interface Process {
   parentToken: TokenKey | null; responsibleToken: TokenKey | null;   // raw, latest seen
   originalParent: ProcId | null; currentParent: ProcId | null; responsible: ProcId | null; // resolved by resolveRelations
   startTime: string | null; exitTime: string | null; firstSeq: number; fileOps: FileOp[];
+  /** Sequence number of the exit event, when one was captured. */
+  exitSeq?: number;
 }
 export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath: string | null;
   executablePath: string | null; appPath: string | null; time: string; seq: number;
@@ -53,6 +55,8 @@ export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath
 /** `lines` and `badLines` count records, not lines, when `layout` is 'objects' (a pretty-printed export). */
 export interface CaptureStats { lines: number; events: number; badLines: number; layout?: 'objects';
   otherEvents: Record<string, number>; versions: number[];
+  /** Modelled events by eslogger event type (`exec`, `btm_launch_item_add`…), so a missing type can be told apart from an empty one. */
+  kinds?: Record<string, number>;
   firstSeq: number | null; firstTime: string | null; lastTime: string | null }
 export interface CaptureModel { processes: Map<ProcId, Process>; tokenIndex: Map<TokenKey, ProcId>;
   persistence: PersistenceItem[]; stats: CaptureStats }

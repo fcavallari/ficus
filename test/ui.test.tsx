@@ -177,7 +177,7 @@ test('loads a capture: header counts, tabs and placeholders', async () => {
   await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   await headerShows('111 events');
   const group = screen.getByRole('group', { name: 'Capture counts' });
-  for (const re of [/^\d+ processes$/, /^\d+ flagged$/, /^\d+ confirmed$/, /^\d+ routine hidden$/]) {
+  for (const re of [/^\d+ processes$/, /^\d+ flagged$/, /^\d+ suspicious$/, /^\d+ routine hidden$/]) {
     expect(within(group).getByText(re)).toBeInTheDocument();
   }
   const queue = within(await screen.findByRole('listbox', { name: 'Flagged processes' }));
@@ -186,8 +186,8 @@ test('loads a capture: header counts, tabs and placeholders', async () => {
   else expect(queue.getAllByRole('option')).toHaveLength(flagged);
   await user.click(screen.getByRole('tab', { name: 'Tree' }));
   expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
-  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
-  expect(screen.getByText(/nothing confirmed/i)).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: 'Suspicious' }));
+  expect(screen.getByText(/nothing marked suspicious/i)).toBeInTheDocument();
 });
 
 test('progress bar, then Analysing… once all bytes are read and until the capture arrives', async () => {
@@ -299,7 +299,7 @@ test('beside Save session, a warning says the file holds command lines until red
   render(<App />);
   await newSession('lab');
   expect(await screen.findByText(/Save session includes full command lines, which can hold secrets/)).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Confirmed tab' }));
+  await user.click(screen.getByRole('button', { name: 'Suspicious tab' }));
   expect(screen.queryByText(/Save session includes/)).not.toBeInTheDocument();
   await user.click(screen.getByLabelText(/redact command-line arguments/i));
   await user.click(screen.getByRole('tab', { name: 'Triage' }));
@@ -323,7 +323,7 @@ test('a file dropped on the page is a capture on Triage, and is not taken for on
   await newSession('lab');
   const heading = await screen.findByRole('heading', { name: 'lab' });
   const drag = () => ({ dataTransfer: { types: ['Files'], files: [dropped('synthetic-lab-2.jsonl')], dropEffect: 'copy' } });
-  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  await user.click(screen.getByRole('tab', { name: 'Suspicious' }));
   fireEvent.dragEnter(heading, drag());
   fireEvent.dragOver(heading, drag());
   expect(document.querySelector('.sheet.over')).toBeNull();
@@ -381,8 +381,8 @@ test('Confirmed tab lists confirmed verdicts of every capture, labelled; export 
 
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
-  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
-  const list = within(await screen.findByRole('list', { name: 'Confirmed processes' }));
+  await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
+  const list = within(await screen.findByRole('list', { name: 'Suspicious processes' }));
   expect(list.getAllByRole('listitem')).toHaveLength(2);
   expect(list.getByText('dropper from phishing')).toBeInTheDocument();
   expect(list.getByText('same dropper again')).toBeInTheDocument();
@@ -418,7 +418,7 @@ test('the export says it carries command lines (which can hold secrets), and "Re
   await store.setVerdict({ ...v, snapshot: { ...v.snapshot, args: ['dscl', '.', '-authonly', 'labuser', 'hunter2'] } });
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
-  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+  await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
   expect(screen.getByText(/full command line/i)).toHaveTextContent(/secrets such as passwords/);
   const redact = screen.getByLabelText(/redact command-line arguments/i);
   expect(redact).not.toBeChecked();
@@ -440,7 +440,7 @@ test('the export says it carries command lines (which can hold secrets), and "Re
 test('import shows the error for a file that is not a session export', async () => {
   render(<App />);
   await newSession('lab');
-  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+  await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
   await user.upload(screen.getByLabelText(/import session/i), new File(['{"nope":1}'], 'x.json'));
   expect(await screen.findByText(/not a Gameleira session export/)).toBeInTheDocument();
 });
@@ -949,7 +949,7 @@ test('before a row is picked, the pane counts the unreviewed rows by severity', 
   expect(screen.getByText(`of ${n} flagged rows are unreviewed`, { exact: false })).toBeInTheDocument();
   const high = cap.analysis.queue.filter(q => q.severity === 'high').length;
   const split = document.querySelector('.sev-split')!;
-  expect(split.textContent).toContain(`high ${high}`);
+  expect(split.textContent).toContain(`High ${high}`);
 }, 60_000);
 
 test('confirm via keyboard persists verdict', async () => {
@@ -996,7 +996,7 @@ test('detail sections: why, launched by, details, what it did, actions', async (
     expect(screen.getByRole('heading', { name: h })).toBeInTheDocument();
   }
   expect(screen.getByText('com.apple.osascript')).toBeInTheDocument();
-  for (const b of [/confirm suspicious/i, /benign/i, /treat as routine/i, /show in tree/i]) {
+  for (const b of [/mark suspicious/i, /benign/i, /treat as routine/i, /show in tree/i]) {
     expect(screen.getByRole('button', { name: b })).toBeInTheDocument();
   }
   expect(screen.getByLabelText(/note/i)).toBeInTheDocument();
@@ -1031,7 +1031,7 @@ test('keys: j/k move, b marks benign, t shows in tree, n focuses the note; typin
   expect(screen.getByLabelText(/note/i)).toHaveValue('');   // the letter n was not typed into it
 
   setVerdict.mockClear();
-  await user.type(screen.getByRole('textbox', { name: /search/i }), 'cbn');
+  await user.type(screen.getByRole('searchbox', { name: /search/i }), 'cbn');
   expect(setVerdict).not.toHaveBeenCalled();
 }, 60_000);
 
@@ -1041,7 +1041,7 @@ test('keys still work after clicking a filter (radios and checkboxes keep focus)
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   await user.keyboard('j');
   expect(sel()).toBe(0);
-  await user.click(screen.getByRole('checkbox', { name: 'low' }));
+  await user.click(screen.getByRole('checkbox', { name: 'Low' }));
   await user.keyboard('j');
   expect(sel()).toBe(1);
 }, 60_000);
@@ -1078,7 +1078,7 @@ test('confirming under the unreviewed filter keeps your place: j goes to the row
   const after = queueState();
   expect(after.names).toHaveLength(before.names.length - 1);   // the confirmed row left the list
   expect(after.sel).toBe(-1);
-  expect(screen.getByText('Confirmed suspicious')).toBeInTheDocument();   // …and the pane still shows the verdict you just set
+  expect(screen.getAllByText('Suspicious', { selector: 'strong' }).length).toBeGreaterThan(0);   // …and the pane still shows the verdict you just set
   await user.keyboard('j');
   expect(queueState().sel).toBe(2);
   expect(queueState().names[2]).toBe(before.names[3]);   // the row that took its place
@@ -1301,12 +1301,12 @@ test('the export choices survive a trip to another tab, and the tab says how man
   await store.setVerdict(seedVerdict(s.id, 'fpA', 'p2', 'confirmed', 'b'));
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
-  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
-  expect(screen.getByText(/Details for 2 confirmed processes are left out because their captures aren.t loaded; re-add them to include/)).toBeInTheDocument();
+  await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
+  expect(screen.getByText(/Details for 2 suspicious processes are left out because their captures aren.t loaded; re-add them to include/)).toBeInTheDocument();
   await user.click(screen.getByLabelText(/redact command-line arguments/i));
   await user.click(screen.getByLabelText(/include environment variables/i));
   await user.click(screen.getByRole('tab', { name: 'Triage' }));
-  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  await user.click(screen.getByRole('tab', { name: 'Suspicious' }));
   expect(screen.getByLabelText(/redact command-line arguments/i)).toBeChecked();
   expect(screen.getByLabelText(/include environment variables/i)).toBeChecked();
 });
@@ -1319,7 +1319,7 @@ async function confirmedTab(...keys: string[]): Promise<void> {
   for (const k of keys) await store.setVerdict(seedVerdict(s.id, 'fpA', k, 'confirmed', `note ${k}`));
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
-  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+  await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
 }
 
 test('confirmed launch items are never counted as left out: they have no process details to re-add a capture for', async () => {
@@ -1331,13 +1331,13 @@ test('confirmed launch items are never counted as left out: they have no process
 
 test('next to a confirmed launch item, only the confirmed process is counted as left out', async () => {
   await confirmedTab('i:btm:12', '700:1');
-  expect(await screen.findByText(/Details for 1 confirmed process is left out because its capture isn.t loaded; re-add it to include/)).toBeInTheDocument();
+  expect(await screen.findByText(/Details for 1 suspicious process is left out because its capture isn.t loaded; re-add it to include/)).toBeInTheDocument();
   expect(screen.getByText(/Launch items are exported from their snapshot/)).toBeInTheDocument();
 });
 
 test('a session with no confirmed launch item does not mention them', async () => {
   await confirmedTab('700:1');
-  expect(await screen.findByText(/Details for 1 confirmed process is left out/)).toBeInTheDocument();
+  expect(await screen.findByText(/Details for 1 suspicious process is left out/)).toBeInTheDocument();
   expect(screen.queryByText(/Launch items are exported/)).not.toBeInTheDocument();
 });
 
@@ -1345,7 +1345,7 @@ test('no "left out" notice when every confirmed process has its capture loaded',
   await openWith(await openStore());
   await drop('synthetic-lab.jsonl');
   await act(async () => { await ctx.setVerdict(firstProc(), 'confirmed'); });
-  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  await user.click(screen.getByRole('tab', { name: 'Suspicious' }));
   expect(screen.queryByText(/are left out because/)).not.toBeInTheDocument();
 });
 
@@ -1427,21 +1427,21 @@ test('filters: search, status and severity', async () => {
   renderTriage(await loadLab());
   const count = async () => (await screen.findAllByRole('option')).length;
   const all = await count();
-  await user.type(screen.getByRole('textbox', { name: /search/i }), 'DITTO');
+  await user.type(screen.getByRole('searchbox', { name: /search/i }), 'DITTO');
   expect(await count()).toBe(1);
-  await user.clear(screen.getByRole('textbox', { name: /search/i }));
-  await user.type(screen.getByRole('textbox', { name: /search/i }), 'com.apple.osascript');   // signing ID
+  await user.clear(screen.getByRole('searchbox', { name: /search/i }));
+  await user.type(screen.getByRole('searchbox', { name: /search/i }), 'com.apple.osascript');   // signing ID
   expect(await count()).toBe(1);
-  await user.clear(screen.getByRole('textbox', { name: /search/i }));
+  await user.clear(screen.getByRole('searchbox', { name: /search/i }));
   expect(await count()).toBe(all);
 
-  await user.click(screen.getByRole('checkbox', { name: 'high' }));   // untick high
+  await user.click(screen.getByRole('checkbox', { name: 'High' }));   // untick high
   expect((await screen.findAllByRole('option')).some(r => within(r).queryByText('high'))).toBe(false);
-  await user.click(screen.getByRole('checkbox', { name: 'high' }));
+  await user.click(screen.getByRole('checkbox', { name: 'High' }));
 
   await user.click(screen.getByText(/display dialog/));
   await user.keyboard('c');
-  await user.click(screen.getByRole('radio', { name: /^confirmed$/i }));
+  await user.click(screen.getByRole('radio', { name: /^suspicious$/i }));
   expect(await count()).toBe(1);
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   expect(await count()).toBe(all - 1);
@@ -1518,8 +1518,8 @@ test('note is saved on blur, only when it changed', async () => {
 test('pressing the verdict a process already has takes it back to unreviewed (button and key)', async () => {
   const { setVerdict } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
-  const confirm = screen.getByRole('button', { name: /confirm suspicious/i });
-  const benign = screen.getByRole('button', { name: /^benign/i });
+  const confirm = screen.getByRole('button', { name: /mark suspicious/i });
+  const benign = screen.getByRole('button', { name: /^mark benign/i });
   expect(confirm).toHaveAttribute('aria-pressed', 'false');
   await user.click(confirm);
   expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'confirmed', undefined);
@@ -1637,6 +1637,44 @@ test('Show in tree from the triage screen (key t) lands on the process', async (
   expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('osascript');
   await user.click(screen.getByRole('tab', { name: 'Triage' }));
   expect(await screen.findByRole('listbox', { name: 'Flagged processes' })).toBeInTheDocument();
+}, 60_000);
+
+test('Show in tree from Triage lights the lineage, and Back to Triage returns to the row it came from', async () => {
+  const cap = await treeSession('triage');
+  const osa = procByPid(cap.model, 7006);
+  await user.click(await screen.findByText(/display dialog/));
+  await user.keyboard('t');
+  const sel = await screen.findByRole('treeitem', { selected: true });
+  expect(sel).toHaveTextContent('osascript');
+  expect(document.activeElement).toBe(screen.getByRole('tree', { name: 'Process tree' }));   // arrows work at once
+  expect(parentRow(sel)).toHaveClass('lin-anc');
+  expect(screen.getByText(/opened from/)).toHaveTextContent('osascript');
+  // Wander off in the tree, then come back: the triage row is selected again.
+  await user.click(parentRow(sel)!);
+  expect(screen.getByText(/you have moved on in the tree/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: /back to triage/i }));
+  const list = await screen.findByRole('listbox', { name: 'Flagged processes' });
+  expect(within(list).getByRole('option', { selected: true })).toHaveTextContent('osascript');
+  expect(ctx.selected).toBe(osa.id);
+  expect(ctx.triageOrigin).toBeNull();
+}, 60_000);
+
+test('u undoes the last verdict: back to what it was before, with its row selected again', async () => {
+  const cap = await treeSession('triage');
+  const osa = procByPid(cap.model, 7006);
+  await user.click(await screen.findByText(/display dialog/));
+  await user.keyboard('c');
+  await waitFor(() => { expect(ctx.verdicts.get(osa.id)?.status).toBe('confirmed'); });
+  await user.keyboard('b');   // suspicious -> benign: undo must go back to suspicious, not to unreviewed
+  await waitFor(() => { expect(ctx.verdicts.get(osa.id)?.status).toBe('benign'); });
+  expect(screen.getByRole('status', { name: '' })).toHaveTextContent(/Suspicious → Benign/);
+  const queueRows = within(screen.getByRole('listbox', { name: 'Flagged processes' })).getAllByRole('option');
+  await user.click(queueRows.find(r => !r.id.includes(osa.id))!);   // move on before undoing
+  expect(ctx.selected).not.toBe(osa.id);
+  await user.keyboard('u');
+  await waitFor(() => { expect(ctx.verdicts.get(osa.id)?.status).toBe('confirmed'); });
+  expect(ctx.selected).toBe(osa.id);
+  expect(ctx.lastVerdict).toBeNull();
 }, 60_000);
 
 test('Show in tree on a ghost parent keeps it visible with its pre-capture label', async () => {
@@ -1811,7 +1849,7 @@ test('flag badges show the highest severity, status icons follow verdicts, arrow
   await user.click(item);
   expect(ctx.selected).toBe(osa.id);
   await act(async () => { await ctx.setVerdict(osa.id, 'confirmed'); });
-  expect(within(screen.getByRole('treeitem', { selected: true })).getByLabelText('confirmed')).toBeInTheDocument();
+  expect(within(screen.getByRole('treeitem', { selected: true })).getByText('Verdict: Suspicious')).toBeInTheDocument();
   await user.keyboard('{ArrowUp}');
   expect(screen.getByRole('treeitem', { selected: true })).not.toHaveTextContent('osascript');
 }, 60_000);
@@ -1830,14 +1868,14 @@ test('triage filters and search survive a trip to another tab', async () => {
   await newSession('lab');
   await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   await screen.findByRole('listbox', { name: 'Flagged processes' });
-  await user.type(screen.getByRole('textbox', { name: /search/i }), 'curl');
-  await user.click(screen.getByRole('checkbox', { name: 'low' }));
+  await user.type(screen.getByRole('searchbox', { name: /search/i }), 'curl');
+  await user.click(screen.getByRole('checkbox', { name: 'Low' }));
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   await user.click(screen.getByRole('tab', { name: 'Tree' }));
   expect(await screen.findByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
   await user.click(screen.getByRole('tab', { name: 'Triage' }));
-  expect(screen.getByRole('textbox', { name: /search/i })).toHaveValue('curl');
-  expect(screen.getByRole('checkbox', { name: 'low' })).not.toBeChecked();
+  expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue('curl');
+  expect(screen.getByRole('checkbox', { name: 'Low' })).not.toBeChecked();
   expect(screen.getByRole('radio', { name: /^unreviewed$/i })).toBeChecked();
 });
 

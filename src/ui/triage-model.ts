@@ -1,10 +1,10 @@
 import type { LoadedCapture } from '../ingest/load';
 import { displayName } from '../model/relations';
-import type { CaptureStats, Process } from '../model/types';
+import type { CaptureModel, CaptureStats, Process } from '../model/types';
 import { basename } from '../model/util';
 import type { QueueItem } from '../rules/engine';
-import type { Severity } from '../rules/rules';
-import type { Status } from '../session/store';
+import { RULES, SEVERITY_RANK, type Severity } from '../rules/rules';
+import type { Status, Verdict } from '../session/store';
 
 export interface TriageFilters {
   status: 'all' | Status;
@@ -22,15 +22,25 @@ export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;
 /** Pressing the verdict a queue item already has takes it back to unreviewed (the note is kept). */
 export const toggleStatus = (current: Status, pressed: 'confirmed' | 'benign'): Status => (current === pressed ? 'unreviewed' : pressed);
 
+/**
+ * Two different questions, kept apart in every label. Severity is what the rules think of the evidence (set by the
+ * capture); the verdict is what the researcher decided (set by you). The stored values stay as they always were
+ * (`med`, `confirmed`), so saved sessions and exports read the same; only the words on screen are these.
+ */
+export const SEVERITY_LABEL: Record<Severity, string> = { high: 'High', med: 'Medium', low: 'Low' };
+export const VERDICT_LABEL: Record<Status, string> = { unreviewed: 'Unreviewed', confirmed: 'Suspicious', benign: 'Benign' };
+
 /** The Triage shortcuts: the key handler and the legend in the empty detail pane both read this table. */
-export type TriageAction = 'next' | 'prev' | 'confirm' | 'benign' | 'note' | 'tree';
+export type TriageAction = 'next' | 'prev' | 'confirm' | 'benign' | 'note' | 'tree' | 'undo' | 'search';
 export const TRIAGE_KEYS: { key: string; also?: string; action: TriageAction; what: string }[] = [
   { key: 'j', also: 'ArrowDown', action: 'next', what: 'next row' },
   { key: 'k', also: 'ArrowUp', action: 'prev', what: 'previous row' },
-  { key: 'c', action: 'confirm', what: 'confirm suspicious' },
-  { key: 'b', action: 'benign', what: 'mark benign' },
+  { key: 'c', action: 'confirm', what: 'verdict: suspicious' },
+  { key: 'b', action: 'benign', what: 'verdict: benign' },
+  { key: 'u', action: 'undo', what: 'undo the last verdict' },
   { key: 'n', action: 'note', what: 'write a note' },
   { key: 't', action: 'tree', what: 'show in the tree' },
+  { key: '/', action: 'search', what: 'search the queue' },
 ];
 export const triageAction = (key: string): TriageAction | undefined => TRIAGE_KEYS.find(k => k.key === key || k.also === key)?.action;
 
@@ -84,6 +94,12 @@ export function haystack(cap: LoadedCapture, q: QueueItem): string {
 export const fmtTime = (t: string | null): string =>
   t ? t.replace('T', ' ').replace(/(\.\d{3})\d*Z$/, '$1Z') : 'n/a';
 
+/** `2026-11-12T16:43:52.123456789Z` → `16:43:52.123`: the clock part, for a list whose date is shown once above it. */
+export const fmtClock = (t: string | null): string => {
+  const m = t ? /T(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)/.exec(t) : null;
+  return m ? m[1]! : (t ?? '');
+};
+
 /** Command line for display: elements with spaces (or empty ones) are quoted so the boundaries stay visible. */
 export const fmtArgs = (args: string[]): string =>
   args.map(a => (a === '' || /\s/.test(a) ? `"${a}"` : a)).join(' ');
@@ -110,3 +126,151 @@ export function captureInfo(stats: CaptureStats): { line: string | null; older: 
   if (versions.length > 0) parts.push(`schema ${versions.map(v => `v${v}`).join(', ')}`);
   return { line: parts.length > 0 ? parts.join(' · ') : null, older: versions.length > 0 && versions.every(v => v < MODERN_SCHEMA) };
 }
+
+// --- the overview shown before a row is picked ------------------------------------------------------------------
+
+export interface Overview {
+  /** Every row of the queue the filters start from (routine-hidden rows left out), and how many of those are still open. */
+  bySeverity: Record<Severity, { total: number; open: number }>;
+  byVerdict: Record<Status, number>;
+  /** Programs with the most queued rows: name, rows, the highest severity among them. */
+  top: { name: string; count: number; severity: Severity }[];
+}
+
+const TOP_PROGRAMS = 5;
+
+export function overview(cap: LoadedCapture, queue: QueueItem[], verdicts: Map<string, Verdict>): Overview {
+  const bySeverity: Overview['bySeverity'] = { high: { total: 0, open: 0 }, med: { total: 0, open: 0 }, low: { total: 0, open: 0 } };
+  const byVerdict: Overview['byVerdict'] = { unreviewed: 0, confirmed: 0, benign: 0 };
+  const groups = new Map<string, { count: number; severity: Severity }>();
+  for (const q of queue) {
+    const st = verdicts.get(verdictKey(q))?.status ?? 'unreviewed';
+    bySeverity[q.severity].total++;
+    if (st === 'unreviewed') bySeverity[q.severity].open++;
+    byVerdict[st]++;
+    const name = itemName(cap, q);
+    const g = groups.get(name);
+    if (!g) groups.set(name, { count: 1, severity: q.severity });
+    else {
+      g.count++;
+      if (SEVERITY_RANK[q.severity] > SEVERITY_RANK[g.severity]) g.severity = q.severity;
+    }
+  }
+  const top = [...groups].map(([name, g]) => ({ name, ...g }))
+    .sort((a, b) => b.count - a.count || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || (a.name < b.name ? -1 : 1))
+    .slice(0, TOP_PROGRAMS);
+  return { bySeverity, byVerdict, top };
+}
+
+// --- capture coverage -------------------------------------------------------------------------------------------
+
+/**
+ * What a capture can and cannot show. Every note is read off the capture itself (counts of what is there or missing);
+ * none says the capture is complete, because that cannot be known from the file: eslogger records only the event types
+ * it was asked for, only while it ran.
+ */
+export interface CoverageNote { id: string; level: 'warn' | 'info'; title: string; detail: string; checks: string[] }
+
+/**
+ * The event types the capture command subscribes to, what only that type gives the viewer, and the checks that cannot
+ * fire without it. Programs and signatures are not on the list: every event carries its process's executable and
+ * signature, so they are known without exec events; command lines, working directories and script paths are not.
+ */
+const ARG_CHECKS = ['fake-prompt', 'osascript-script', 'keychain-access', 'security-setting-change', 'dscl-authonly', 'launchctl-load',
+  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'download', 'archive-staging', 'recon'];
+const EXPECTED: { type: string; gives: string; checks: string[]; level?: 'warn' | 'info' }[] = [
+  { type: 'exec', gives: 'command lines, working directories or script paths (programs and signatures still come from every event\'s process, so the location and signature checks can fire)',
+    checks: [...ARG_CHECKS, 'odd-location-exec'] },
+  { type: 'fork', gives: 'which process instance forked each child, or when. Each process is still tied to its parent through its own parent pid and token, which can point at the wrong process when a pid was reused, and a child that ran nothing of its own may be missing',
+    checks: [], level: 'warn' },
+  { type: 'exit', gives: 'when processes ended', checks: [] },
+  { type: 'create', gives: 'files written', checks: ['persistence-plist', 'download'] },
+  { type: 'rename', gives: 'files moved into place', checks: ['persistence-plist'] },
+  { type: 'unlink', gives: 'files deleted', checks: [] },
+  { type: 'setextattr', gives: 'extended attributes set on files', checks: [] },
+  { type: 'btm_launch_item_add', gives: 'launch items, login items, agents and daemons registered', checks: ['persistence-item', 'persistence-plist'] },
+  { type: 'btm_launch_item_remove', gives: 'launch items removed', checks: [] },
+];
+
+const ruleTitle = (id: string): string => RULES.find(r => r.id === id)?.title ?? id;
+const n = (x: number): string => x.toLocaleString('en-US');
+
+export function coverage(m: CaptureModel): { versions: number[]; notes: CoverageNote[] } {
+  const stats = m.stats;
+  const notes: CoverageNote[] = [];
+  const versions = stats.versions.filter(v => v > 0);
+
+  // exec events without file-descriptor data: the piped-shell checks cannot tell a pipe from a file there.
+  let execs = 0;
+  let noFds = 0;
+  let missedExec = 0;
+  let ghosts = 0;
+  for (const p of m.processes.values()) {
+    if (p.ghost) ghosts++;
+    for (const img of p.images) {
+      if (img.inherited) continue;
+      if (img.args === null) missedExec++;
+      else { execs++; if (img.stdinIsPipe === null) noFds++; }
+    }
+  }
+  if (noFds > 0) {
+    const all = noFds === execs;
+    notes.push({
+      id: 'stdin', level: 'warn', title: `${all ? 'No' : `${n(noFds)} of ${n(execs)}`} exec events carry file-descriptor data`,
+      detail: `${versions.length > 0 && versions.every(v => v < MODERN_SCHEMA) ? `eslogger schema ${versions.map(v => `v${v}`).join(', ')} predates v${MODERN_SCHEMA}, the first with an exec event's open file descriptors. ` : ''}Without them a shell reading from a pipe looks the same as one reading a file, so these checks cannot fire on ${all ? 'any exec' : 'those execs'}.`,
+      checks: ['shell-from-pipe', 'osascript-script'],
+    });
+  } else if (execs > 0 && versions.length > 0 && versions.every(v => v < MODERN_SCHEMA)) {
+    // The header flags the old schema by its number; the data itself says whether the piped-shell checks lost anything.
+    notes.push({
+      id: 'stdin-present', level: 'info', title: `Schema ${versions.map(v => `v${v}`).join(', ')}, yet every exec event carries file-descriptor data`,
+      detail: 'The schema number predates v11, but this file (a Mac Monitor trace, for example) records each exec\'s open file descriptors, so the piped-shell checks can run on it.',
+      checks: [],
+    });
+  }
+  if (stats.kinds) {
+    for (const e of EXPECTED) {
+      if ((stats.kinds[e.type] ?? 0) > 0) continue;
+      notes.push({
+        id: `none-${e.type}`, level: e.level ?? (e.checks.length > 0 ? 'warn' : 'info'),
+        title: `No ${e.type} events`,
+        detail: `This capture has none, so it cannot show ${e.gives}. Either none happened while it ran, or eslogger was not subscribed to ${e.type}; the file cannot say which.`,
+        checks: e.checks,
+      });
+    }
+  }
+  if (missedExec > 0) {
+    notes.push({
+      id: 'missed-exec', level: 'info', title: `${n(missedExec)} program ${missedExec === 1 ? 'change' : 'changes'} without an exec event`,
+      detail: 'A process was seen running a new program, but the exec that started it is not in the capture (it happened before the capture began, or was dropped). Its arguments and working directory are unknown, and the checks that read a command line skip it.',
+      checks: [],
+    });
+  }
+  if (ghosts > 0) {
+    notes.push({
+      id: 'ghosts', level: 'info', title: `${n(ghosts)} ${ghosts === 1 ? 'process' : 'processes'} known only by pid`,
+      detail: 'They started before the capture and emitted nothing themselves; they appear as parents of processes that did. Their program, arguments and signature were never logged.',
+      checks: [],
+    });
+  }
+  if (stats.badLines > 0) {
+    const unit = stats.layout === 'objects' ? 'record' : 'line';
+    notes.push({
+      id: 'bad', level: 'warn', title: `${n(stats.badLines)} unreadable ${unit}${stats.badLines === 1 ? '' : 's'}`,
+      detail: `They were not JSON, or not an eslogger event, and were skipped. Whatever they held is missing from the tree, the queue and every timeline.`,
+      checks: [],
+    });
+  }
+  const other = Object.entries(stats.otherEvents).sort((a, b) => b[1] - a[1]);
+  if (other.length > 0) {
+    notes.push({
+      id: 'other', level: 'info', title: `${n(other.length)} event ${other.length === 1 ? 'type' : 'types'} the viewer does not model`,
+      detail: `${other.map(([t, c]) => `${t} ×${n(c)}`).join(', ')}. They are counted but not read: they appear in no timeline and no check looks at them. Each still places its process in the tree.`,
+      checks: [],
+    });
+  }
+  return { versions, notes };
+}
+
+/** Rule titles for a coverage note, in the order the note lists them. */
+export const checkTitles = (ids: string[]): string[] => ids.map(ruleTitle);
