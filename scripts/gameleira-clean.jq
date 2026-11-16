@@ -201,12 +201,13 @@ def clean_path($text):
               elif $i == $pl.vol then (.s | placeholder("volume"; $n)) as $r | .s = $r.state | .out += [$r.ph]
               elif $pl.from != null and $i >= $pl.from then
                 ($pl.ids != null and $i >= $pl.ids) as $ids
+                # Kept names win over an account or volume of the same name (a NAS share called Downloads).
                 | if .s.keep[$n] == true then .out += [$raw[$i]]
-                  elif (.s.map.name[$n] // .s.map.user[$n] // .s.map.volume[$n]) != null then
-                    .out += [.s.map.name[$n] // .s.map.user[$n] // .s.map.volume[$n]]
+                  elif .s.map.name[$n] != null then .out += [.s.map.name[$n]]
                   elif (.s | kept_name($n; $ids))
                        or $lc[$i - 1] == "apptranslocation" or ($n == "d" and $lc[$i - 2] == "apptranslocation") then
                     (.s | replace_accounts($n)) as $k | .out += [if $k == $n then $raw[$i] elif $url then $k | @uri else $k end]
+                  elif (.s.map.user[$n] // .s.map.volume[$n]) != null then .out += [.s.map.user[$n] // .s.map.volume[$n]]
                   else (.s | placeholder("name"; $n)) as $r | .s = $r.state | .out += [if $url then $r.ph | @uri else $r.ph end]
                   end
               elif $pl.from == null and $i > 1 and (.s.keep[$n] | not) then
@@ -223,11 +224,16 @@ def clean_path($text):
 # after = or after a : that is followed by a path (PATH lists), and runs to the end or to the next such :, spaces and
 # all. Free text (sh -c, osascript -e: pipes, quotes before a path, two paths): a quoted path runs to its quote, an
 # unquoted one to the first space or shell character, with backslash escapes. A path field is one path, whole.
-def PLAIN_PATHS: "(?<![^=:])(?:file://(?:localhost)?|~)?/(?:[^:]|:(?!~?/))*";
+# A cleaned place's path also starts after any other character (-I/Users/…, @/tmp/…): reading too much there is safe.
+def CLEANED_ROOT: "/(?i:Users|Volumes|tmp|private/tmp|private/var|var/tmp|var/folders)/";
+def PLAIN_PATHS:
+  "(?<![^=:])(?:file://(?:localhost)?|~)?/(?:[^:]|:(?!~?/))*"
+  + "|" + CLEANED_ROOT + "(?:[^:]|:(?!~?/))*";
 def TEXT_PATHS:
   "(?<=\")(?:file://(?:localhost)?|~)?/[^\"\\n]*"
   + "|(?<=')(?:file://(?:localhost)?|~)?/[^'\\n]*"
-  + "|(?<![^\\s=:(<>|;,`\\[{])(?:file://(?:localhost)?|~)?/(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])*";
+  + "|(?<![^\\s=:(<>|;,`\\[{])(?:file://(?:localhost)?|~)?/(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])*"
+  + "|" + CLEANED_ROOT + "(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])*";
 def free_text:
   test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:)")
   or ((test("^(?:/|~/|file:)") | not) and test("[\"'(,](?:~?/|file:)"));

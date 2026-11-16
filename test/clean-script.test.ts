@@ -453,7 +453,8 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
   const leakInput = [
     ...planted.map((p, i) => esCreate(zsh, { path: p }, i + 1)),
     esCreate(zsh, { dir: '/Users/jdoe/Documents/Board', filename: 'Minutes.pages' }, 20),
-    esExec(zsh, open, { args: ['open', '~/Documents/Offsite.txt', '--out=/Users/jdoe/Desktop/Merger/plan.key'], cwd: '/Users/jdoe/Desktop/Merger', env: JDOE_ENV, seq: 21 }),
+    esExec(zsh, open, { args: ['open', '~/Documents/Offsite.txt', '--out=/Users/jdoe/Desktop/Merger/plan.key',
+      '-I/Users/jdoe/Clearance/include', '@/tmp/Kickoff.rsp', 'cc -I/Users/jdoe/Clearance a.c | tee log'], cwd: '/Users/jdoe/Desktop/Merger', env: JDOE_ENV, seq: 21 }),
   ].join('\n') + '\n';
 
   test('home, shared, volume and temp names become placeholders', () => {
@@ -461,7 +462,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(r.status, r.stderr).toBe(0);
     const out = r.out.toLowerCase();
     for (const s of ['jdoe', 'board', 'q3', 'acquisition', 'merger', 'notes.txt', 'offer', 'budget', 'payroll', 'passport',
-      'clients', 'acme', 'minutes', 'offsite', 'plan.key']) expect(out, s).not.toContain(s);
+      'clients', 'acme', 'minutes', 'offsite', 'plan.key', 'clearance', 'kickoff']) expect(out, s).not.toContain(s);
     expect(keyed(r.key, 'user')).toEqual(new Map([['jdoe', 'user1']]));
     expect(keyed(r.key, 'volume')).toEqual(new Map([['Jdoe Passport', 'vol1']]));
     const names = keyed(r.key, 'name');
@@ -486,7 +487,9 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(ev[planted.length]!.event.create).not.toHaveProperty('acl');
     // ~/ paths and paths after = are cleaned too; arguments keep their count and order.
     const exec = ev[planted.length + 1]!.event.exec;
-    expect(exec.args).toEqual(['open', `~/Documents/${names.get('Offsite.txt')}`, `--out=/Users/user1/Desktop/${names.get('Merger')}/${names.get('plan.key')}`]);
+    // A path glued to an option (-I/…, @/…) is found too, when it is in a cleaned place.
+    expect(exec.args).toEqual(['open', `~/Documents/${names.get('Offsite.txt')}`, `--out=/Users/user1/Desktop/${names.get('Merger')}/${names.get('plan.key')}`,
+      `-I/Users/user1/${names.get('Clearance')}/include`, `@/tmp/${names.get('Kickoff.rsp')}`, `cc -I/Users/user1/${names.get('Clearance')} a.c | tee log`]);
     expect(exec.cwd.path).toBe(`/Users/user1/Desktop/${names.get('Merger')}`);
   });
 
@@ -619,6 +622,21 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(ev[0]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Downloads/${ph}`);
     expect(ev[1]!.event.exec.target.executable.path).toBe('/Users/user1/Downloads/Zoom_Installer');
     expect(ev[2]!.event.create.destination.existing_file.path).toBe('/Users/user1/Downloads/Zoom_Installer');
+  });
+
+  test('a volume named like a standard folder does not rename that folder in a home', () => {
+    const child = esProc({ pid: 420, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+    const tool = userProc(420, '/Users/jdoe/Downloads/tool', { pidversion: 2420 });
+    const input = [
+      esCreate(zsh, { path: '/Volumes/Downloads/x' }, 1),
+      esExec(child, tool, { args: ['/Users/jdoe/Downloads/tool'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 2 }),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Volumes\/vol1\/name\d+$/);
+    expect(ev[1]!.event.exec.target.executable.path).toBe('/Users/user1/Downloads/tool');
+    expect(ev[1]!.event.exec.cwd.path).toBe('/Users/user1/Downloads');
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(findingSignature(buildModel(lines(input))));
   });
 
   test('a launch agent plist with a space in its name is matched to its registration as in the raw capture', () => {
