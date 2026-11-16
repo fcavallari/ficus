@@ -897,7 +897,7 @@ const osascriptId = async (): Promise<string> => procByPid((await loadLab()).mod
 test('queue sorted high first and fake prompt explains itself', async () => {
   renderTriage(await loadLab());
   const rows = await screen.findAllByRole('option');
-  expect(within(rows[0]!).getByText('high')).toBeInTheDocument();
+  expect(within(rows[0]!).getByText('High')).toBeInTheDocument();
   await user.click(screen.getByText(/display dialog/));
   expect(screen.getByText(/fake a system password prompt/i)).toBeInTheDocument();
   expect(screen.getByText(/T1056\.002/)).toBeInTheDocument();
@@ -1132,7 +1132,7 @@ const field = (label: string): HTMLElement => pane().getByText(label, { selector
 test('a process row that carries a persistence finding shows its launch item: type, plist, who registered it, who the finding is on', async () => {
   const cap = await loadLab();
   renderTriage(cap);
-  await user.click(screen.getAllByRole('option').find(r => r.textContent?.startsWith('high') && r.textContent.includes('cat'))!);
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.startsWith('High') && r.textContent.includes('cat'))!);
   expect(pane().getByRole('heading', { name: 'Launch item' })).toBeInTheDocument();
   expect(field('Item type')).toHaveTextContent('Launch agent');
   expect(field('Plist')).toHaveTextContent(/\/Library\/LaunchAgents\/com\.test\.labdemo\.plist$/);
