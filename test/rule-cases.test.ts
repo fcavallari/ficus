@@ -1067,6 +1067,14 @@ describe('uid-mismatch', () => {
     expect(f.severity).toBe('high');
     expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
   });
+  test('an allow-listed low finding is queued when its process is in a flagged chain', () => {
+    const parent = proc('200:1', [img({ path: '/tmp/dropper', signingId: null, token: '200:1' })], { credMismatches: [mm()] });
+    const child = proc('100:1', [apple('/bin/ps', ['ps'])], { originalParent: '200:1', credMismatches: [mm()] });
+    const a = analyze(capture([parent, child]));
+    const q = a.queue.find(x => x.procId === '100:1');
+    expect(q?.inFlaggedChain).toBe(true);
+    expect(q?.findings.find(f => f.ruleId === 'uid-mismatch')?.severity).toBe('low');
+  });
   test('no mismatch, no finding', () => {
     expect(finding(one(apple('/bin/ps', ['ps'])))).toBeUndefined();
   });

@@ -58,7 +58,11 @@ function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
-/** Apple tools that are setuid or setgid by design, by signing ID (checked with find -perm and codesign, plus two seen in captures). */
+/**
+ * Apple tools that are setuid or setgid by design, by signing ID (checked with find -perm and codesign, plus two seen in
+ * captures). com.apple.sudo and com.apple.security_authtrampoline were not verified with codesign: reading their
+ * signatures needs root.
+ */
 export const SETUID_ALLOW: Set<string> = new Set([
   'com.apple.ps', 'com.apple.top', 'com.apple.write', 'com.apple.atrm', 'com.apple.batch', 'com.apple.crontab',
   'com.apple.newgrp', 'com.apple.su', 'com.apple.sudo', 'com.apple.quota', 'com.apple.login', 'com.apple.traceroute',
