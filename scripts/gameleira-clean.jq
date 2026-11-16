@@ -21,7 +21,9 @@
 # the names that stay as they are, `words` and `multi` the mapped names free text is searched for (replace_mapped) and
 # `nwords` how many there are (jq counts an object's keys one by one, so `length` would cost as much as the object),
 # `rel` the cwd while shell code run from a cleaned place is being cleaned (its relative names are names in that folder),
-# `sec` whether that code runs security, `acct` the account names and seeds (lower-cased) with their placeholders,
+# `clear` raw values known to hold no account name or seed in any form (at most 8192; emptied when one is added) and
+# `clearn` how many, `sec` whether the quoted string being cleaned is an argument of security, `ci` the user and realname placeholders by
+# lower-cased real value, `acct` the account names and seeds (lower-cased) with their placeholders,
 # `acctl` those lower-cased values longest first, `acctn` how many there are and `acctany`, `acctre` the regexes
 # add_acct builds from them (General string cleaning, step 7),
 # `lastSeq` the highest global_seq_num seen, `new` the key entries the event being cleaned has created. `new` is emptied
@@ -191,9 +193,10 @@ def index_word($kind; $real; $ph):
   end;
 
 # An account name or seed, made findable anywhere (acct, General string cleaning step 7). Most strings hold none, so
-# each is first tested against one regex of them all: `acctany` (paths, signing IDs: every name) or `acctre`
-# (replace_seeds: a name shorter than 4 characters or protected only before an @). A case-insensitive regex costs less
-# in jq than ascii_downcase. Input: the state.
+# each is first tested against one regex of them all: `acctall` (every name in any form: a raw value that fails it
+# goes in `clear`, see seed_free), `acctany` (paths, signing IDs) or `acctre` (replace_seeds: a name shorter than 4
+# characters or protected only before an @). A case-insensitive regex costs less in jq than ascii_downcase, but with
+# many seeds still more than anything else per string, hence `clear`. Input: the state.
 def regex_escape: gsub("(?<c>[\\\\^$.|?*+()\\[\\]{}])"; "\\\(.c)");
 # A seed as a regex for text: a space in it may be written with a backslash before it (Jane\ Doe in shell code).
 def seed_regex: regex_escape | gsub(" "; "\\\\? ");
@@ -203,16 +206,21 @@ def add_acct($real; $ph):
     else .acct[$l] = $ph | .acctl = (.acctl + [$l] | sort_by(length) | reverse) | .acctn += 1
       | .acctany = (.acctl | map(regex_escape) | join("|"))
       | .acctre = (.acctl | map(seed_regex + (if length < 4 or protected_word(.) then "@" else "" end)) | join("|"))
+      | .acctall = (.acctl | map(seed_regex) | join("|"))
+      | .clear = {} | .clearn = 0
     end;
 
 # The placeholder `real` already has, or a new one numbered on from `next` (which a loaded key has moved on). An account
-# name found on the way (/Users/<name>/) is an account name everywhere from then on.
+# name found on the way (/Users/<name>/) is an account name everywhere from then on. An account or full name has one
+# placeholder whatever its case (`ci`, lower-cased): JDoe from -S and /Users/jdoe/ are one person.
 def placeholder($kind; $real):
-  .map[$kind][$real] as $have
+  ($kind == "user" or $kind == "realname") as $ci
+  | (.map[$kind][$real] // (if $ci then .ci[$kind][$real | ascii_downcase] else null end)) as $have
   | if $have != null then {ph: $have, state: .}
     else (.next[$kind] // 1) as $n
       | placeholder_form($kind; $real; $n; (if $kind == "name" then kept_extension($real) else "" end)) as $ph
       | {ph: $ph, state: (.map[$kind][$real] = $ph | .next[$kind] = $n + 1 | index_word($kind; $real; $ph)
+                          | if $ci then .ci[$kind][$real | ascii_downcase] = $ph else . end
                           | if $kind == "user" then add_acct($real; $ph) else . end
                           | .new += [{kind: $kind, placeholder: $ph, real: $real}])}
     end;
@@ -225,13 +233,18 @@ def initial_state($cfg):
   { map: (reduce $cfg.key[] as $k ({}; .[$k.kind][$k.real] = $k.placeholder)),
     next: (reduce $cfg.key[] as $k ({}; .[$k.kind] = ([.[$k.kind] // 1, ($k.placeholder | placeholder_number) + 1] | max))),
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
-    words: {}, multi: {}, nwords: 0, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "",
+    ci: (reduce ($cfg.key[] | select(.kind == "user" or .kind == "realname")) as $k ({};
+           .[$k.kind][$k.real | ascii_downcase] //= $k.placeholder)),
+    words: {}, multi: {}, nwords: 0, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "", acctall: "", clear: {}, clearn: 0,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, uncleaned: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder))
   | reduce ($cfg.key[] | select({"user": true, "realname": true, "host": true, "seed": true}[.kind])) as $k (.;
       add_acct($k.real; $k.placeholder))
-  | reduce ($cfg.seeds // [])[] as $sd (.; placeholder($sd.kind; $sd.value) as $r | $r.state | add_acct($sd.value; $r.ph))
+  | reduce ($cfg.seeds // [])[] as $sd (.;
+      placeholder($sd.kind; $sd.value) as $r | $r.state | add_acct($sd.value; $r.ph)
+      # The same seed composed or decomposed (NFC, NFD) has the same placeholder.
+      | reduce ($sd.forms // [])[] as $f (.; add_acct($f; $r.ph)))
   | reduce .new[] as $n (.; .stats.placeholders[$n.kind] += 1);
 
 # The structure folders of ~/Library whose first name below is an app's, a vendor's or a bundle ID (Ruling A):
@@ -259,19 +272,23 @@ def bundle_id:
 def kept_name($n; $ids):
   .keep[$n] == true or KEEP[$n | ascii_downcase] == true or ($n | bundle_name) or ($ids and ($n | bundle_id));
 
-# Account names and seeds in a name, whole or as dot- or dash-separated parts: jdoe -> user1, com.jdoe.agent.plist ->
-# com.user1.agent.plist. Only names that already have a placeholder are replaced, so the state does not change. A
-# bundle with a plain name (Code.app) is kept whole: the rules read app names (Code.app, Visual Studio Code.app).
-# Input: the state.
-def replace_accounts($n):
-  if .acctn == 0 or ($n | plain_bundle_name) then $n
-  else .acct as $lu | .acctany as $re
-    | ($n | ascii_downcase) as $low
-    | if $lu[$low] != null then $lu[$low]
-      elif ($n | test("[.-]")) and ($n | test($re; "i")) then
-        [$n | scan("[^.-]+|[.-]")] | map($lu[ascii_downcase] // .) | join("")
-      else $n end
+# Account names and seeds in a name or signing ID, case-insensitively, wherever they stand between dots, dashes and
+# the ends, however many parts they span: jdoe -> user1, com.jdoe.agent.plist -> com.user1.agent.plist,
+# com.Janes-MacBook-Pro.tool -> com.host1.internal.invalid.tool, a platform UUID that is the whole value -> seed2.
+# Longest first. Only names that already have a placeholder are replaced, so the state does not change. Input: the state.
+def replace_parts($n):
+  if .acctn == 0 then $n
+  else .acctany as $re
+    | if ($n | test($re; "i") | not) then $n
+      else .acct as $a
+        | reduce (.acctl[] | select(. as $k | $n | test($k | regex_escape; "i"))) as $k ($n;
+            gsub("(?<![^.\\-])" + ($k | regex_escape) + "(?![^.\\-])"; $a[$k]; "i"))
+      end
   end;
+
+# Account names and seeds in a path's name (replace_parts). A bundle with a plain name (Code.app) is kept whole: the
+# rules read app names (Code.app, Visual Studio Code.app). Input: the state.
+def replace_accounts($n): if ($n | plain_bundle_name) then $n else replace_parts($n) end;
 
 # The file names of the programs and scripts an event runs: the last component of every process's executable.path,
 # exec's script.path and dyld_exec_path, a launch item's executable_path, and argv[0]. Input: the event. $ps: the
@@ -327,7 +344,7 @@ def place($lc; $tilde):
 # True when an elsewhere path has no account name in it. Most paths in a capture are system and app paths, so this is
 # checked before going name by name. Input: the state.
 def unchanged_elsewhere($text):
-  .acctn == 0 or (.acctany as $re | $text | test($re; "i") | not);
+  .acctn == 0 or .clear[$text] == true or (.acctany as $re | $text | test($re; "i") | not);
 
 # A name kept by where it is: directly in ~/Library (Mail, Mobile Documents …), the first name below one of its
 # structure folders (an app, vendor or bundle ID), and App Translocation with its UUID and `d` at the top of a
@@ -444,14 +461,17 @@ def replace_mapped($str):
 def COMMON_ACCOUNT_WORDS: {
   "admin": true, "user": true, "test": true, "dev": true, "code": true, "mac": true, "guest": true, "home": true, "work": true
 };
-# What ends a word around an account name: a token stops at whitespace too, a run (a quoted name of several words) not.
+# What ends a word around an account name. A token stops at whitespace too. A part (a path component, a quoted name,
+# a whole argument: Code Helper (Plugin).app, "Code Tools.app") only at a /, a quote, a line break or a shell operator.
 def SEED_TOKEN: "[^\\s\"'`=:;|&<>(),/\\\\\\[\\]{}]*";
-def SEED_RUN: "[^\"'`=:;|&<>(),/\\\\\\[\\]{}\\n\\r]*";
+def SEED_PART: "[^/\"'`\\n\\r:=;|&<>]*";
 
 # True when an account name or seed found in $t (the match $m) is to stay: inside an option name (--code, --no-code),
-# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name or bundle (Code.app, "Code Helper"), or a
-# placeholder already written (Person 2, person1@example.invalid). Input: the state.
-def seed_kept($t; $m):
+# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name or a bundle with a plain name, tested on the
+# whole part it is in (Code Helper (Plugin).app, Visual Studio Code.app, "Code Helper"), or a placeholder already
+# written (Person 2, person1@example.invalid). In shell code ($code) a part that runs from the start of the code and
+# has a space is a command, not a name (ls jdoe Code.app), so it does not count. Input: the state.
+def seed_kept($t; $m; $code):
   $m.offset as $o | ($o + $m.length) as $e
   | ($t[([$o - 256, 0] | max):$o]) as $before
   | ($t[$e:$e + 256]) as $after
@@ -464,10 +484,10 @@ def seed_kept($t; $m):
     or .keep[$tok] == true or ($tok | plain_bundle_name)
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
-    or ((([$before | match(SEED_RUN + "$") | .string] | .[0] // "") + $m.string
-        + ([$after | match("^" + SEED_RUN) | .string] | .[0] // "")
-        | sub("^\\s+"; "") | sub("\\s+$"; "")) as $run
-       | $run != $tok and .keep[$run] == true);
+    or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
+        | ($pl + $m.string + ([$after | match("^" + SEED_PART) | .string] | .[0] // "")) as $part
+        | (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
+          and (($part | plain_bundle_name) or .keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true));
 
 # $str with account names and seeds replaced, case-insensitively, as whole words (General string cleaning, step 7; a
 # word ends at anything but a letter or digit, so jdoe_backup is user1_backup):
@@ -475,7 +495,7 @@ def seed_kept($t; $m):
 # other steps, so the names inside paths and the mapped names are placeholders by then. A name shorter than 4
 # characters, or one the rules look for (test, build: protected_word), is replaced only before an @ (an email or
 # user@host); elsewhere it is too likely another word, and the summary lists it. Input: the state.
-def replace_seeds($str):
+def replace_seeds_opts($str; $code):
   if .acctn == 0 then $str
   elif (.acctre as $re | $str | test($re; "i") | not) then $str
   else . as $s
@@ -486,7 +506,7 @@ def replace_seeds($str):
         | (($k | length) < 4 or protected_word($k)) as $weak
         | [$t | match("(?<![^\\W_])" + ($k | seed_regex) + "(?![^\\W_])"; "gi")
            | select(($weak | not) or $t[.offset + .length:.offset + .length + 1] == "@")
-           | select(. as $m | $s | seed_kept($t; $m) | not)] as $ms
+           | select(. as $m | $s | seed_kept($t; $m; $code) | not)] as $ms
         | if $ms == [] then $t
           else reduce $ms[] as $m ({out: "", at: 0};
                  .out += $t[.at:$m.offset] + ($s.acct[$k] | if $m.string | contains("\\") then gsub(" "; "\\ ") else . end)
@@ -496,13 +516,11 @@ def replace_seeds($str):
       end
   end;
 
-# A signing ID with account names and seeds replaced as whole dot- or dash-separated parts (Precedence, step 2):
-# com.jdoe.tool -> com.user1.tool. Apple's (com.apple.*) are never touched. Input: the state.
-def replace_id_parts($v):
-  if .acctn == 0 or ($v | startswith("com.apple.")) then $v
-  elif (.acctany as $re | $v | test($re; "i")) then .acct as $a | [$v | scan("[^.-]+|[.-]")] | map($a[ascii_downcase] // .) | join("")
-  else $v
-  end;
+# A signing ID with account names and seeds replaced as whole parts between dots and dashes (Precedence, step 2;
+# replace_parts): com.jdoe.tool -> com.user1.tool. Apple's (com.apple.*) are never touched. Input: the state.
+def replace_id_parts($v): if ($v | startswith("com.apple.")) then $v else replace_parts($v) end;
+
+def replace_seeds($str): replace_seeds_opts($str; false);
 
 # Where paths are inside a string. A plain value (an argument, a NAME=value entry): a path starts at the beginning,
 # after = or after a : that is followed by a path (PATH lists), and runs to the end, to the next such :, or to a ;, &&,
@@ -700,6 +718,11 @@ def clean_free($str; $mode):
   elif $mode == "quoted" then shell_word_clean($str; true) // {v: replace_mapped($str), s: .}
   else shell_words($str) end;
 
+# The text before a quoted string in shell code ends inside a security command: the command after the last ; & | ( `
+# or line break is security (by name or path), behind sudo, env, nohup, command or exec if any.
+def SECURITY_COMMAND:
+  "(?:^|[;&|(`\\n])\\s*(?:(?:sudo|env|nohup|command|exec)\\s+(?:-\\S+\\s+)*)*(?:[^\\s;&|()`]*/)?security\\s[^;&|()`\\n]*$";
+
 # Every path the regex finds in $str cleaned, and mapped names replaced in the text between. $mode: "plain",
 # "quoted" (the inside of a quoted string) or "text" (free text in segments, see TEXT_SEGMENTS). A match that begins
 # // right after a : is a URL's host part (https://host/…), left for the host step. Input: the state. Output: {v, s}.
@@ -718,8 +741,8 @@ def clean_matches($re; $str; $mode):
           | .s = $g.s | $g.v as $gap
           | $m.string[0:1] as $q
           | if $mode == "text" and ($q == "\"" or $q == "'") then
-              (.s | clean_matches(QUOTED_PATHS; $m.string[1:-1]; "quoted")) as $r
-              | .out += $gap + $q + $r.v + $q | .s = $r.s | .at = $end0
+              (.s | .sec = ($str[:$m.offset] | test(SECURITY_COMMAND)) | clean_matches(QUOTED_PATHS; $m.string[1:-1]; "quoted")) as $r
+              | .out += $gap + $q + $r.v + $q | .s = ($r.s | .sec = false) | .at = $end0
             elif ($m.string | startswith("//")) and $m.offset > 0 and $str[$m.offset - 1:$m.offset] == ":" then
               .out += $gap + $m.string | .at = $end0
             else
@@ -780,8 +803,6 @@ def worth_cleaning($all):
   elif type == "object" then . as $o | any(BARE_NAMES | keys_unsorted[]; ($o[.] | type) == "string")
   else false end;
 
-# security run in shell code, as a word: security, /usr/bin/security.
-def SECURITY_WORD: "(?:^|[\\s;&|(`])(?:[^\\s;&|()`]*/)?security(?=[\\s;&|)`]|$)";
 
 # Programs whose -c or -e value (or -lc, -ne …, --eval, --command) is code: free text, never a relative name.
 def CODE_PROGRAMS: "^(?:sh|bash|zsh|dash|ksh|csh|tcsh|python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$";
@@ -845,6 +866,14 @@ def arg_value($prog; $a):
       | if $k != null and $k < ($a | length) - 2 then {pre: $a[0:$k + 2], val: $a[$k + 2:]} else option_value($a) end
     else option_value($a) end;
 
+# True when the raw value $v holds no account name or seed in any form: known (state.clear: executable paths and
+# environment entries come back in event after event) or tested now. Input: the state.
+def seed_free($v): .acctn == 0 or .clear[$v] == true or (.acctall as $re | $v | test($re; "i") | not);
+# The state with $v noted as seed-free; the list is emptied when it reaches 8192, so it costs little to keep.
+def note_clear($v):
+  if .acctn == 0 or .clear[$v] == true then .
+  else (if .clearn >= 8192 then .clear = {} | .clearn = 0 else . end) | .clear[$v] = true | .clearn += 1 end;
+
 # The event (input) cleaned, with the state the cleaning leaves and the key entries it created:
 #   {event, state, new: [{kind, placeholder, real}]}
 # Every string is walked, so a field nobody thought of cannot carry a name through. Programs the event runs are kept
@@ -873,8 +902,9 @@ def clean_event($state):
                 else . end
             end
         elif $p[-1] == "signing_id" then
-          (if ($v | type) == "string" then .s | replace_id_parts($v) else $v end) as $w
-          | if $w != $v then .e |= setpath($p; $w) else . end
+          if ($v | type) != "string" then .
+          elif (.s | seed_free($v)) then .s |= note_clear($v)
+          else (.s | replace_id_parts($v)) as $w | if $w != $v then .e |= setpath($p; $w) else . end end
         elif exempt($p) then .
         elif BARE_NAMES[$p[-1] | tostring] != null and ($e | getpath($p[:-1]) | named_in_dir($p[:-1])) != null then .
         else
@@ -896,11 +926,12 @@ def clean_event($state):
             else
               (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
                  elif $code then .s | .code = true | .rel = (if $relc and $sh then $cwd else null end)
-                                 | .sec = ($v | test(SECURITY_WORD))
-                                 | clean_string($v; false) | .s.code = false | .s.rel = null | .s.sec = false
+                                 | clean_string($v; false) | .s.code = false | .s.rel = null
                  else .s | clean_string($v; path_field($p)) end) as $r
-              | ($r.s | replace_seeds($r.v)) as $w
-              | .s = $r.s | if $w != $v then .e |= setpath($p; $w) else . end
+              | ($r.s | seed_free($r.v)) as $free
+              | (if $free then $r.v else $r.s | replace_seeds_opts($r.v; $code) end) as $w
+              | .s = (if $free then $r.s | note_clear($r.v) else $r.s end)
+              | if $w != $v then .e |= setpath($p; $w) else . end
             end
         end)
   | {event: .e, state: .s, new: .s.new};

@@ -276,11 +276,18 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     const r = runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-S', seeds]);
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/line 2 of the seed file/);
+    // Blank lines count: the number is the line in the file.
+    fs.writeFileSync(seeds, 'user\talice\n\n\nnonsense\n');
+    expect(runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-S', seeds]).stderr).toMatch(/line 4 of the seed file/);
+    fs.writeFileSync(seeds, 'user\t   \n');
+    expect(runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-S', seeds]).stderr).toMatch(/line 1 of the seed file/);
     const key = path.join(dir, 'bad.key.tsv');
     fs.writeFileSync(key, 'kind\tplaceholder\treal\nuser\tuser1\talice\n');
     const k = runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-k', key]);
     expect(k.status).toBe(1);
     expect(k.stderr).toMatch(/line 2 of the key file/);
+    fs.writeFileSync(key, 'kind\tplaceholder\treal\nuser\tuser1\t"alice"\n\nuser\tuser2\tbob\n');
+    expect(runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-k', key]).stderr).toMatch(/line 4 of the key file/);
   });
 
   test('a run that fails before it starts leaves no key behind, so the same command works once fixed', () => {
@@ -1464,6 +1471,10 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
       run(730, '/bin/sh', ['sh', '-c', 'cp "John Smith Exodus Backup.pdf" /tmp/x'], docs, 1),
       run(731, '/bin/sh', ['sh', '-c', 'security find-generic-password -l "jdoe Exodus backup" -w'], docs, 2),
       run(732, '/bin/sh', ['sh', '-c', '/usr/bin/security find-generic-password -s "jdoe Safe Storage" -w'], docs, 3),
+      // Only the arguments of the security command itself are keychain phrases.
+      run(733, '/bin/sh', ['sh', '-c', 'security list-keychains; cp "Mary Major Exodus Backup.pdf" /tmp/y'], docs, 4),
+      run(734, '/bin/sh', ['sh', '-c', 'cd security && cp "Ann Lee Exodus Backup.pdf" z.pdf'], docs, 5),
+      run(735, '/bin/sh', ['sh', '-c', 'true && sudo security find-generic-password -l "jdoe Exodus backup"'], docs, 6),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
@@ -1472,7 +1483,10 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[0]![2]).toBe(`cp "${n.get('John Smith Exodus Backup.pdf')}" /tmp/${n.get('x')}`);
     expect(args[1]![2]).toBe('security find-generic-password -l "user1 Exodus backup" -w');
     expect(args[2]![2]).toBe('/usr/bin/security find-generic-password -s "user1 Safe Storage" -w');
-    expect(r.out).not.toMatch(/John|Smith|jdoe/);
+    expect(args[3]![2]).toBe(`security list-keychains; cp "${n.get('Mary Major Exodus Backup.pdf')}" /tmp/${n.get('y')}`);
+    expect(args[4]![2]).toBe(`cd security && cp "${n.get('Ann Lee Exodus Backup.pdf')}" ${n.get('z.pdf')}`);
+    expect(args[5]![2]).toBe('true && sudo security find-generic-password -l "user1 Exodus backup"');
+    expect(r.out).not.toMatch(/John|Smith|Mary|Major|Ann Lee|jdoe/);
     sameFindings(input, r.out);
   });
 
@@ -1523,6 +1537,12 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     return f;
   };
   const SEEDS: [string, string][] = [['user', 'jdoe'], ['realname', 'Jane Doe'], ['host', 'Janes-MacBook-Pro'], ['seed', 'C02XK1ABJGH5']];
+  // An app (pid N) forks a child (N + 1), which execs a shell: shell-under-app looks at the app.
+  const fromApp = (pid: number, app: string, args: string[], seq: number, home = '/Users/code'): string[] => {
+    const a = esProc({ pid, path: app, teamId: 'ABCDE12345', signingId: 'com.example.app', ppid: 1 });
+    const c = esProc({ pid: pid + 1, path: app, teamId: 'ABCDE12345', signingId: 'com.example.app', ppid: pid });
+    return [esFork(a, c, seq), esExec(c, sysImage(pid + 1, '/bin/zsh'), { args, cwd: home, env: [`HOME=${home}`], seq: seq + 1 })];
+  };
 
   test('seeds are replaced anywhere', () => {
     const env = [...JDOE_ENV, 'HOSTNAME=Janes-MacBook-Pro', 'GREETING=hello JANE DOE'];
@@ -1705,6 +1725,87 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     const args = events(r.out).map(e => e.event.exec.args as string[]);
     expect(args[0]).toEqual(['echo', 'host1.internal.invalid', 'host2.internal.invalid', 'janes-mbpXcorpYexample', 'seed1', 'abbc1', 'seed2']);
     expect(args[1]![2]).toBe("echo host1.internal.invalid && ping -c1 host2.internal.invalid");
+  });
+
+  // The rules read app and helper names whole (shell-under-app: Code Helper, Visual Studio Code.app).
+  test('a bundle or program name of several words keeps account names and seeds whole, and findings stay', () => {
+    const plugin = '/Applications/VSCode.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)';
+    const vsc = '/Applications/Visual Studio Code.app/Contents/MacOS/Electron';
+    const helper2 = '/Applications/Visual Studio Code 2.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper';
+    const input = [
+      ...fromApp(960, plugin, ['/bin/zsh', '-c', 'echo hi'], 1),
+      ...fromApp(962, vsc, ['/bin/zsh', '-c', 'open -a "Code Tools.app" && open -a "Visual Studio Code.app"'], 3),
+      ...fromApp(964, helper2, ['/bin/zsh', '-c', 'echo hi'], 5),
+      esCreate(zsh, { path: '/Applications/Code Tools.app/Contents/MacOS/Tool' }, 7),
+      run(966, '/usr/bin/open', ['open', '-a', 'Code Tools.app'], '/', 8),
+    ].join('\n') + '\n';
+    for (const seeds of [[['user', 'code']], [['user', 'studio']], [['user', 'visual'], ['user', 'helper']]] as [string, string][][]) {
+      for (const stdin of [false, true]) {
+        const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-S', seedFile(seeds)] : ['clean', '-o', '-', '-S', seedFile(seeds)], { input });
+        expect(r.status, r.stderr).toBe(0);
+        const ev = events(r.out);
+        const what = `${seeds.map(s => s[1]).join('+')} stdin=${stdin}`;
+        expect(ev.filter(e => e.event.fork).map(e => e.process.executable.path), what).toEqual([plugin, vsc, helper2]);
+        expect(ev.filter(e => e.event.exec).map(e => e.event.exec.args), what).toEqual([
+          ['/bin/zsh', '-c', 'echo hi'], ['/bin/zsh', '-c', 'open -a "Code Tools.app" && open -a "Visual Studio Code.app"'],
+          ['/bin/zsh', '-c', 'echo hi'], ['open', '-a', 'Code Tools.app'],
+        ]);
+        expect(ev.find(e => e.event.create)!.event.create.destination.existing_file.path, what).toBe('/Applications/Code Tools.app/Contents/MacOS/Tool');
+        sameFindings(input, r.out);
+      }
+    }
+  });
+
+  // dscl gives full names composed (NFC); file systems and some apps write them decomposed (NFD).
+  test.skipIf(process.platform !== 'darwin')('a seed is matched composed or decomposed', () => {
+    const nfc = 'José Núñez';
+    const nfd = nfc.normalize('NFD');
+    expect(nfd).not.toBe(nfc);
+    const input = [
+      run(970, '/usr/bin/osascript', ['osascript', '-e', `display dialog "${nfd}, enter your password" with hidden answer`], '/', 1),
+      run(971, '/bin/echo', ['echo', nfd, nfc, nfd.toUpperCase()], '/', 2),
+    ].join('\n') + '\n';
+    for (const seed of [nfc, nfd]) {
+      const r = runClean(['clean', '-o', '-', '-S', seedFile([['realname', seed]])], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      expect(args[0]![2]).toBe('display dialog "Person 1, enter your password" with hidden answer');
+      expect(args[1]).toEqual(['echo', 'Person 1', 'Person 1', 'Person 1']);
+      expect(parseKey(r.key).filter(k => k.kind === 'realname')).toEqual([{ kind: 'realname', placeholder: 'Person 1', real: seed }]);
+    }
+  });
+
+  test('a signing ID loses a seed with dashes, or one that is the whole ID', () => {
+    const image = (pid: number, signingId: string): ReturnType<typeof esProc> =>
+      esProc({ pid, pidversion: pid + 2000, path: `/opt/tools/Tool${pid}`, signingId, teamId: null, ppid: 300 });
+    const uuid = '564D1234-ABCD-4EF0-9876-0123456789AB';
+    const ids = ['com.Janes-MacBook-Pro.tool', uuid, uuid.toLowerCase(), 'com.jdoe-tools.x', 'com.apple.Janes-MacBook-Pro', 'Janes-MacBook-Pro-helper', 'com.xjanes-macbook-pro.y'];
+    const input = ids.map((id, i) => esExec(child(975 + i), image(975 + i, id), { args: [`Tool${975 + i}`], cwd: '/', env: [], seq: i + 1 })).join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'jdoe'], ['host', 'Janes-MacBook-Pro'], ['seed', uuid]])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(events(r.out).map(e => e.event.exec.target.signing_id)).toEqual([
+      'com.host1.internal.invalid.tool', 'seed1', 'seed1', 'com.user1-tools.x', 'com.apple.Janes-MacBook-Pro',
+      'host1.internal.invalid-helper', 'com.xjanes-macbook-pro.y',
+    ]);
+  });
+
+  test('seed values are trimmed, so a stray space does not keep them from matching', () => {
+    const input = run(980, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Jane Doe" with hidden answer', 'jdoe@host.example.com'], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['realname', ' Jane Doe '], ['user', 'jdoe ']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).not.toMatch(/Jane|jdoe/);
+    expect(parseKey(r.key).slice(0, 2).map(k => k.real)).toEqual(['Jane Doe', 'jdoe']);
+  });
+
+  test('an account has one placeholder whatever its case', () => {
+    const input = [esCreate(zsh, { path: '/Users/jdoe/Documents/a.txt' }, 1), run(985, '/bin/echo', ['echo', 'JDOE', 'Jane DOE'], '/', 2)].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'JDoe'], ['realname', 'Jane Doe'], ['realname', 'jane doe']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(keyed(r.key, 'user')).toEqual(new Map([['JDoe', 'user1']]));
+    expect(keyed(r.key, 'realname')).toEqual(new Map([['Jane Doe', 'Person 1']]));
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/Documents\/name\d+\.txt$/);
+    expect(ev[1]!.event.exec.args).toEqual(['echo', 'user1', 'Person 1']);
   });
 
   test('placeholders already written are not cleaned again by an account of the same word', () => {

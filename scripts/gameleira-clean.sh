@@ -76,19 +76,28 @@ new_tmp() {
 #   KEEP_FILE    the prescan's list of program names (a JSON array), or empty
 CONFIG_JQ='
 def kinds: ($kinds | split(" "));
-def lines($text): $text | split("\n") | map(rtrimstr("\r") | select(length > 0));
+# The lines that are not blank, each with its index in the file ({key, value}), so an error names the real line.
+def lines($text): $text | split("\n") | to_entries | map(.value |= rtrimstr("\r") | select(.value | length > 0));
+def trim: sub("^\\s+"; "") | sub("\\s+$"; "");
+# A seed value: what follows the first tab, without surrounding whitespace (a stray space would never match).
+def seed_value: split("\t") | .[1:] | join("\t") | trim;
 {
-  seeds: [lines($seeds) | to_entries[]
+  seeds: [lines($seeds)[]
+    | .key as $i
     | (.value | split("\t")) as $f
-    | if ($f | length) < 2 or (kinds | index($f[0])) == null or $f[1] == ""
-      then error("line \(.key + 1) of the seed file is not a known kind, a tab and a value")
-      else {kind: $f[0], value: ($f[1:] | join("\t"))} end],
+    | (.value | seed_value) as $v
+    | if ($f | length) < 2 or (kinds | index($f[0])) == null or $v == ""
+      then error("line \($i + 1) of the seed file is not a known kind, a tab and a value")
+      # The same value composed and decomposed (NFC, NFD): dscl gives one, files and apps may write the other.
+      else {kind: $f[0], value: $v}
+        + ([$nfd, $nfc | split("\n") | .[$i] // "" | rtrimstr("\r") | seed_value | select(. != "" and . != $v)] | unique
+           | if length > 0 then {forms: .} else {} end) end],
   domains: [inputs | select(length > 0) | ascii_downcase | ltrimstr(".")],
   key: (lines($key) as $rows
     | if ($rows | length) == 0 then []
-      elif $rows[0] != $header then error("the key file does not start with the header \"kind, placeholder, real\"")
-      else [$rows[1:] | to_entries[]
-        | (.key + 2) as $n
+      elif $rows[0].value != $header then error("the key file does not start with the header \"kind, placeholder, real\"")
+      else [$rows[1:][]
+        | (.key + 1) as $n
         | (.value | split("\t")) as $f
         | if ($f | length) != 3 or (kinds | index($f[0])) == null
           then error("line \($n) of the key file is not kind, placeholder, real")
@@ -98,11 +107,21 @@ def lines($text): $text | split("\n") | map(rtrimstr("\r") | select(length > 0))
   keep: ($keep[0] // [])
 }'
 
+# seed_forms FROM TO: the seed file in another Unicode normalization (UTF-8-MAC is macOS's NFD), or nothing where
+# iconv cannot convert. printf is a builtin, so the seeds never become a process's arguments.
+seed_forms() {
+  local text
+  [ -n "$SEED_FILE" ] || return 0
+  text=$(iconv -f "$1" -t "$2" < "$SEED_FILE" 2>/dev/null) && printf '%s\n' "$text"
+  return 0
+}
+
 # write_config FILE: the config JSON, from DOMAINS, SEED_FILE and LOADED_KEY.
 write_config() {
   local file=$1 err
   err=$(printf '%s\n' "${DOMAINS[@]}" | "$JQ" -n -R -c --arg kinds "$KINDS" --arg header "$KEY_HEADER" \
     --rawfile seeds "${SEED_FILE:-/dev/null}" --rawfile key "${LOADED_KEY:-/dev/null}" \
+    --rawfile nfd <(seed_forms UTF-8 UTF-8-MAC) --rawfile nfc <(seed_forms UTF-8-MAC UTF-8) \
     --slurpfile keep "${KEEP_FILE:-/dev/null}" "$CONFIG_JQ" 2>&1 >"$file") ||
     die "cannot read the seed or key file: ${err#jq: error (at <unknown>): }"
 }
