@@ -45,7 +45,7 @@ function Results({ cap, anchor, windowMs, severity, onSelect }: {
 }) {
   const [limit, setLimit] = useState(NEARBY_FIRST);
   // The key stands for the anchor: the Timeline hands over fresh event objects for the same event.
-  const r = useMemo(() => nearby(cap, anchor, windowMs), [cap, anchor.key, windowMs]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const r = useMemo(() => nearby(cap, anchor, windowMs), [cap, anchor.key, windowMs]);
   const note = r.untimed > 0 ? ` · ${plural(r.untimed, 'event')} in this capture ${r.untimed === 1 ? 'has' : 'have'} no time and ${r.untimed === 1 ? 'is' : 'are'} not placed` : '';
   let left = limit;
   const rows = r.groups.map(g => { const k = Math.min(left, g.events.length); left -= k; return k; });
@@ -89,7 +89,7 @@ export function NearbyPanel({ cap, anchor, severity, onSelect }: {
         )}
       </div>
       <p className="muted small tl-meta">
-        Inferred from timing alone: other processes' events close in time to this one. Nothing here shows they are related beyond that.
+        Inferred from timing: these events are close in time, not recorded as related.
       </p>
       <p className="small nb-anchor">
         <span className="muted">Around </span><span className="mono">{anchor.time ? fmtTime(anchor.time) : 'no time'}</span>

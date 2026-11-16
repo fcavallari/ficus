@@ -75,7 +75,7 @@ export function TimelineRow({ cap, e, self, multiDay, onSelect, onAnchor, anchor
         )}
       </span>
       {onAnchor && (
-        <button className="tl-near" aria-label="Show what happened near this event" aria-pressed={!!anchored} onClick={() => { onAnchor(e); }}>nearby</button>
+        <button className="tl-near" aria-label="Show what happened nearby" aria-pressed={!!anchored} onClick={() => { onAnchor(e); }}>nearby</button>
       )}
     </li>
   );

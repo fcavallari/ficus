@@ -2238,7 +2238,7 @@ test('the nearby panel lists another process\'s event, unlinked, and labels it i
   await openNearby([proc('100:1', [secAt(10, 1)]), proc('101:1', [osaAt(12, 2)])]);
   const panel = nearbyPanel();
   expect(panel.getByRole('heading', { name: 'What happened nearby' })).toBeInTheDocument();
-  expect(panel.getByText(/inferred from timing/i)).toBeInTheDocument();
+  expect(panel.getByText('Inferred from timing: these events are close in time, not recorded as related.')).toBeInTheDocument();
   expect(panel.getByRole('button', { name: 'osascript' })).toBeInTheDocument();
   expect(panel.getByText('no recorded link')).toBeInTheDocument();
   expect(panel.getByText('+2.000 s')).toBeInTheDocument();
@@ -2251,7 +2251,7 @@ test('clicking nearby on a timeline row re-anchors the panel', async () => {
     proc('101:1', [osaAt(12, 2)]),
     proc('102:1', [apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1', time: at(101), seq: 4 })]),
   ]);
-  const marks = screen.getAllByRole('button', { name: 'Show what happened near this event' });
+  const marks = screen.getAllByRole('button', { name: 'Show what happened nearby' });
   expect(marks).toHaveLength(2);
   expect(marks[0]).toHaveAttribute('aria-pressed', 'true');   // the first flagged event is the default anchor
   expect(marks[1]).toHaveAttribute('aria-pressed', 'false');
@@ -2286,7 +2286,7 @@ test('nearby shows at most 200 events, then more on request', async () => {
 
 test('nearby: an anchor with no recorded time says so instead of listing anything', async () => {
   await openNearby([proc('100:1', [secAt(10, 1)], { fileOps: [{ kind: 'write', path: '/tmp/x', time: '', seq: 3 }] }), proc('101:1', [osaAt(12, 2)])]);
-  const undated = screen.getAllByRole('button', { name: 'Show what happened near this event' })[1]!;
+  const undated = screen.getAllByRole('button', { name: 'Show what happened nearby' })[1]!;
   await user.click(undated);
   expect(nearbyPanel().getByText(/no recorded time/i)).toBeInTheDocument();
   expect(nearbyPanel().queryByRole('button', { name: 'osascript' })).not.toBeInTheDocument();
