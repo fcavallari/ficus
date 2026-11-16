@@ -58,6 +58,37 @@ function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
+/**
+ * Apple tools that are setuid or setgid by design, by signing ID (checked with find -perm and codesign, plus two seen in
+ * captures). com.apple.sudo and com.apple.security_authtrampoline were not verified with codesign: reading their
+ * signatures needs root.
+ */
+export const SETUID_ALLOW: Set<string> = new Set([
+  'com.apple.ps', 'com.apple.top', 'com.apple.write', 'com.apple.atrm', 'com.apple.batch', 'com.apple.crontab',
+  'com.apple.newgrp', 'com.apple.su', 'com.apple.sudo', 'com.apple.quota', 'com.apple.login', 'com.apple.traceroute',
+  'com.apple.traceroute6', 'com.apple.postqueue', 'com.apple.postdrop', 'com.apple.authopen',
+  'com.apple.security_authtrampoline', 'com.apple.RemoteDesktopAgent', 'com.apple.loginwindow',
+]);
+
+/**
+ * What one mismatch means. Root running with a user's effective id gave privileges up rather than borrowing them
+ * (loginwindow, or a vendor daemon acting for the console user): it can take them back, but that is not a climb. The
+ * uid pair decides when it differs; the gid pair only when the uids match. A process whose real and effective user is
+ * root already holds every privilege, so a different effective group gives it nothing new.
+ */
+type MismatchKind = 'escalation' | 'uid-drop' | 'gid-drop' | 'root-group';
+function mismatchKind(c: { ruid: number; euid: number; rgid: number; egid: number }): MismatchKind {
+  if (c.euid !== c.ruid) return c.ruid === 0 ? 'uid-drop' : 'escalation';
+  if (c.rgid === 0 && c.egid !== 0) return 'gid-drop';
+  return c.ruid === 0 ? 'root-group' : 'escalation';
+}
+const PRIVILEGE_DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
+const GROUP_DROP = 'Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.';
+const UID_MISMATCH_EXPLANATION = 'Its effective user or group id differs from its real one, so the process holds the privileges of another account. That is what a setuid or setgid binary does, or a process that called setuid(). Apple ships a few setuid tools (ps, sudo, su, crontab and others), so those are expected; the same behaviour from anything else is a way to climb to root.';
+const MIXED_NOTE = 'Entries marked drop or root group are not climbs: root giving its privileges up, or root running with another group, is context. The grade comes from the others.';
+const KIND_MARK: Record<MismatchKind, string> = { escalation: '', 'uid-drop': 'drop', 'gid-drop': 'drop', 'root-group': 'root group' };
+const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
+
 // ---------------------------------------------------------------------------------------------------------------
 // Recon and security settings
 
@@ -735,6 +766,49 @@ export const RULES: Rule[] = [
       const parent = originalParentImage(m, p)?.path ?? null;
       if (basename(parent) === 'xpcproxy') return null;
       return { evidence: `parent pid ${p.originalPpid}${parent ? ` (${basename(parent)})` : ''} gone; now under launchd` };
+    },
+  },
+  {
+    id: 'uid-mismatch', title: 'Running with borrowed privileges', severity: 'high', gated: 'when-low',
+    explanation: UID_MISMATCH_EXPLANATION,
+    mitre: ['T1548.001'], scope: 'process',
+    matchProcess: (p) => {
+      const list = p.credMismatches;
+      if (!list || list.length === 0) return null;
+      // Each image the process ran is judged on its own (an allow-listed tool can exec a shell that keeps euid 0); the
+      // finding takes the worst. A drop from root, or a group change by root, is always low and explains itself when
+      // nothing else climbed.
+      let severity: Severity = 'low';
+      let escalation = false;
+      const kinds = new Set<MismatchKind>();
+      const parts: { diffs: string; name: string; kind: MismatchKind }[] = [];
+      for (const c of list) {
+        const image = p.images[c.imgIndex];
+        const diffs: string[] = [];
+        if (c.euid !== c.ruid) diffs.push(`euid ${c.euid} ≠ ruid ${c.ruid}`);
+        if (c.egid !== c.rgid) diffs.push(`egid ${c.egid} ≠ rgid ${c.rgid}`);
+        const name = basename(image?.path ?? null);
+        const kind = mismatchKind(c);
+        if (!parts.some(x => x.diffs === diffs.join(', ') && x.name === name && x.kind === kind)) parts.push({ diffs: diffs.join(', '), name, kind });
+        kinds.add(kind);
+        if (kind !== 'escalation') continue;
+        escalation = true;
+        // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
+        const s: Severity = !image || !image.isPlatform ? 'high'
+          : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
+        if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
+      }
+      // Next to an escalation, a drop or a root group change is marked so the reader does not count it as a climb.
+      const mixed = escalation && kinds.size > 1;
+      const evidence = parts.map(x => {
+        const tags = [x.name, mixed ? KIND_MARK[x.kind] : ''].filter(Boolean).join(', ');
+        return `${x.diffs}${tags ? ` (${tags})` : ''}`;
+      }).join('; ');
+      if (escalation) return mixed ? { evidence, severity, explanation: `${UID_MISMATCH_EXPLANATION} ${MIXED_NOTE}` } : { evidence, severity };
+      // Nothing climbed: say what it did instead, the strongest kind first.
+      if (kinds.has('uid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: PRIVILEGE_DROP };
+      if (kinds.has('gid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: GROUP_DROP };
+      return { evidence, severity, title: 'Root with another effective group', explanation: ROOT_GROUP };
     },
   },
   {

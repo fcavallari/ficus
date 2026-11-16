@@ -164,6 +164,19 @@ export function processTimeline(cap: LoadedCapture, id: ProcId, descendants: boo
 }
 
 /**
+ * Every recorded event of every captured process, in capture order. A fork entry is dropped when its parent is a
+ * captured process too: that parent's spawn entry is the same event and names the child.
+ */
+export function allTimelineEvents(cap: LoadedCapture): TimelineEvent[] {
+  const m = cap.model;
+  const events: TimelineEvent[] = [];
+  for (const p of m.processes.values()) if (!p.ghost) eventsOf(cap, p, events);
+  const kept = events.filter(e => !(e.kind === 'fork' && e.other !== undefined && m.processes.get(e.other)?.ghost === false));
+  kept.sort((a, b) => a.seq - b.seq || a.key.localeCompare(b.key));
+  return kept;
+}
+
+/**
  * The times of the first and the last event that carried one, in capture order (the events come sorted by sequence),
  * or null when none did. Taken by position, not by comparing time strings, which differ in format between captures.
  */

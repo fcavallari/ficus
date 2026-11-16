@@ -1,4 +1,4 @@
-import type { BtmInfo, EventKind, NormEvent, ProcInfo, TokenKey } from './types';
+import type { BtmInfo, EventKind, Ids, NormEvent, ProcInfo, TokenKey } from './types';
 import { fileUrlToPath, resolveAgainstApp } from './util';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -14,6 +14,11 @@ const KIND_BY_KEY = new Map<string, EventKind>([
 function tokenOf(t: Json): TokenKey | null {
   if (!t || typeof t.pid !== 'number' || typeof t.pidversion !== 'number') return null;
   return `${t.pid}:${t.pidversion}`;
+}
+
+function idsOf(t: Json): Ids | null {
+  if (![t.ruid, t.euid, t.rgid, t.egid].every(n => typeof n === 'number')) return null;
+  return { ruid: t.ruid, euid: t.euid, rgid: t.rgid, egid: t.egid };
 }
 
 function procInfo(p: Json): ProcInfo {
@@ -32,6 +37,7 @@ function procInfo(p: Json): ProcInfo {
     parentToken: tokenOf(p.parent_audit_token),
     responsibleToken: tokenOf(p.responsible_audit_token),
     startTime: p.start_time ?? null,
+    ids: idsOf(p.audit_token),
   };
 }
 

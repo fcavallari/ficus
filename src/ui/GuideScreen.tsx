@@ -46,9 +46,10 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
   },
   {
     name: 'Getting past the defences',
-    what: <>Removing the quarantine flag from what it brought, turning Gatekeeper off, trusting a certificate, or detaching
-      from the parent that started it so the tree looks innocent.</>,
-    rules: ['quarantine-strip', 'security-setting-change', 'orphaned'],
+    what: <>Removing the quarantine flag from what it brought, turning Gatekeeper off, trusting a certificate, detaching
+      from the parent that started it so the tree looks innocent, and borrowing someone else’s privileges through a setuid
+      binary.</>,
+    rules: ['quarantine-strip', 'security-setting-change', 'orphaned', 'uid-mismatch'],
   },
   {
     name: 'Credential theft',

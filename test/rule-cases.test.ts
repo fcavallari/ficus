@@ -991,3 +991,138 @@ describe('spctl --disable naming, rule explanations, ruby and perl probes', () =
     expect(fires('/usr/bin/perl', ['perl', '-ie'])).toBe(true);
   });
 });
+
+describe('uid-mismatch', () => {
+  const T = '2026-11-12T00:00:00.000Z';
+  const mm = (o: Partial<{ ruid: number; euid: number; rgid: number; egid: number; seq: number; imgIndex: number }> = {}) =>
+    ({ ruid: 501, euid: 0, rgid: 20, egid: 20, seq: 1, time: T, imgIndex: 0, ...o });
+  const one = (image: ReturnType<typeof img>, c?: ReturnType<typeof mm>) =>
+    analyze(capture([proc('100:1', [image], c ? { credMismatches: [c] } : {})]));
+  const finding = (a: ReturnType<typeof analyze>) => allFindings(a).find(f => f.ruleId === 'uid-mismatch');
+
+  test('allow-listed ps is low and context-only', () => {
+    const a = one(apple('/bin/ps', ['ps']), mm());
+    expect(finding(a)?.severity).toBe('low');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+    expect(a.contextOnly.get('100:1')?.some(f => f.ruleId === 'uid-mismatch')).toBe(true);
+  });
+  test('unlisted platform binary is med and queued', () => {
+    const a = one(apple('/usr/bin/foo', ['foo']), mm());
+    expect(finding(a)?.severity).toBe('med');
+    expect(a.queue.find(q => q.procId === '100:1')?.findings.map(f => f.ruleId)).toContain('uid-mismatch');
+  });
+  test('lookalike sudo is high', () => {
+    const a = one(img({ path: '/tmp/sudo', signingId: 'com.apple.sudo', isPlatform: false }), mm());
+    expect(finding(a)?.severity).toBe('high');
+    expect(a.queue.find(q => q.procId === '100:1')?.severity).toBe('high');
+  });
+  test('a non-Apple binary is high', () => {
+    expect(finding(one(img({ path: '/opt/x/tool', signingId: 'com.example.tool', teamId: 'ABCDE12345' }), mm()))?.severity).toBe('high');
+  });
+  test('evidence names the differing pair', () => {
+    const ev = (o: Parameters<typeof mm>[0]) => finding(one(apple('/usr/bin/foo', ['foo']), mm(o)))!.evidence;
+    expect(ev({ euid: 0, egid: 20 })).toBe('euid 0 ≠ ruid 501 (foo)');
+    expect(ev({ euid: 501, egid: 80 })).toBe('egid 80 ≠ rgid 20 (foo)');
+    expect(ev({ euid: 0, egid: 80 })).toBe('euid 0 ≠ ruid 501, egid 80 ≠ rgid 20 (foo)');
+  });
+  test('uses the image recorded with the mismatch', () => {
+    const early = apple('/bin/zsh', ['zsh'], { seq: 1 });
+    const late = img({ path: '/tmp/x', signingId: 'com.example.x', seq: 5, token: '100:1' });
+    const p = proc('100:1', [early, late], { credMismatches: [mm({ seq: 5, imgIndex: 1 })] });
+    expect(finding(analyze(capture([p])))?.severity).toBe('high');
+    const p2 = proc('101:1', [early, late], { credMismatches: [mm({ seq: 5, imgIndex: 0 })] });
+    expect(finding(analyze(capture([p2])))?.severity).toBe('med');
+  });
+  test('several images: the worst one grades the finding, and each distinct pair is named once', () => {
+    const imgs = [apple('/usr/bin/crontab', ['crontab'], { seq: 1 }), apple('/bin/sh', ['sh', '-p'], { seq: 2 }), apple('/bin/sh', ['sh'], { seq: 3 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ imgIndex: 0 }), mm({ seq: 2, imgIndex: 1 }), mm({ seq: 3, imgIndex: 2 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('med');
+    expect(f.evidence).toBe('euid 0 ≠ ruid 501 (crontab); euid 0 ≠ ruid 501 (sh)');
+  });
+  const DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
+  const agentd = () => img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', teamId: 'ABCDE12345' });
+  test('a root process with a user\'s effective uid dropped its privileges: low, context-only, explained as a drop', () => {
+    const a = one(agentd(), mm({ ruid: 0, euid: 501 }));
+    const f = finding(a)!;
+    expect(f.severity).toBe('low');
+    expect(f.title).toBe('Dropped privileges');
+    expect(f.explanation).toBe(DROP);
+    expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd)');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+  });
+  test('a gid-only drop from root\'s group is a drop too, worded for the group', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 })))!;
+    expect(f.severity).toBe('low');
+    expect(f.title).toBe('Dropped privileges');
+    expect(f.explanation).toBe('Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.');
+  });
+  const MIXED_NOTE = 'Entries marked drop or root group are not climbs: root giving its privileges up, or root running with another group, is context. The grade comes from the others.';
+  const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
+  test('a real-root process that gains wheel as its effective group is not an escalation', () => {
+    const a = one(agentd(), mm({ ruid: 0, euid: 0, rgid: 20, egid: 0 }));
+    const f = finding(a)!;
+    expect(f.severity).toBe('low');
+    expect(f.title).toBe('Root with another effective group');
+    expect(f.explanation).toBe(ROOT_GROUP);
+    expect(f.evidence).toBe('egid 0 ≠ rgid 20 (agentd)');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+  });
+  test('a root group change next to a user climbing to root is graded as the climb', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/tmp/x', signingId: null, seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 0, euid: 0, rgid: 20, egid: 0 }), mm({ seq: 2, imgIndex: 1 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
+    expect(f.evidence).toBe('egid 0 ≠ rgid 20 (agentd, root group); euid 0 ≠ ruid 501 (x)');
+  });
+  test('a user process gaining wheel as its effective group still climbs', () => {
+    expect(finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 20, egid: 0 })))!.severity).toBe('high');
+  });
+  test('a uid drop and a gid-only drop together are explained as the uid drop', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/Library/Agent/helper', signingId: 'com.vendor.helper', seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 }), mm({ ruid: 0, euid: 501, seq: 2, imgIndex: 1 })] });
+    expect(finding(analyze(capture([p])))!.explanation).toBe(DROP);
+  });
+  test('climbing to root from a user keeps its tier and explanation', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
+    expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
+    expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
+  });
+  test('a drop and an escalation together: graded and explained as the escalation', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/tmp/x', signingId: null, seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 0, euid: 501 }), mm({ seq: 2, imgIndex: 1 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
+    // The drop is marked in the evidence, and the explanation says why it does not count.
+    expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd, drop); euid 0 ≠ ruid 501 (x)');
+    expect(f.explanation).toBe(`${RULES.find(r => r.id === 'uid-mismatch')!.explanation} ${MIXED_NOTE}`);
+  });
+  test('only escalations: no marks, no note', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
+    expect(f.evidence).toBe('euid 0 ≠ ruid 501 (agentd)');
+    expect(f.explanation).not.toContain(MIXED_NOTE);
+  });
+  test('an allow-listed low finding is queued when its process is in a flagged chain', () => {
+    // top: allow-listed, and no other rule fires on it (ps would also be recon, which queues in a chain by itself).
+    const child = (o = {}) => proc('100:1', [apple('/usr/bin/top', ['top'])], { credMismatches: [mm()], ...o });
+    const alone = analyze(capture([child()]));
+    expect(alone.queue.some(x => x.procId === '100:1')).toBe(false);
+    expect(alone.contextOnly.get('100:1')?.map(f => f.ruleId)).toEqual(['uid-mismatch']);
+    const parent = proc('200:1', [img({ path: '/tmp/dropper', signingId: null, token: '200:1' })], { credMismatches: [mm()] });
+    const a = analyze(capture([parent, child({ originalParent: '200:1' })]));
+    const q = a.queue.find(x => x.procId === '100:1');
+    expect(q?.inFlaggedChain).toBe(true);
+    expect(q?.findings.map(f => [f.ruleId, f.severity])).toEqual([['uid-mismatch', 'low']]);
+  });
+  test('no mismatch, no finding', () => {
+    expect(finding(one(apple('/bin/ps', ['ps'])))).toBeUndefined();
+  });
+  test('cites T1548.001, which has a name', () => {
+    const r = RULES.find(x => x.id === 'uid-mismatch')!;
+    expect(r.mitre).toEqual(['T1548.001']);
+    expect(MITRE_NAMES['T1548.001']).toBe('Abuse Elevation Control Mechanism: Setuid and Setgid');
+  });
+});

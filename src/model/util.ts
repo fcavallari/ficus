@@ -7,6 +7,13 @@ export function basename(p: string | null): string {
   return i < 0 ? trimmed : trimmed.slice(i + 1);
 }
 
+/** Milliseconds since the epoch; tolerates eslogger's nanosecond fractions. */
+export function timeMs(t: string | null): number | null {
+  if (t === null) return null;
+  const ms = Date.parse(t.replace(/(\.\d{3})\d+/, '$1'));
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export function latestImage(p: Process): Image | undefined {
   return p.images[p.images.length - 1];
 }

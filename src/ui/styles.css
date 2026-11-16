@@ -809,6 +809,28 @@ button.dist-row:hover { background: var(--raised); }
   .tl-row { display: block; }
   .tl-t::after { content: ' · '; }
   .tl-t, .tl-k { display: inline; }
+  .tl-row.anchorable button.tl-near { margin-left: 8px; }
+}
+/* Nearby: one process's rows at a time, the offset from the anchor where the clock was. The anchored row is a filled
+   block with a heavier root-coloured edge; a row on the same path as the anchor takes the node colour. */
+.tl-row.anchorable { grid-template-columns: 92px 112px minmax(0, 1fr) auto; }
+button.tl-near { min-height: 0; padding: 0 6px; font-size: 11px; font-weight: 400; color: var(--muted); border-color: var(--root-line); }
+button.tl-near:hover { color: var(--text); }
+button.tl-near[aria-pressed="true"] { color: var(--text); font-weight: 600; background: var(--sheet); border-color: var(--accent); }
+.tl-row.anchored { background: var(--accent-pale); box-shadow: inset 4px 0 0 var(--accent); }
+.tl-row.anchored::before { background: var(--accent); }
+.tl-row.same-path { background: color-mix(in srgb, var(--node) 14%, transparent); box-shadow: inset 4px 0 0 var(--node); }
+.tl-same { color: var(--warn); font-weight: 600; }
+.nearby { margin-top: 18px; }
+.nb-anchor { margin: 0 0 8px; overflow-wrap: anywhere; }
+.nb-group { margin: 0 0 10px; }
+.nb-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 10px 0 2px; font-size: 13px; }
+.nb-unlinked { color: var(--warn); }
+.nb-more { margin: 2px 0 0; }
+@media (forced-colors: active) {
+  .tl-row.anchored { outline: 2px solid Highlight; outline-offset: -2px; }
+  .tl-row.same-path { border-left: 4px solid CanvasText; }
+  button.tl-near[aria-pressed="true"] { outline: 2px solid Highlight; }
 }
 
 /* Tree: the selected process's lineage stands out from the rest: ancestors in the root colour, what it started tinted. */

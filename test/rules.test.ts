@@ -32,7 +32,22 @@ realTest('es-lab must not queue routine noise', () => {
   for (const n of ['ps', 'git', 'docker-tools', 'mdworker_shared']) expect(names).not.toContain(n);
 });
 
-realTest('es-lab queue stays small', () => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(14));
+realTest('es-lab uid mismatches are only ps (setuid root) and loginwindow (a drop), both low and context-only', () => {
+  const q = queued('es-lab.jsonl');
+  const hits = [...q.m.processes.values()].flatMap(p => {
+    const f = [...(q.a.findings.get(p.id) ?? []), ...(q.a.contextOnly.get(p.id) ?? [])].find(x => x.ruleId === 'uid-mismatch');
+    return f ? [{ p, f, name: basename(p.images.at(-1)?.path ?? null) }] : [];
+  });
+  expect(new Set(hits.map(h => h.name))).toEqual(new Set(['ps', 'loginwindow']));
+  for (const { p, f, name } of hits) {
+    expect(f.severity, name).toBe('low');
+    expect(q.a.contextOnly.get(p.id)?.map(x => x.ruleId), name).toContain('uid-mismatch');
+    expect(q.items.some(x => x.p?.id === p.id), name).toBe(false);
+    expect(f.title, name).toBe(name === 'loginwindow' ? 'Dropped privileges' : 'Running with borrowed privileges');
+  }
+});
+
+realTest('es-lab queue stays small',() => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(14));
 
 realTest('es-lab team-signed Chrome clone under /var/folders is context-only', () => {
   const q = queued('es-lab.jsonl');
