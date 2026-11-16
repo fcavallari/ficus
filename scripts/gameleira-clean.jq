@@ -20,6 +20,7 @@
 # `map` says which placeholder a real value already has, `next` the number the next placeholder of a kind gets, `keep`
 # the names that stay as they are, `words` and `multi` the mapped names free text is searched for (replace_mapped) and
 # `nwords` how many there are (jq counts an object's keys one by one, so `length` would cost as much as the object),
+# `rel` the cwd while shell code run from a cleaned place is being cleaned (its relative names are names in that folder),
 # `lastSeq` the highest global_seq_num seen, `new` the key entries the event being cleaned has created. `new` is emptied
 # for each event, never deleted and added back: jq does not reuse a deleted key's slot, so that would grow the state
 # with every event.
@@ -201,7 +202,7 @@ def initial_state($cfg):
   { map: (reduce $cfg.key[] as $k ({}; .[$k.kind][$k.real] = $k.placeholder)),
     next: (reduce $cfg.key[] as $k ({}; .[$k.kind] = ([.[$k.kind] // 1, ($k.placeholder | placeholder_number) + 1] | max))),
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
-    words: {}, multi: {}, nwords: 0, single: false, code: false,
+    words: {}, multi: {}, nwords: 0, single: false, code: false, rel: null,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder));
@@ -455,7 +456,7 @@ def free_text:
   if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:(?:" + HOME_PREFIX + ")/|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")")
   then test("[\\n\\r]|\\s(?:~?/|file:|\\$\\{?HOME)")
   else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)") end;
-# Shell code (state.code, see shell_code: the value of sh -c behind any wrapper, osascript -e …, an ssh remote
+# Shell code (state.code, see shell_text and code_arg: the value of sh -c behind any wrapper, osascript -e …, an ssh remote
 # command) with a space and a cleaned-place path, at its start or glued after something (/Users/x/a.sh https://…,
 # curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c), is free text too: there a space ends a word, so the path
 # ends at it. A single argument (curl -F file=@/Users/x/John Smith.pdf, ssh -i '/Users/x/My Keys') is one value, and
@@ -545,25 +546,79 @@ def clean_relative_arg($prog; $dir; $a):
   | if $prog == "wget" and (.v | looks_like_url) and ($a | looks_like_url | not) then .v = "./" + .v else . end;
 
 # A word with a / after a cleaned-place path in free text: a word of its own, cleaned name by name as in a cleaned place
-# (/Users/Shared stands for "some cleaned folder"), unless it is a host, URL or launchd target, which only has mapped
+# (the exec's cwd when it is one, see shell_words; otherwise /Users/Shared stands for "some cleaned folder"), unless it is a host, URL or launchd target, which only has mapped
 # names replaced. Input: the state. Output: {v, s}.
 def rel_word($w):
   if ($w | test(URL_SCHEME + "|" + HOST_PORT + "|" + USER_HOST + "|" + LAUNCHD_TARGET)) or dotted_host($w) then {v: replace_mapped($w), s: .}
-  else clean_relative_opts("/Users/Shared"; $w; true) end;
+  else clean_relative_opts(.rel // "/Users/Shared"; $w; true) end;
+
+# An argument, or the value of --option=value or NAME=value: {pre: what stays, val: what may be a relative name}.
+def option_value($a):
+  ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
+
+# ---- relative names in shell code ------------------------------------------------------------------------------
+# Shell code run from a cleaned place (state.rel is the exec's cwd: sh -c behind any wrapper, su -c, an ssh remote
+# command) names files relative to that folder. The text between its absolute paths is split into words on whitespace
+# and shell operators (| ; & < > ( ), so 2>err.log is 2, > and err.log), a backslash keeping the next character in the
+# word (Merger\ Deck.key); a quoted string is one word. Each word goes through relative_name, the test an argument
+# gets, and is cleaned as a name in the cwd: hosts, URLs, user@host:, launchd targets, options and the words the rules
+# look for stay; a short mapped name that is a folder of a relative path (HR/Pay.pdf) gets its placeholder.
+def SHELL_SEP: "\\s|;&<>()\"'`";
+def SHELL_TOKENS: "(?:\\\\.|[^" + SHELL_SEP + "])+|[" + SHELL_SEP + "]+";
+def GLOB: "[*?\\[]";
+# One word of shell code ($quoted: the inside of a quoted string) cleaned as a relative name: {v, s}, or null when it
+# is not one. NAME=value and --option=value are cleaned in the value. An unquoted word with a glob (Delta/*.pdf) is
+# cleaned in the folders before the glob. A quoted keychain phrase (jdoe Safe Storage) is left to replace_mapped: the
+# program it belongs to is not known here. Input: the state.
+def shell_word_clean($w; $quoted):
+  .rel as $dir
+  | (if $quoted then {pre: "", val: $w} else option_value($w) end) as $o
+  | (if $quoted then $o.val else $o.val | unescape end) as $u
+  | if $quoted and ($u | test(KEYCHAIN_PHRASES)) then null
+    elif ($quoted | not) and ($u | test(GLOB)) then
+      ($o.val | split("/")) as $c
+      | (first(range(0; $c | length) | select($c[.] | test(GLOB))) // 0) as $g
+      | if $g == 0 then null
+        else ($c[0:$g] | join("/") + "/") as $head
+          | if relative_name(false; $head | unescape) then
+              clean_relative_opts($dir; $head; true) | .v = $o.pre + .v + ($c[$g:] | join("/"))
+            else null end
+        end
+    elif relative_name(false; $u) then clean_relative_opts($dir; $o.val; $quoted | not) | .v = $o.pre + .v
+    else null end;
+# Unquoted shell code with no absolute path in it: its relative words cleaned, mapped names replaced in the rest.
+# Input: the state. Output: {v, s}.
+def shell_words($str):
+  reduce ($str | scan(SHELL_TOKENS)) as $t ({s: ., out: "", pend: ""};
+    if $t | test("^[" + SHELL_SEP + "]") then .pend += $t
+    else (.s | shell_word_clean($t; false)) as $r
+      | if $r == null then .pend += $t
+        else .pend as $p | .out += (.s | replace_mapped($p)) + $r.v | .pend = "" | .s = $r.s end
+    end)
+  | .pend as $p | {v: (.out + (.s | replace_mapped($p))), s: .s};
+# The text around the paths clean_matches finds: mapped names replaced and, in shell code run from a cleaned place,
+# relative names cleaned ($mode "text": words; "quoted": the whole inside of a quoted string). Input: the state.
+def clean_free($str; $mode):
+  if .rel == null or $mode == "plain" then {v: replace_mapped($str), s: .}
+  elif $mode == "quoted" then shell_word_clean($str; true) // {v: replace_mapped($str), s: .}
+  else shell_words($str) end;
 
 # Every path the regex finds in $str cleaned, and mapped names replaced in the text between. $mode: "plain",
 # "quoted" (the inside of a quoted string) or "text" (free text in segments, see TEXT_SEGMENTS). A match that begins
 # // right after a : is a URL's host part (https://host/…), left for the host step. Input: the state. Output: {v, s}.
 def clean_matches($re; $str; $mode):
   [$str | match($re; "g")] as $ms
-  | if $ms == [] then {v: replace_mapped($str), s: .}
+  | (if $mode == "text" then "text" else "plain" end) as $gm
+  | if $ms == [] then clean_free($str; $mode)
     else
       reduce $ms[] as $m ({s: ., out: "", at: 0};
         if $m.offset < .at then .
         else
           .at as $at
           | ($m.offset + $m.length) as $end0
-          | (if $m.offset - $at < 4 then $str[$at:$m.offset] else .s | replace_mapped($str[$at:$m.offset]) end) as $gap
+          | (if $m.offset - $at < 4 and .s.rel == null then {v: $str[$at:$m.offset], s: .s}
+             else .s | clean_free($str[$at:$m.offset]; $gm) end) as $g
+          | .s = $g.s | $g.v as $gap
           | $m.string[0:1] as $q
           | if $mode == "text" and ($q == "\"" or $q == "'") then
               (.s | clean_matches(QUOTED_PATHS; $m.string[1:-1]; "quoted")) as $r
@@ -585,7 +640,8 @@ def clean_matches($re; $str; $mode):
             end
         end)
       | .at as $at
-      | {v: (.out + (if ($str | length) - $at < 4 then $str[$at:] else .s | replace_mapped($str[$at:]) end)), s: .s}
+      | (if ($str | length) - $at < 4 and .s.rel == null then {v: $str[$at:], s: .s} else .s | clean_free($str[$at:]; $gm) end) as $g
+      | {v: (.out + $g.v), s: $g.s}
     end;
 
 # A string with the paths in it cleaned and mapped names replaced. $field: the string is a path field (…path,
@@ -593,6 +649,7 @@ def clean_matches($re; $str; $mode):
 def clean_string($str; $field):
   if $field then
     (if ($str | test("^(?:/|~[A-Za-z0-9._-]*/|file://)")) then clean_path($str) else {v: replace_mapped($str), s: .} end)
+  elif .rel != null then clean_matches(TEXT_SEGMENTS; $str; "text")
   elif ($str | index("/")) == null then {v: replace_mapped($str), s: .}
   elif ($str | free_text) or (.code and ($str | glued_in_code)) then clean_matches(TEXT_SEGMENTS; $str; "text")
   else clean_matches(PLAIN_PATHS; $str; "plain") end;
@@ -648,22 +705,31 @@ def ssh_command_index($args):
             else .host = true end;
           .cmd | select(. != null))) // null;
 
-# A shell, as an argv element: sh, /bin/zsh. su counts: its -c value is run by the account's shell. An assignment
-# (SHELL=/bin/zsh) or an option's value (--shell=/bin/bash) is not one.
-def SHELL_WORD: "^(?:[^=\\s]*/)?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
-# True when argv[$i] is shell code, where a space ends a word: the value of a code option of a program that runs code
-# (code_value: sh -c, osascript -e, python -c …); the value of -c or a cluster ending in c (-lc, -ec) when a shell
-# comes anywhere before it in argv, whatever runs that shell (sudo sh -c, env bash -c, nohup sh -c, xargs sh -c,
-# su root -c); and ssh's remote command ($cmd: ssh_command_index, null for other programs).
-def shell_code($prog; $args; $i; $cmd):
-  ($args[$i - 1] | if type == "string" then . else "" end) as $prev
-  | ($cmd != null and $i >= $cmd)
-    or code_value($prog; $prev)
-    or (($prev | test("^-[A-Za-z]*c$")) and any($args[0:$i - 1][]; type == "string" and test(SHELL_WORD)));
-
-# An argument, or the value of --option=value or NAME=value: {pre: what stays, val: what may be a relative name}.
-def option_value($a):
-  ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
+# A shell, as an argv element: sh, /bin/zsh, and -zsh, a login shell (how sudo -i and su -l run it). su counts: its -c
+# value is run by the account's shell. An assignment (SHELL=/bin/zsh) or an option's value (--shell=/bin/bash) is not one.
+def SHELL_WORD: "^(?:[^=\\s]*/)?-?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
+# A shell's options that take the next argument as their value (bash -o pipefail -c …).
+def SHELL_VALUE_OPTIONS: {"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true};
+# True when argv[$i] is shell code, where a space ends a word and relative names are files: ssh's remote command ($cmd:
+# ssh_command_index, null for other programs), or the value of -c or of a cluster ending in c (-lc, -xc) when a shell
+# comes before it in argv, whatever runs that shell (sh -c, sudo sh -c, env -i bash --noprofile -c, xargs sh -c,
+# su - root -c), with only the shell's options between the two: in `bash deploy.sh -c X` the -c is the script's own
+# option and X a single value. su takes an account name there, so anything may stand between su and -c.
+def shell_text($args; $i; $cmd):
+  ($cmd != null and $i >= $cmd)
+  or ((($args[$i - 1] | if type == "string" then . else "" end) | test("^-[A-Za-z]*c$"))
+      and any(range(0; $i - 1);
+              . as $j
+              | ($args[$j] | type) == "string" and ($args[$j] | test(SHELL_WORD))
+                and (($args[$j] | test("(?:^|/)-?su$"))
+                     or all(range($j + 1; $i - 1);
+                            ($args[.] | type) == "string"
+                            and (($args[.] | test("^[-+]")) or SHELL_VALUE_OPTIONS[$args[. - 1] | tostring] == true)))));
+# True when argv[$i] is code of any kind: shell code ($sh: shell_text), or the value of a code option of another
+# program that runs code (code_value: python -c, perl -e, osascript -e, node --eval …).
+def code_arg($prog; $args; $i; $sh):
+  $sh or ((($prog | test(SHELL_WORD)) | not)
+          and code_value($prog | ltrimstr("-"); $args[$i - 1] | if type == "string" then . else "" end));
 
 # The value-taking short options of wget and curl (WGET_SPEC, CURL_SPEC in src/rules/args.ts).
 def SHORT_VALUES($prog): if $prog == "wget" then "aABDeiIlnoOPQRtTUwX" elif $prog == "curl" then "AbcCdDeEFHKmoPQrtTuUwxXyYz" else "" end;
@@ -709,7 +775,8 @@ def clean_event($state):
         else
           (($p | length) == 4 and $p[0:3] == ["event", "exec", "args"]) as $arg
           | ($arg and $p[3] > 0 and keychain_value($prog; $v)) as $kc
-          | ($arg and $p[3] > 0 and shell_code($prog; $args; $p[3]; $cmd)) as $code
+          | ($arg and $p[3] > 0 and shell_text($args; $p[3]; $cmd)) as $sh
+          | ($arg and $p[3] > 0 and code_arg($prog; $args; $p[3]; $sh)) as $code
           # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
           | if $relc and $arg and ($kc | not)
                and (if $p[3] == 0 then ($v | index("/")) != null
@@ -723,7 +790,8 @@ def clean_event($state):
               | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
             else
               (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
-                 elif $code then .s | .code = true | clean_string($v; false) | .s.code = false
+                 elif $code then .s | .code = true | .rel = (if $relc and $sh then $cwd else null end)
+                                 | clean_string($v; false) | .s.code = false | .s.rel = null
                  else .s | clean_string($v; path_field($p)) end) as $r
               | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end
             end
