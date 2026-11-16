@@ -1,19 +1,24 @@
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, type ParentMode } from '../model/relations';
-import type { ProcId } from '../model/types';
+import type { CaptureModel, ProcId } from '../model/types';
 import { timeMs } from '../model/util';
 import { allTimelineEvents, type TimelineEvent } from './timeline';
 
 /**
  * "What happened nearby": what other processes did within a window of one event. This is an inference from timing
- * alone; `linked` says whether a recorded parent chain ties the process to the anchor's, nothing more.
+ * alone; `link` says whether a recorded parent chain ties the process to the anchor's, nothing more.
  */
 
 /** Window half-widths in ms; the middle one is the default. */
 export const NEARBY_WINDOWS = [1_000, 5_000, 30_000] as const;
 
 export interface NearbyEvent { e: TimelineEvent; offsetMs: number; samePath: boolean }
-export interface NearbyGroup { proc: ProcId; linked: boolean; events: NearbyEvent[] }
+/**
+ * How a recorded parent chain ties a process to the anchor's: one is the other's ancestor (`chain`), or both descend
+ * from a recorded process (`shared`, the nearest one), or neither (null).
+ */
+export type NearbyLink = { kind: 'chain' } | { kind: 'shared'; via: ProcId } | null;
+export interface NearbyGroup { proc: ProcId; link: NearbyLink; events: NearbyEvent[] }
 export interface NearbyResult { groups: NearbyGroup[]; total: number; untimed: number }
 
 const MODES: ParentMode[] = ['original', 'current', 'responsible'];
@@ -50,7 +55,29 @@ function bound(ms: number[], x: number, strict: boolean): number {
   return lo;
 }
 
-const pathsOf = (e: TimelineEvent): string[] => [e.path, e.toPath].filter((p): p is string => !!p);
+/**
+ * The paths an event touched: a file op's path and toPath, an exec's or image's program, a launch item's path. Not the
+ * program path a fork, spawn or exit entry carries: that is inherited, and would make every shell event "same path".
+ */
+const pathsOf = (e: TimelineEvent): string[] =>
+  e.kind === 'fork' || e.kind === 'spawn' || e.kind === 'exit' ? [] : [e.path, e.toPath].filter((p): p is string => !!p);
+
+/**
+ * The link between a process and the anchor's. A common ancestor counts only when it is a recorded process other than
+ * the kernel or launchd (pid 0 or 1), which every process shares. Modes are tried in order; in each, the nearest.
+ */
+function linkOf(m: CaptureModel, id: ProcId, anchor: ProcId, ofAnchor: Set<ProcId>, anchorChains: Map<ParentMode, Set<ProcId>>): NearbyLink {
+  if (ofAnchor.has(id) || MODES.some(mode => ancestry(m, id, mode).includes(anchor))) return { kind: 'chain' };
+  for (const mode of MODES) {
+    const theirs = anchorChains.get(mode)!;
+    for (const a of ancestry(m, id, mode)) {
+      if (!theirs.has(a)) continue;
+      const q = m.processes.get(a);
+      if (q && !q.ghost && q.pid !== 0 && q.pid !== 1) return { kind: 'shared', via: a };
+    }
+  }
+  return null;
+}
 
 /**
  * Groups worth reading first come first: those holding an event on the anchor's own path, then by how close their nearest
@@ -76,7 +103,8 @@ export function nearby(cap: LoadedCapture, anchor: TimelineEvent, windowMs: numb
   const at = timeMs(anchor.time);
   if (at === null) return { groups: [], total: 0, untimed: idx.untimed };
   const m = cap.model;
-  const ofAnchor = new Set<ProcId>(MODES.flatMap(mode => ancestry(m, anchor.proc, mode)));
+  const anchorChains = new Map(MODES.map(mode => [mode, new Set(ancestry(m, anchor.proc, mode))]));
+  const ofAnchor = new Set<ProcId>([...anchorChains.values()].flatMap(c => [...c]));
   const anchorPaths = new Set(pathsOf(anchor));
   const groups = new Map<ProcId, NearbyGroup>();
   let total = 0;
@@ -87,8 +115,7 @@ export function nearby(cap: LoadedCapture, anchor: TimelineEvent, windowMs: numb
     total++;
     let g = groups.get(e.proc);
     if (!g) {
-      const linked = ofAnchor.has(e.proc) || MODES.some(mode => ancestry(m, e.proc, mode).includes(anchor.proc));
-      g = { proc: e.proc, linked, events: [] };
+      g = { proc: e.proc, link: linkOf(m, e.proc, anchor.proc, ofAnchor, anchorChains), events: [] };
       groups.set(e.proc, g);
     }
     g.events.push({ e, offsetMs: idx.ms[i]! - at, samePath: pathsOf(e).some(p => anchorPaths.has(p)) });

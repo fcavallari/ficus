@@ -4,7 +4,7 @@ import { displayName } from '../model/relations';
 import type { ProcId } from '../model/types';
 import { timeMs } from '../model/util';
 import type { Severity } from '../rules/rules';
-import { nearby, NEARBY_WINDOWS, type NearbyGroup } from './nearby';
+import { nearby, NEARBY_WINDOWS, type NearbyGroup, type NearbyLink } from './nearby';
 import { plural, ProcLink, Sev, TimelineRow } from './shared';
 import { RAW_TYPE, type TimelineEvent } from './timeline';
 import { fmtTime } from './triage-model';
@@ -13,6 +13,13 @@ const NEARBY_FIRST = 200;
 const NEARBY_STEP = 200;
 const label = (ms: number): string => `±${ms / 1000} s`;
 const n = (x: number): string => x.toLocaleString('en-US');
+
+/** How a recorded parent chain ties the group's process to the anchor's; no link at all is the case worth a look. */
+function LinkNote({ cap, link, onSelect }: { cap: LoadedCapture; link: NearbyLink; onSelect(id: ProcId): void }) {
+  if (link === null) return <span className="nb-unlinked small">no recorded link</span>;
+  if (link.kind === 'chain') return <span className="muted small">linked by parent chain</span>;
+  return <span className="muted small">shares <ProcLink cap={cap} id={link.via} onSelect={onSelect} /></span>;
+}
 
 /** One process's events in the window: who it is, how it is (not) tied to the anchor's process, then its rows. */
 function Group({ cap, g, shown, severity, onSelect }: {
@@ -24,7 +31,7 @@ function Group({ cap, g, shown, severity, onSelect }: {
       <h5 className="nb-head">
         {sev && <Sev s={sev} />}
         <ProcLink cap={cap} id={g.proc} onSelect={onSelect} />
-        {g.linked ? <span className="muted small">linked by parent chain</span> : <span className="nb-unlinked small">no recorded link</span>}
+        <LinkNote cap={cap} link={g.link} onSelect={onSelect} />
       </h5>
       <ol className="tl" aria-label={`Events of ${displayName(cap.model, g.proc)} near the anchor`}>
         {g.events.slice(0, shown).map(x => (

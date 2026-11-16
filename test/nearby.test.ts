@@ -48,14 +48,36 @@ describe('nearby', () => {
       proc('3:1', [img({ token: '3:1', time: at(1), seq: 3 })], { fileOps: [wr('/tmp/u', 12, 7)] }),
     ]);
     const r = nearby(cap, ev(cap, '1:1:op:5'), 5_000);
-    const linked = Object.fromEntries(r.groups.map(g => [g.proc, g.linked]));
-    expect(linked).toEqual({ '2:1': true, '3:1': false });
+    const link = Object.fromEntries(r.groups.map(g => [g.proc, g.link]));
+    expect(link).toEqual({ '2:1': { kind: 'chain' }, '3:1': null });
     // A child of the anchor's process is linked too (the anchor process is in its ancestry).
     const cap2 = load([
       proc('1:1', [img({ token: '1:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 5)] }),
       proc('2:1', [img({ token: '2:1', time: at(1), seq: 2 })], { responsible: '1:1', fileOps: [wr('/tmp/p', 11, 6)] }),
     ]);
-    expect(nearby(cap2, ev(cap2, '1:1:op:5'), 5_000).groups[0]!.linked).toBe(true);
+    expect(nearby(cap2, ev(cap2, '1:1:op:5'), 5_000).groups[0]!.link).toEqual({ kind: 'chain' });
+  });
+
+  it('a sibling under the same recorded parent shares it', () => {
+    const cap = load([
+      proc('100:1', [img({ token: '100:1', time: at(1), seq: 1, path: '/bin/zsh' })]),
+      proc('200:1', [img({ token: '200:1', time: at(1), seq: 2 })], { originalParent: '100:1', fileOps: [wr('/tmp/a', 10, 5)] }),
+      proc('300:1', [img({ token: '300:1', time: at(1), seq: 3 })], { originalParent: '100:1', fileOps: [wr('/tmp/b', 11, 6)] }),
+    ]);
+    expect(nearby(cap, ev(cap, '200:1:op:5'), 5_000).groups.find(g => g.proc === '300:1')!.link).toEqual({ kind: 'shared', via: '100:1' });
+  });
+
+  it('a common ancestor that is launchd, the kernel or a ghost is no link', () => {
+    const cap = load([
+      proc('1:1', [img({ token: '1:1', time: at(1), seq: 1, path: '/sbin/launchd' })]),
+      proc('ghost:500', [], { ghost: true, pid: 500 }),
+      proc('200:1', [img({ token: '200:1', time: at(1), seq: 2 })], { originalParent: '1:1', fileOps: [wr('/tmp/a', 10, 5)] }),
+      proc('300:1', [img({ token: '300:1', time: at(1), seq: 3 })], { originalParent: '1:1', fileOps: [wr('/tmp/b', 11, 6)] }),
+      proc('400:1', [img({ token: '400:1', time: at(1), seq: 4 })], { originalParent: 'ghost:500', fileOps: [wr('/tmp/c', 10, 7)] }),
+      proc('600:1', [img({ token: '600:1', time: at(1), seq: 6 })], { originalParent: 'ghost:500', fileOps: [wr('/tmp/d', 11, 8)] }),
+    ]);
+    expect(nearby(cap, ev(cap, '200:1:op:5'), 5_000).groups.find(g => g.proc === '300:1')!.link).toBeNull();
+    expect(nearby(cap, ev(cap, '400:1:op:7'), 5_000).groups.find(g => g.proc === '600:1')!.link).toBeNull();
   });
 
   it('marks same-path events', () => {
@@ -77,6 +99,25 @@ describe('nearby', () => {
     const r = nearby(cap, ev(cap, '1:1:op:5'), 5_000);
     expect(r.groups.flatMap(g => g.events.map(x => x.e.path))).toEqual(['/tmp/y']);
     expect(r.untimed).toBe(1);
+  });
+
+  it('fork, spawn and exit entries do not count as the same path, though they carry the program path', () => {
+    const zsh = (id: string, s: number, seq: number, o = {}) => proc(id, [img({ token: id, time: at(s), seq, path: '/bin/zsh', args: ['zsh'] })], o);
+    const kid = (id: string, parent: string, seq: number) =>
+      proc(id, [img({ token: id, time: at(11), seq, path: '/bin/zsh', inherited: true })], { forkParent: parent, originalParent: parent });
+    const cap = load([
+      zsh('100:1', 10, 1),
+      zsh('200:1', 1, 2),
+      kid('300:1', '200:1', 3),                       // a spawn entry of 200:1
+      proc('ghost:9', [], { ghost: true, pid: 9 }),
+      kid('400:1', 'ghost:9', 4),                     // a fork entry, kept: its parent is a ghost
+      zsh('500:1', 12, 5, { exitTime: at(12.5), exitSeq: 6 }),
+    ]);
+    const same = (key: string) => Object.fromEntries(nearby(cap, ev(cap, key), 5_000).groups
+      .flatMap(g => g.events).map(x => [x.e.key, x.samePath]));
+    expect(same('100:1:img:0')).toEqual({ '200:1:spawn:300:1': false, '400:1:fork': false, '500:1:img:0': true, '500:1:exit': false });
+    // And the other way round: a spawn anchor has no path of its own to share.
+    expect(Object.values(same('200:1:spawn:300:1')).some(Boolean)).toBe(false);
   });
 
   it('puts a group with a same-path event first, even before a closer group', () => {

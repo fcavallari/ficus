@@ -2245,6 +2245,15 @@ test('the nearby panel lists another process\'s event, unlinked, and labels it i
   expect(panel.getByText(/1 event in other processes within ±5 s/)).toBeInTheDocument();
 });
 
+test('a nearby process under the same recorded parent says which process it shares', async () => {
+  const zsh = proc('90:1', [apple('/bin/zsh', ['zsh'], { token: '90:1', time: at(0), seq: 0 })]);
+  await openNearby([zsh, proc('100:1', [secAt(10, 1)], { originalParent: '90:1' }), proc('101:1', [osaAt(12, 2)], { originalParent: '90:1' })]);
+  const head = nearbyPanel().getByRole('heading', { name: /osascript/ });
+  expect(head).toHaveTextContent('shares zsh pid 90');
+  expect(within(head).getByRole('button', { name: 'zsh' })).toBeInTheDocument();
+  expect(within(head).queryByText('no recorded link')).not.toBeInTheDocument();
+});
+
 test('clicking nearby on a timeline row re-anchors the panel', async () => {
   await openNearby([
     proc('100:1', [secAt(10, 1)], { fileOps: [writeAt('/tmp/late', 100, 3)] }),
