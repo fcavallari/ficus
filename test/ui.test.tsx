@@ -2329,3 +2329,26 @@ test('nearby lists a same-path event in the first rows even when more than 200 e
   expect(same.closest('li')).toHaveTextContent('+0.200 s');
   expect(within(screen.getByRole('list', { name: /Events of osascript near /i })).getAllByRole('listitem')).toHaveLength(200 - 1);
 });
+
+test('nearby says how many processes the first rows leave out entirely', async () => {
+  const busy = Array.from({ length: 250 }, (_, i) => writeAt(`/tmp/n${i}`, 10.1, 10 + i));
+  await openNearby([
+    proc('100:1', [secAt(10, 1)]),
+    proc('101:1', [osaAt(300, 2)], { fileOps: busy }),
+    proc('102:1', [apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1', time: at(300), seq: 4 })], { fileOps: [writeAt('/tmp/far', 14, 5)] }),
+  ]);
+  expect(nearbyPanel().queryByRole('button', { name: 'spctl' })).not.toBeInTheDocument();
+  expect(nearbyPanel().getByText('1 more process has events further from the anchor')).toBeInTheDocument();
+  await user.click(nearbyPanel().getByRole('button', { name: /Show 51 more/ }));
+  expect(nearbyPanel().getByRole('button', { name: 'spctl' })).toBeInTheDocument();
+  expect(nearbyPanel().queryByText(/further from the anchor/)).not.toBeInTheDocument();
+});
+
+test('nearby shows earlier events with a minus offset, and says capture-wide how many events have no time', async () => {
+  await openNearby([
+    proc('100:1', [secAt(10, 1)], { fileOps: [{ kind: 'write', path: '/tmp/undated', time: '', seq: 3 }] }),
+    proc('101:1', [osaAt(9.58, 2)]),
+  ]);
+  expect(nearbyPanel().getByText('−0.420 s')).toBeInTheDocument();
+  expect(nearbyPanel().getByText(/1 event in this capture has no time and is not placed/)).toBeInTheDocument();
+});

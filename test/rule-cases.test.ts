@@ -1057,6 +1057,7 @@ describe('uid-mismatch', () => {
     expect(f.title).toBe('Dropped privileges');
     expect(f.explanation).toBe('Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.');
   });
+  const MIXED_NOTE = 'Entries marked drop or root group are not climbs: root giving its privileges up, or root running with another group, is context. The grade comes from the others.';
   const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
   test('a real-root process that gains wheel as its effective group is not an escalation', () => {
     const a = one(agentd(), mm({ ruid: 0, euid: 0, rgid: 20, egid: 0 }));
@@ -1073,6 +1074,7 @@ describe('uid-mismatch', () => {
     const f = finding(analyze(capture([p])))!;
     expect(f.severity).toBe('high');
     expect(f.title).toBe('Running with borrowed privileges');
+    expect(f.evidence).toBe('egid 0 ≠ rgid 20 (agentd, root group); euid 0 ≠ ruid 501 (x)');
   });
   test('a user process gaining wheel as its effective group still climbs', () => {
     expect(finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 20, egid: 0 })))!.severity).toBe('high');
@@ -1094,7 +1096,14 @@ describe('uid-mismatch', () => {
     const f = finding(analyze(capture([p])))!;
     expect(f.severity).toBe('high');
     expect(f.title).toBe('Running with borrowed privileges');
-    expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
+    // The drop is marked in the evidence, and the explanation says why it does not count.
+    expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd, drop); euid 0 ≠ ruid 501 (x)');
+    expect(f.explanation).toBe(`${RULES.find(r => r.id === 'uid-mismatch')!.explanation} ${MIXED_NOTE}`);
+  });
+  test('only escalations: no marks, no note', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
+    expect(f.evidence).toBe('euid 0 ≠ ruid 501 (agentd)');
+    expect(f.explanation).not.toContain(MIXED_NOTE);
   });
   test('an allow-listed low finding is queued when its process is in a flagged chain', () => {
     // top: allow-listed, and no other rule fires on it (ps would also be recon, which queues in a chain by itself).

@@ -84,6 +84,9 @@ function mismatchKind(c: { ruid: number; euid: number; rgid: number; egid: numbe
 }
 const PRIVILEGE_DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
 const GROUP_DROP = 'Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.';
+const UID_MISMATCH_EXPLANATION = 'Its effective user or group id differs from its real one, so the process holds the privileges of another account. That is what a setuid or setgid binary does, or a process that called setuid(). Apple ships a few setuid tools (ps, sudo, su, crontab and others), so those are expected; the same behaviour from anything else is a way to climb to root.';
+const MIXED_NOTE = 'Entries marked drop or root group are not climbs: root giving its privileges up, or root running with another group, is context. The grade comes from the others.';
+const KIND_MARK: Record<MismatchKind, string> = { escalation: '', 'uid-drop': 'drop', 'gid-drop': 'drop', 'root-group': 'root group' };
 const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -767,7 +770,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'uid-mismatch', title: 'Running with borrowed privileges', severity: 'high', gated: 'when-low',
-    explanation: 'Its effective user or group id differs from its real one, so the process holds the privileges of another account. That is what a setuid or setgid binary does, or a process that called setuid(). Apple ships a few setuid tools (ps, sudo, su, crontab and others), so those are expected; the same behaviour from anything else is a way to climb to root.',
+    explanation: UID_MISMATCH_EXPLANATION,
     mitre: ['T1548.001'], scope: 'process',
     matchProcess: (p) => {
       const list = p.credMismatches;
@@ -778,16 +781,15 @@ export const RULES: Rule[] = [
       let severity: Severity = 'low';
       let escalation = false;
       const kinds = new Set<MismatchKind>();
-      const parts: string[] = [];
+      const parts: { diffs: string; name: string; kind: MismatchKind }[] = [];
       for (const c of list) {
         const image = p.images[c.imgIndex];
         const diffs: string[] = [];
         if (c.euid !== c.ruid) diffs.push(`euid ${c.euid} ≠ ruid ${c.ruid}`);
         if (c.egid !== c.rgid) diffs.push(`egid ${c.egid} ≠ rgid ${c.rgid}`);
         const name = basename(image?.path ?? null);
-        const part = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
-        if (!parts.includes(part)) parts.push(part);
         const kind = mismatchKind(c);
+        if (!parts.some(x => x.diffs === diffs.join(', ') && x.name === name && x.kind === kind)) parts.push({ diffs: diffs.join(', '), name, kind });
         kinds.add(kind);
         if (kind !== 'escalation') continue;
         escalation = true;
@@ -796,8 +798,13 @@ export const RULES: Rule[] = [
           : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
         if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
       }
-      const evidence = parts.join('; ');
-      if (escalation) return { evidence, severity };
+      // Next to an escalation, a drop or a root group change is marked so the reader does not count it as a climb.
+      const mixed = escalation && kinds.size > 1;
+      const evidence = parts.map(x => {
+        const tags = [x.name, mixed ? KIND_MARK[x.kind] : ''].filter(Boolean).join(', ');
+        return `${x.diffs}${tags ? ` (${tags})` : ''}`;
+      }).join('; ');
+      if (escalation) return mixed ? { evidence, severity, explanation: `${UID_MISMATCH_EXPLANATION} ${MIXED_NOTE}` } : { evidence, severity };
       // Nothing climbed: say what it did instead, the strongest kind first.
       if (kinds.has('uid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: PRIVILEGE_DROP };
       if (kinds.has('gid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: GROUP_DROP };

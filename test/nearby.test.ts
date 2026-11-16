@@ -32,6 +32,17 @@ describe('nearby', () => {
     expect(r.total).toBe(2);
   });
 
+  it('includes events exactly at either edge of the window, and nothing a millisecond past it', () => {
+    const cap = load([
+      proc('1:1', [img({ token: '1:1', time: at(0), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 2)] }),
+      proc('2:1', [img({ token: '2:1', time: at(0), seq: 3 })],
+        { fileOps: [wr('/tmp/out-lo', 4.999, 4), wr('/tmp/lo', 5, 5), wr('/tmp/hi', 15, 6), wr('/tmp/out-hi', 15.001, 7)] }),
+    ]);
+    const r = nearby(cap, ev(cap, '1:1:op:2'), 5_000);
+    expect(r.groups.flatMap(g => g.events).map(x => [x.e.path, x.offsetMs])).toEqual([['/tmp/lo', -5000], ['/tmp/hi', 5000]]);
+    expect(r.total).toBe(2);
+  });
+
   it('leaves out the anchor\'s own process', () => {
     const cap = load([
       proc('1:1', [img({ token: '1:1', time: at(10), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 2), wr('/tmp/a2', 11, 3)] }),

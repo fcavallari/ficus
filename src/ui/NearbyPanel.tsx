@@ -63,6 +63,8 @@ function Results({ cap, anchor, windowMs, severity, onSelect }: {
   const shown = useMemo(() => pickShown(r, limit), [r, limit]);
   const note = r.untimed > 0 ? ` · ${plural(r.untimed, 'event')} in this capture ${r.untimed === 1 ? 'has' : 'have'} no time and ${r.untimed === 1 ? 'is' : 'are'} not placed` : '';
   const left = r.total - shown.size;
+  // A process whose every event is further out than the shown ones has no group on screen: say how many there are.
+  const unseen = r.groups.filter(g => !g.events.some(x => shown.has(x))).length;
   return (
     <>
       <p className="muted small tl-meta">
@@ -72,6 +74,11 @@ function Results({ cap, anchor, windowMs, severity, onSelect }: {
         const mine = g.events.filter(x => shown.has(x));
         return mine.length > 0 && <Group key={g.proc} cap={cap} g={g} shown={mine} severity={severity} onSelect={onSelect} />;
       })}
+      {unseen > 0 && (
+        <p className="muted small nb-more">
+          {unseen === 1 ? '1 more process has' : `${n(unseen)} more processes have`} events further from the anchor
+        </p>
+      )}
       {left > 0 && (
         <button onClick={() => { setLimit(l => l + NEARBY_STEP); }}>
           Show {n(Math.min(NEARBY_STEP, left))} more ({n(left)} left)
