@@ -244,6 +244,10 @@ def LIBRARY_STRUCTURE: {
 
 # A bundle (Foo.app, X.framework …) or Go's build folder: kept wherever it is.
 def bundle_name: test("(?i:\\.(?:app|framework|bundle|plugin|kext|xpc|appex))$|^(?i:go-build)");
+# A bundle whose name has no dot before its suffix (Code.app, Visual Studio Code.app): the rules read such app names,
+# so account names and seeds inside are left alone. One named by a bundle ID (com.jdoe.Helper.xpc) has its parts
+# replaced like any bundle ID.
+def plain_bundle_name: bundle_name and (sub("(?i:\\.[a-z]+)$"; "") | index(".") == null);
 # A reverse-DNS bundle ID (com.apple.launchd.x, with or without .plist), recognised only at the top of a temporary
 # folder: it has a common first label and no document extension, so it.budget.cuts.xlsx is a person's file.
 def bundle_id:
@@ -257,9 +261,10 @@ def kept_name($n; $ids):
 
 # Account names and seeds in a name, whole or as dot- or dash-separated parts: jdoe -> user1, com.jdoe.agent.plist ->
 # com.user1.agent.plist. Only names that already have a placeholder are replaced, so the state does not change. A
-# bundle (Code.app) is kept whole: the rules read app names (Code.app, Visual Studio Code.app). Input: the state.
+# bundle with a plain name (Code.app) is kept whole: the rules read app names (Code.app, Visual Studio Code.app).
+# Input: the state.
 def replace_accounts($n):
-  if .acctn == 0 or ($n | bundle_name) then $n
+  if .acctn == 0 or ($n | plain_bundle_name) then $n
   else .acct as $lu | .acctany as $re
     | ($n | ascii_downcase) as $low
     | if $lu[$low] != null then $lu[$low]
@@ -456,7 +461,7 @@ def seed_kept($t; $m):
   | ($l | test("^-+[A-Za-z0-9_-]*$"))
     or ($before | test("[$]\\{?[A-Za-z0-9_]*$"))
     or (($l | test("^[A-Za-z0-9_]*$")) and ($after | test("^[A-Za-z0-9_]*=")))
-    or .keep[$tok] == true or ($tok | bundle_name)
+    or .keep[$tok] == true or ($tok | plain_bundle_name)
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
     or ((([$before | match(SEED_RUN + "$") | .string] | .[0] // "") + $m.string
@@ -864,7 +869,7 @@ def clean_event($state):
             else $v[$k.dir].path as $dir | $v[$k.name] as $name
               | if ($dir | startswith("/")) and $name != "" then
                   (.s | clean_relative($dir; $name)) as $r
-                  | .s = $r.s | .e |= setpath($p + [$k.name]; $r.v)
+                  | .s = $r.s | .e |= setpath($p + [$k.name]; $r.s | replace_seeds($r.v))
                 else . end
             end
         elif $p[-1] == "signing_id" then
@@ -887,7 +892,7 @@ def clean_event($state):
                     | .s | relative_name($url_arg; $o.val)) then
               arg_value($prog; $v) as $o
               | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
-              | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
+              | .s = $r.s | .e |= setpath($p; $r.s | replace_seeds($o.pre + $r.v))
             else
               (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
                  elif $code then .s | .code = true | .rel = (if $relc and $sh then $cwd else null end)

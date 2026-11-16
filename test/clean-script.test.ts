@@ -1622,6 +1622,9 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
       ...fromApp(904, codeApp, ['/bin/zsh', '-c', 'open -a "Visual Studio Code.app" --args --code --no-code'], 6),
       ...fromApp(906, evil, ['/bin/zsh', '-c', 'echo dev; cat /dev/null'], 8),
       run(910, '/usr/bin/ssh', ['ssh', 'dev@host.example.com', 'ls', '/dev/null'], '/', 10),
+      // A bundle named by a bundle ID has its parts replaced like any bundle ID.
+      esCreate(zsh, { path: '/Applications/Foo.app/Contents/XPCServices/com.code.Foo.Helper.xpc/Contents/MacOS/x' }, 11),
+      esCreate(zsh, { path: '/Users/code/Library/PlugIns/com.code.Tool.appex/y' }, 12),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'code'], ['user', 'dev']])], { input });
     expect(r.status, r.stderr).toBe(0);
@@ -1636,6 +1639,9 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     ]);
     expect(execs[4]!.event.exec.args).toEqual(['ssh', 'user2@host.example.com', 'ls', '/dev/null']);
     expect(execs[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=user1']);
+    const created = ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path as string);
+    expect(created[1]).toBe('/Applications/Foo.app/Contents/XPCServices/com.user1.Foo.Helper.xpc/Contents/MacOS/x');
+    expect(created[2]).toMatch(/^\/Users\/user1\/Library\/PlugIns\/com\.user1\.Tool\.appex\/name\d+$/);
     const raw = findingSignature(buildModel(lines(input)));
     // Only Evil.app's shell is a finding: Code.app and Visual Studio Code.app are editors that run shells.
     const sua = [...raw.entries()].filter(([, v]) => v.some(f => f.startsWith('shell-under-app:'))).map(([k]) => k);
@@ -1664,6 +1670,10 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
       run(940, '/bin/echo', ['echo', 'JOSÉ NÚÑEZ', '$HOME', '${HOME}/x', 'home', 'HOME', 'homework', 'jdoe_backup', 'JDoe-laptop', 'JDOE2', '--home=/tmp', 'x=jdoe'], '/', 1, env),
       run(941, '/bin/sh', ['sh', '-c', 'cp ~/Library/Application\\ Support/Jane\\ Doe\\ Sync/a.db /tmp/ && echo JANE\\ DOE'], '/', 2, env),
       run(942, '/bin/ls', ['ls', '/Library/Application Support/Jane Doe Sync'], '/', 3, env),
+      // Relative arguments and a new file's bare name: kept vendor folders still lose seeds.
+      run(943, '/bin/ls', ['ls', 'Library/Application Support/Jane Doe Sync/x.db', 'Library/Application Support/jdoe_cache/y'], '/Users/jdoe', 4, env),
+      esCreate(zsh, { dir: '/Users/jdoe/Library/Application Support', filename: 'Jane Doe Sync' }, 5),
+      esCreate(zsh, { dir: '/Users/jdoe/Library/Application Support', filename: 'jdoe_cache' }, 6),
     ].join('\n') + '\n';
     const seeds = seedFile([['user', 'home'], ['user', 'jdoe'], ['realname', 'José Núñez'], ['realname', 'Jane Doe']]);
     const r = runClean(['clean', '-o', '-', '-S', seeds], { input });
@@ -1674,8 +1684,27 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     // A seed written with escaped spaces in shell code is replaced, and its placeholder keeps the escapes.
     expect(ev[1]!.event.exec.args[2]).toBe(`cp ~/Library/Application\\ Support/Person\\ 2\\ Sync/${keyed(r.key, 'name').get('a.db')} /tmp/ && echo Person\\ 2`);
     expect(ev[2]!.event.exec.args[1]).toBe('/Library/Application Support/Person 2 Sync');
+    const n = keyed(r.key, 'name');
+    expect(ev[3]!.event.exec.args).toEqual(['ls', `Library/Application Support/Person 2 Sync/${n.get('x.db')}`, `Library/Application Support/user2_cache/${n.get('y')}`]);
+    expect(ev[4]!.event.create.destination.new_path.filename).toBe('Person 2 Sync');
+    expect(ev[5]!.event.create.destination.new_path.filename).toBe('user2_cache');
     // JDOE2 is another word.
     expect(r.out.replace('"JDOE2"', '')).not.toMatch(/jdoe|josé|núñez|jane|doe/i);
+  });
+
+  // Every string is tested against a regex of all the seeds: a seed with regex characters must not break it.
+  test('seeds with regex characters are matched literally, and no event is lost', () => {
+    const input = [
+      run(950, '/bin/echo', ['echo', "Jane's MacBook Pro (2)", 'janes-mbp.corp.example', 'janes-mbpXcorpYexample', 'ab+c[1]', 'abbc1', 'x.y*z'], '/', 1),
+      run(951, '/bin/sh', ['sh', '-c', "echo JANE'S MACBOOK PRO (2) && ping -c1 Janes-MBP.corp.example"], '/', 2),
+    ].join('\n') + '\n';
+    const seeds = seedFile([['host', "Jane's MacBook Pro (2)"], ['host', 'janes-mbp.corp.example'], ['seed', 'ab+c[1]'], ['seed', 'x.y*z']]);
+    const r = runClean(['clean', '-o', '-', '-S', seeds], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.summary['events out']).toBe('2');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]).toEqual(['echo', 'host1.internal.invalid', 'host2.internal.invalid', 'janes-mbpXcorpYexample', 'seed1', 'abbc1', 'seed2']);
+    expect(args[1]![2]).toBe("echo host1.internal.invalid && ping -c1 host2.internal.invalid");
   });
 
   test('placeholders already written are not cleaned again by an account of the same word', () => {
