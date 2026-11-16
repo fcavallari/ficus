@@ -2106,7 +2106,12 @@ async function reopenedWithTwoCaptures(handles = [fileHandle('synthetic-lab-2.js
   await newSession('lab');
   await user.click(await screen.findByRole('button', { name: 'Choose capture files' }));
   await headerShows('111 events');
-  expect(within(screen.getByRole('list', { name: 'Captures' })).getAllByRole('listitem')).toHaveLength(2);
+  // Both labs count 111 events, so the header already says so once the first is in while the second is still loading.
+  // Wait for both to be listed and the load to finish; leaving earlier would drop the second capture.
+  await waitFor(() => {
+    expect(within(screen.getByRole('list', { name: 'Captures' })).getAllByRole('listitem')).toHaveLength(2);
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
   await user.click(screen.getByRole('button', { name: 'Sessions' }));
   await user.click(await screen.findByRole('button', { name: 'lab' }));
   await screen.findByRole('heading', { level: 1, name: 'lab' });
