@@ -102,17 +102,23 @@ def seed_value: split("\t") | .[1:] | join("\t") | trim;
         | if ($f | length) != 3 or (kinds | index($f[0])) == null
           then error("line \($n) of the key file is not kind, placeholder, real")
           else {kind: $f[0], placeholder: $f[1],
-                real: ($f[2] | (try fromjson catch null) | if type == "string" then . else error("line \($n) of the key file has a real value that is not a JSON string") end)} end]
+                real: ($f[2] | (try fromjson catch null) | if type == "string" then . else error("line \($n) of the key file has a real value that is not a JSON string") end)}
+               # An account name, full name, host or seed composed and decomposed, as for -S.
+               + (.key as $i | ($f[2] | try fromjson catch null) as $real
+                  | [$knfd, $knfc | split("\n") | .[$i] // "" | rtrimstr("\r") | split("\t") | .[2] // "null"
+                     | (try fromjson catch null) | strings | select(. != $real)] | unique
+                  | if length > 0 and ({"user": true, "realname": true, "host": true, "seed": true}[$f[0]]) then {forms: .} else {} end) end]
       end),
   keep: ($keep[0] // [])
 }'
 
-# seed_forms FROM TO: the seed file in another Unicode normalization (UTF-8-MAC is macOS's NFD), or nothing where
-# iconv cannot convert. printf is a builtin, so the seeds never become a process's arguments.
-seed_forms() {
+# unicode_forms FILE FROM TO: FILE (the seed file or the loaded key) in another Unicode normalization (UTF-8-MAC is
+# macOS's NFD), or nothing where iconv cannot convert. printf is a builtin, so the values never become a process's
+# arguments.
+unicode_forms() {
   local text
-  [ -n "$SEED_FILE" ] || return 0
-  text=$(iconv -f "$1" -t "$2" < "$SEED_FILE" 2>/dev/null) && printf '%s\n' "$text"
+  [ -n "$1" ] || return 0
+  text=$(iconv -f "$2" -t "$3" < "$1" 2>/dev/null) && printf '%s\n' "$text"
   return 0
 }
 
@@ -121,7 +127,8 @@ write_config() {
   local file=$1 err
   err=$(printf '%s\n' "${DOMAINS[@]}" | "$JQ" -n -R -c --arg kinds "$KINDS" --arg header "$KEY_HEADER" \
     --rawfile seeds "${SEED_FILE:-/dev/null}" --rawfile key "${LOADED_KEY:-/dev/null}" \
-    --rawfile nfd <(seed_forms UTF-8 UTF-8-MAC) --rawfile nfc <(seed_forms UTF-8-MAC UTF-8) \
+    --rawfile nfd <(unicode_forms "$SEED_FILE" UTF-8 UTF-8-MAC) --rawfile nfc <(unicode_forms "$SEED_FILE" UTF-8-MAC UTF-8) \
+    --rawfile knfd <(unicode_forms "$LOADED_KEY" UTF-8 UTF-8-MAC) --rawfile knfc <(unicode_forms "$LOADED_KEY" UTF-8-MAC UTF-8) \
     --slurpfile keep "${KEEP_FILE:-/dev/null}" "$CONFIG_JQ" 2>&1 >"$file") ||
     die "cannot read the seed or key file: ${err#jq: error (at <unknown>): }"
 }

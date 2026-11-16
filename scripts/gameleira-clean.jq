@@ -240,7 +240,7 @@ def initial_state($cfg):
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder))
   | reduce ($cfg.key[] | select({"user": true, "realname": true, "host": true, "seed": true}[.kind])) as $k (.;
-      add_acct($k.real; $k.placeholder))
+      add_acct($k.real; $k.placeholder) | reduce ($k.forms // [])[] as $f (.; add_acct($f; $k.placeholder)))
   | reduce ($cfg.seeds // [])[] as $sd (.;
       placeholder($sd.kind; $sd.value) as $r | $r.state | add_acct($sd.value; $r.ph)
       # The same seed composed or decomposed (NFC, NFD) has the same placeholder.
@@ -467,10 +467,14 @@ def SEED_TOKEN: "[^\\s\"'`=:;|&<>(),/\\\\\\[\\]{}]*";
 def SEED_PART: "[^/\"'`\\n\\r:=;|&<>]*";
 
 # True when an account name or seed found in $t (the match $m) is to stay: inside an option name (--code, --no-code),
-# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name or a bundle with a plain name, tested on the
-# whole part it is in (Code Helper (Plugin).app, Visual Studio Code.app, "Code Helper"), or a placeholder already
-# written (Person 2, person1@example.invalid). In shell code ($code) a part that runs from the start of the code and
-# has a space is a command, not a name (ls jdoe Code.app), so it does not count. Input: the state.
+# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name or a plain bundle that is the whole token
+# (Code.app), or a placeholder already written (Person 2, person1@example.invalid).
+# An account name (never a host, full name or other seed) is also kept inside a kept program name or plain bundle of
+# several words, tested on the whole part it is in (Code Helper (Plugin).app, Visual Studio Code.app, "Code Helper"):
+# in a path component always, elsewhere only when it is a weak word (shorter than 4 characters, common or a rule
+# word: code), since text such as "jdoe has Zoom.app" is not an app's name. In shell code ($code) a part that runs
+# from the start of the code and has a space is a command, not a name (ls jdoe Code.app), so it does not count.
+# Input: the state.
 def seed_kept($t; $m; $code):
   $m.offset as $o | ($o + $m.length) as $e
   | ($t[([$o - 256, 0] | max):$o]) as $before
@@ -484,9 +488,14 @@ def seed_kept($t; $m; $code):
     or .keep[$tok] == true or ($tok | plain_bundle_name)
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
-    or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
-        | ($pl + $m.string + ([$after | match("^" + SEED_PART) | .string] | .[0] // "")) as $part
-        | (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
+    or ((.acct[$m.string | gsub("\\\\(?= )"; "") | ascii_downcase] // "" | test("^user[0-9]+$"))
+        and ([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
+        | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
+        | ($pl + $m.string + $pr) as $part
+        | (($before | length) - ($pl | length)) as $i
+        | ((if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/"
+           or ($m.string | length) < 4 or COMMON_ACCOUNT_WORDS[$m.string | ascii_downcase] == true or protected_word($m.string))
+          and (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
           and (($part | plain_bundle_name) or .keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true));
 
 # $str with account names and seeds replaced, case-insensitively, as whole words (General string cleaning, step 7; a
@@ -870,8 +879,9 @@ def arg_value($prog; $a):
 # environment entries come back in event after event) or tested now. Input: the state.
 def seed_free($v): .acctn == 0 or .clear[$v] == true or (.acctall as $re | $v | test($re; "i") | not);
 # The state with $v noted as seed-free; the list is emptied when it reaches 8192, so it costs little to keep.
+# Values over 1 KB are not noted: a few thousand of them would hold hundreds of MB.
 def note_clear($v):
-  if .acctn == 0 or .clear[$v] == true then .
+  if .acctn == 0 or .clear[$v] == true or ($v | utf8bytelength) > 1024 then .
   else (if .clearn >= 8192 then .clear = {} | .clearn = 0 else . end) | .clear[$v] = true | .clearn += 1 end;
 
 # The event (input) cleaned, with the state the cleaning leaves and the key entries it created:

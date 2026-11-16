@@ -1746,14 +1746,48 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
         const ev = events(r.out);
         const what = `${seeds.map(s => s[1]).join('+')} stdin=${stdin}`;
         expect(ev.filter(e => e.event.fork).map(e => e.process.executable.path), what).toEqual([plugin, vsc, helper2]);
+        // In text, only a weak word (short, common or a rule word: code) is kept inside a bundle name; studio, visual
+        // and helper are replaced there like anywhere in text. Paths keep every bundle name whole.
+        const quoted = seeds[0]![1] === 'code' ? 'open -a "Code Tools.app" && open -a "Visual Studio Code.app"'
+          : seeds[0]![1] === 'studio' ? 'open -a "Code Tools.app" && open -a "Visual user1 Code.app"'
+          : 'open -a "Code Tools.app" && open -a "user1 Studio Code.app"';
         expect(ev.filter(e => e.event.exec).map(e => e.event.exec.args), what).toEqual([
-          ['/bin/zsh', '-c', 'echo hi'], ['/bin/zsh', '-c', 'open -a "Code Tools.app" && open -a "Visual Studio Code.app"'],
+          ['/bin/zsh', '-c', 'echo hi'], ['/bin/zsh', '-c', quoted],
           ['/bin/zsh', '-c', 'echo hi'], ['open', '-a', 'Code Tools.app'],
         ]);
         expect(ev.find(e => e.event.create)!.event.create.destination.existing_file.path, what).toBe('/Applications/Code Tools.app/Contents/MacOS/Tool');
         sameFindings(input, r.out);
       }
     }
+  });
+
+  // A bundle suffix at the end of a sentence does not make the sentence a bundle name.
+  test('a host name or full name in text that ends in a bundle name is replaced', () => {
+    const input = [
+      run(990, '/bin/sh', ['sh', '-c', 'echo "Janes-MacBook-Pro has Zoom.app"'], '/', 1),
+      run(991, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Janes-MacBook-Pro has Zoom.app" with hidden answer'], '/', 2),
+      run(992, '/bin/echo', ['echo', 'Jane Doe uses Zoom.app', 'jdoe has Zoom.app'], '/', 3),
+      esCreate(zsh, { path: '/Applications/Janes-MacBook-Pro Tools.app/Contents/MacOS/x' }, 4),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile(SEEDS)], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.exec.args[2]).toBe('echo "host1.internal.invalid has Zoom.app"');
+    expect(ev[1]!.event.exec.args[2]).toBe('display dialog "host1.internal.invalid has Zoom.app" with hidden answer');
+    expect(ev[2]!.event.exec.args).toEqual(['echo', 'Person 1 uses Zoom.app', 'user1 has Zoom.app']);
+    expect(r.out).not.toMatch(/Janes|MacBook|Jane Doe|jdoe/i);
+    sameFindings(input, r.out);
+  });
+
+  // A key made from seeds on one run is the only source of them on the next (-k without -S).
+  test.skipIf(process.platform !== 'darwin')('a loaded key matches its names composed or decomposed', () => {
+    const nfc = 'José Núñez';
+    const key = path.join(tmpDir(), 'shared.key.tsv');
+    expect(runClean(['clean', '-o', '-', '-k', key, '-S', seedFile([['realname', nfc], ['host', 'Café-Mac']])], { input: '' }).status).toBe(0);
+    const input = run(995, '/bin/echo', ['echo', nfc.normalize('NFD'), 'CAFÉ-MAC'.normalize('NFD'), nfc], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-', '-k', key], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(events(r.out)[0]!.event.exec.args).toEqual(['echo', 'Person 1', 'host1.internal.invalid', 'Person 1']);
   });
 
   // dscl gives full names composed (NFC); file systems and some apps write them decomposed (NFD).
