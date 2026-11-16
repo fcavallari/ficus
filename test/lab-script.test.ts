@@ -5,8 +5,9 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
 import type { CaptureModel, Process } from '../src/model/types';
-import { analyze, type Analysis, type Finding } from '../src/rules/engine';
+import { analyze } from '../src/rules/engine';
 import { RULES, type Severity } from '../src/rules/rules';
+import { queueStatus } from './helpers';
 
 // scripts/gameleira-lab.sh writes a teaching capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh');
@@ -62,22 +63,6 @@ function parseKey(tsv: string): KeyRow[] {
     const [step, rule, severity, queue, marker, note] = l.split('\t');
     return { step: step!, rule: rule!, severity: severity as Severity, queue: queue as Queue, marker: marker!, note: note! };
   });
-}
-
-const GATE = new Map(RULES.map(r => [r.id, r.gated]));
-const isGated = (f: Finding): boolean => {
-  const g = GATE.get(f.ruleId);
-  return g === 'always' || (g === 'when-low' && f.severity === 'low');
-};
-
-/** How a process shows in the queue, by the spec's precedence: own finding, then burst, then chain; else context. */
-function queueStatus(a: Analysis, p: Process): Queue {
-  const item = a.queue.find(q => q.procId === p.id);
-  if (!item) return 'context';
-  if (item.findings.some(f => !isGated(f))) return 'queued';
-  if (item.reconBurst) return 'burst';
-  if (item.inFlaggedChain) return 'in-chain';
-  throw new Error(`pid ${p.pid} is queued for no reason the key knows`);
 }
 
 /** The one process whose arguments (all images joined) contain the marker. */

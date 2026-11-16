@@ -1,7 +1,7 @@
 import { buildModel } from '../src/model/builder';
 import type { CaptureModel, Process } from '../src/model/types';
-import { analyze, type Analysis, type QueueItem } from '../src/rules/engine';
-import type { Severity } from '../src/rules/rules';
+import { analyze, type Analysis, type Finding, type QueueItem } from '../src/rules/engine';
+import { RULES, type Severity } from '../src/rules/rules';
 import { readLines, type FixtureName } from './fixtures';
 
 const cache = new Map<FixtureName, CaptureModel>();
@@ -72,4 +72,44 @@ export function sev(name: FixtureName, pred: (x: QueuedRow) => boolean): Severit
 
 export function count(name: FixtureName, pred: (x: QueuedRow) => boolean): number {
   return queued(name).items.filter(pred).length;
+}
+
+const GATE = new Map(RULES.map(r => [r.id, r.gated]));
+const isGated = (f: Finding): boolean => {
+  const g = GATE.get(f.ruleId);
+  return g === 'always' || (g === 'when-low' && f.severity === 'low');
+};
+
+/** How a process shows in the queue, by the spec's precedence: own finding, then burst, then chain; else context. */
+export function queueStatus(a: Analysis, p: Process): 'queued' | 'burst' | 'in-chain' | 'context' {
+  const item = a.queue.find(q => q.procId === p.id);
+  if (!item) return 'context';
+  if (item.findings.some(f => !isGated(f))) return 'queued';
+  if (item.reconBurst) return 'burst';
+  if (item.inFlaggedChain) return 'in-chain';
+  throw new Error(`pid ${p.pid} is queued for no reason the key knows`);
+}
+
+/**
+ * What a capture makes the rule engine say, keyed by process id (`pid:pidversion`) and by persistence item id. Each
+ * value lists `rule:severity:queue` sorted, one per finding; a queued process with no findings of its own (a burst
+ * or chain member) lists `-:-:queue`. A cleaned capture must give the same map as the raw one.
+ */
+export function findingSignature(m: CaptureModel): Map<string, string[]> {
+  const a = analyze(m);
+  const sig = new Map<string, string[]>();
+  const add = (id: string, v: string): void => { sig.set(id, [...(sig.get(id) ?? []), v].sort()); };
+  for (const [id, list] of [...a.findings, ...a.contextOnly]) {
+    const p = m.processes.get(id);
+    for (const f of list) add(id, `${f.ruleId}:${f.severity}:${p ? queueStatus(a, p) : 'context'}`);
+  }
+  for (const q of a.queue) {
+    if (q.kind === 'persistence' && q.persistenceId !== null) {
+      for (const f of q.findings) add(q.persistenceId, `${f.ruleId}:${f.severity}:item`);
+    } else if (q.procId !== null && !sig.has(q.procId)) {
+      const p = m.processes.get(q.procId);
+      add(q.procId, `-:-:${p ? queueStatus(a, p) : 'context'}`);
+    }
+  }
+  return sig;
 }
