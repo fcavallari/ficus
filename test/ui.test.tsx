@@ -2291,3 +2291,16 @@ test('nearby: an anchor with no recorded time says so instead of listing anythin
   expect(nearbyPanel().getByText(/no recorded time/i)).toBeInTheDocument();
   expect(nearbyPanel().queryByRole('button', { name: 'osascript' })).not.toBeInTheDocument();
 });
+
+test('nearby lists a same-path event in the first rows even when more than 200 earlier events fill the window', async () => {
+  const early = Array.from({ length: 250 }, (_, i) => writeAt(`/tmp/n${i}`, 6 + i / 1000, 10 + i));
+  await openNearby([
+    proc('100:1', [secAt(10, 1)], { fileOps: [writeAt('/tmp/shared.plist', 10, 3)] }),
+    proc('101:1', [osaAt(300, 2)], { fileOps: early }),
+    proc('102:1', [apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1', time: at(300), seq: 4 })], { fileOps: [writeAt('/tmp/shared.plist', 10.2, 5)] }),
+  ]);
+  await user.click(screen.getAllByRole('button', { name: 'Show what happened nearby' })[1]!);   // anchor on the write
+  const same = within(screen.getByRole('list', { name: /Events of spctl near /i })).getByText('same path');
+  expect(same.closest('li')).toHaveTextContent('+0.200 s');
+  expect(within(screen.getByRole('list', { name: /Events of osascript near /i })).getAllByRole('listitem')).toHaveLength(200 - 1);
+});

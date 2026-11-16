@@ -52,6 +52,24 @@ function bound(ms: number[], x: number, strict: boolean): number {
 
 const pathsOf = (e: TimelineEvent): string[] => [e.path, e.toPath].filter((p): p is string => !!p);
 
+/**
+ * Groups worth reading first come first: those holding an event on the anchor's own path, then by how close their nearest
+ * event is to the anchor. Ties go to the group that began earlier, then to the process id, so the order never wobbles.
+ * Events inside a group stay in time order. (By first-event time alone, a busy window buries the nearest events.)
+ */
+function orderGroups(groups: NearbyGroup[]): NearbyGroup[] {
+  const key = (g: NearbyGroup) => ({
+    same: g.events.some(x => x.samePath),
+    nearest: Math.min(...g.events.map(x => Math.abs(x.offsetMs))),
+    first: g.events[0]!.offsetMs,
+  });
+  const keys = new Map(groups.map(g => [g, key(g)]));
+  return groups.sort((a, b) => {
+    const ka = keys.get(a)!, kb = keys.get(b)!;
+    return Number(kb.same) - Number(ka.same) || ka.nearest - kb.nearest || ka.first - kb.first || (a.proc < b.proc ? -1 : a.proc > b.proc ? 1 : 0);
+  });
+}
+
 export function nearby(cap: LoadedCapture, anchor: TimelineEvent, windowMs: number): NearbyResult {
   const idx = indexOf(cap);
   const at = timeMs(anchor.time);
@@ -74,8 +92,7 @@ export function nearby(cap: LoadedCapture, anchor: TimelineEvent, windowMs: numb
     }
     g.events.push({ e, offsetMs: idx.ms[i]! - at, samePath: pathsOf(e).some(p => anchorPaths.has(p)) });
   }
-  // Map insertion order is the order each process first appeared in the window, i.e. by its first event's time.
-  return { groups: [...groups.values()], total, untimed: idx.untimed };
+  return { groups: orderGroups([...groups.values()]), total, untimed: idx.untimed };
 }
 
 /** Where to start: the first event with a finding, else the first exec, else the first event. */

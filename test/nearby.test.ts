@@ -79,14 +79,36 @@ describe('nearby', () => {
     expect(r.untimed).toBe(1);
   });
 
-  it('orders groups by first event time and drops a fork entry whose spawn is present', () => {
+  it('puts a group with a same-path event first, even before a closer group', () => {
+    const cap = load([
+      proc('1:1', [img({ token: '1:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 9)] }),
+      proc('2:1', [img({ token: '2:1', time: at(1), seq: 2 })], { fileOps: [wr('/tmp/near', 10.1, 10)] }),
+      proc('3:1', [img({ token: '3:1', time: at(1), seq: 3 })], { fileOps: [wr('/tmp/a', 14, 11)] }),
+    ]);
+    const r = nearby(cap, ev(cap, '1:1:op:9'), 5_000);
+    expect(r.groups.map(g => g.proc)).toEqual(['3:1', '2:1']);
+    expect(r.groups[0]!.events[0]!.samePath).toBe(true);
+  });
+
+  it('orders other groups by their closest event, even when another group starts earlier', () => {
+    const cap = load([
+      proc('1:1', [img({ token: '1:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 9)] }),
+      proc('2:1', [img({ token: '2:1', time: at(1), seq: 2 })], { fileOps: [wr('/tmp/far', 5.5, 10), wr('/tmp/far2', 6, 11)] }),
+      proc('3:1', [img({ token: '3:1', time: at(1), seq: 3 })], { fileOps: [wr('/tmp/mid', 8, 12), wr('/tmp/mid2', 12, 13)] }),
+      proc('4:1', [img({ token: '4:1', time: at(1), seq: 4 })], { fileOps: [wr('/tmp/closest', 10.2, 14)] }),
+    ]);
+    const r = nearby(cap, ev(cap, '1:1:op:9'), 5_000);
+    expect(r.groups.map(g => g.proc)).toEqual(['4:1', '3:1', '2:1']);
+    // Inside a group the events stay in time order.
+    expect(r.groups[1]!.events.map(x => x.offsetMs)).toEqual([-2000, 2000]);
+  });
+
+  it('drops a fork entry whose spawn is present', () => {
     const cap = load([
       proc('1:1', [img({ token: '1:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 9)] }),
       proc('2:1', [img({ token: '2:1', time: at(1), seq: 2 })], { fileOps: [wr('/tmp/late', 13, 10)] }),
       proc('3:1', [img({ token: '3:1', time: at(1), seq: 3 })], { fileOps: [wr('/tmp/early', 8, 11)] }),
     ]);
-    const r = nearby(cap, ev(cap, '1:1:op:9'), 5_000);
-    expect(r.groups.map(g => g.proc)).toEqual(['3:1', '2:1']);
     const kid = proc('4:1', [img({ token: '4:1', time: at(9), seq: 4, inherited: true })], { forkParent: '2:1' });
     const cap2 = load([...[...cap.model.processes.values()], kid]);
     const forks = allTimelineEvents(cap2).filter(e => e.kind === 'fork');
