@@ -2357,3 +2357,24 @@ test('nearby shows earlier events with a minus offset, and says capture-wide how
   expect(nearbyPanel().getByText('−0.420 s')).toBeInTheDocument();
   expect(nearbyPanel().getByText(/1 event in this capture has no time and is not placed/)).toBeInTheDocument();
 });
+
+test('nearby: a picked anchor can be reset to the default event, and the button only shows when it would change something', async () => {
+  await openNearby([
+    proc('100:1', [secAt(10, 1)], { fileOps: [writeAt('/tmp/late', 100, 3)] }),
+    proc('101:1', [osaAt(12, 2)]),
+    proc('102:1', [apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1', time: at(101), seq: 4 })]),
+  ]);
+  const reset = () => nearbyPanel().queryByRole('button', { name: 'Back to the default event' });
+  expect(reset()).not.toBeInTheDocument();
+  const marks = screen.getAllByRole('button', { name: 'Show what happened nearby' });
+  await user.click(marks[1]!);
+  expect(nearbyPanel().getByRole('button', { name: 'spctl' })).toBeInTheDocument();
+  await user.click(reset()!);
+  expect(marks[0]).toHaveAttribute('aria-pressed', 'true');
+  expect(marks[1]).toHaveAttribute('aria-pressed', 'false');
+  expect(nearbyPanel().getByRole('button', { name: 'osascript' })).toBeInTheDocument();
+  expect(reset()).not.toBeInTheDocument();
+  // Picking the default row itself is no change, so there is nothing to reset.
+  await user.click(marks[0]!);
+  expect(reset()).not.toBeInTheDocument();
+});

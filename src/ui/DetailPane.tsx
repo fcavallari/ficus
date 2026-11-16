@@ -229,7 +229,10 @@ function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
   const [allKids, setAllKids] = useState(false);
   // The event the nearby panel is built around: one the person picked on the Timeline, else the most telling own event.
   const [picked, setPicked] = useState<TimelineEvent | null>(null);
-  const anchor = picked ?? defaultAnchor(own);
+  const fallback = defaultAnchor(own);
+  const anchor = picked ?? fallback;
+  // Offered only when it would change the anchor: picking the default row itself leaves nothing to reset.
+  const reset = picked !== null && picked.key !== fallback?.key ? () => { setPicked(null); } : undefined;
   const kids = useMemo(() => childrenIndex(cap.model, 'original').get(p.id) ?? [], [cap, p.id]);
   const severity = useMemo(() => {
     const m = new Map<ProcId, Severity>();
@@ -257,7 +260,7 @@ function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
       )}
       {kids.length > SHOW_FIRST && !allKids && <button onClick={() => { setAllKids(true); }}>Show all {kids.length}</button>}
       <Timeline key={p.id} cap={cap} p={p} anchor={anchor} onAnchor={setPicked} onSelect={onSelect} />
-      {anchor && <NearbyPanel key={`nearby-${p.id}`} cap={cap} anchor={anchor} severity={severity} onSelect={onSelect} />}
+      {anchor && <NearbyPanel key={`nearby-${p.id}`} cap={cap} anchor={anchor} severity={severity} onSelect={onSelect} onReset={reset} />}
     </Section>
   );
 }

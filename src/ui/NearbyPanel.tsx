@@ -92,8 +92,10 @@ function Results({ cap, anchor, windowMs, severity, onSelect }: {
  * What other processes did close in time to one event. This is inference from timing alone: the capture does not say
  * these events are related, only that they sit near each other, so each process says whether a parent chain ties it in.
  */
-export function NearbyPanel({ cap, anchor, severity, onSelect }: {
+export function NearbyPanel({ cap, anchor, severity, onSelect, onReset }: {
   cap: LoadedCapture; anchor: TimelineEvent; severity: Map<ProcId, Severity>; onSelect(id: ProcId): void;
+  /** Present when the anchor was picked on the Timeline and is not the default one: puts the default back. */
+  onReset?: () => void;
 }) {
   const [win, setWin] = useState<number>(NEARBY_WINDOWS[1]);
   const timed = timeMs(anchor.time) !== null;
@@ -117,6 +119,7 @@ export function NearbyPanel({ cap, anchor, severity, onSelect }: {
       <p className="small nb-anchor">
         <span className="muted">Around </span><span className="mono">{anchor.time ? fmtTime(anchor.time) : 'no time'}</span>
         <span className="muted"> · {RAW_TYPE[anchor.kind]} · </span><code className="mono wrap">{anchor.path ?? '(no path)'}</code>
+        {onReset && <> <button className="link small nb-reset" onClick={onReset}>Back to the default event</button></>}
       </p>
       {timed
         ? <Results key={`${anchor.key}|${win}`} cap={cap} anchor={anchor} windowMs={win} severity={severity} onSelect={onSelect} />
