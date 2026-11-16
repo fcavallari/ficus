@@ -991,3 +991,54 @@ describe('spctl --disable naming, rule explanations, ruby and perl probes', () =
     expect(fires('/usr/bin/perl', ['perl', '-ie'])).toBe(true);
   });
 });
+
+describe('uid-mismatch', () => {
+  const T = '2026-11-12T00:00:00.000Z';
+  const mm = (o: Partial<{ ruid: number; euid: number; rgid: number; egid: number; seq: number }> = {}) =>
+    ({ ruid: 501, euid: 0, rgid: 20, egid: 20, seq: 1, time: T, ...o });
+  const one = (image: ReturnType<typeof img>, credMismatch?: ReturnType<typeof mm>) =>
+    analyze(capture([proc('100:1', [image], credMismatch ? { credMismatch } : {})]));
+  const finding = (a: ReturnType<typeof analyze>) => allFindings(a).find(f => f.ruleId === 'uid-mismatch');
+
+  test('allow-listed ps is low and context-only', () => {
+    const a = one(apple('/bin/ps', ['ps']), mm());
+    expect(finding(a)?.severity).toBe('low');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+    expect(a.contextOnly.get('100:1')?.some(f => f.ruleId === 'uid-mismatch')).toBe(true);
+  });
+  test('unlisted platform binary is med and queued', () => {
+    const a = one(apple('/usr/bin/foo', ['foo']), mm());
+    expect(finding(a)?.severity).toBe('med');
+    expect(a.queue.find(q => q.procId === '100:1')?.findings.map(f => f.ruleId)).toContain('uid-mismatch');
+  });
+  test('lookalike sudo is high', () => {
+    const a = one(img({ path: '/tmp/sudo', signingId: 'com.apple.sudo', isPlatform: false }), mm());
+    expect(finding(a)?.severity).toBe('high');
+    expect(a.queue.find(q => q.procId === '100:1')?.severity).toBe('high');
+  });
+  test('a non-Apple binary is high', () => {
+    expect(finding(one(img({ path: '/opt/x/tool', signingId: 'com.example.tool', teamId: 'ABCDE12345' }), mm()))?.severity).toBe('high');
+  });
+  test('evidence names the differing pair', () => {
+    const ev = (o: Parameters<typeof mm>[0]) => finding(one(apple('/usr/bin/foo', ['foo']), mm(o)))!.evidence;
+    expect(ev({ euid: 0, egid: 20 })).toBe('euid 0 ≠ ruid 501 (foo)');
+    expect(ev({ euid: 501, egid: 80 })).toBe('egid 80 ≠ rgid 20 (foo)');
+    expect(ev({ euid: 0, egid: 80 })).toBe('euid 0 ≠ ruid 501, egid 80 ≠ rgid 20 (foo)');
+  });
+  test('uses the image running at the mismatch', () => {
+    const early = apple('/bin/zsh', ['zsh'], { seq: 1 });
+    const late = img({ path: '/tmp/x', signingId: 'com.example.x', seq: 5, token: '100:1' });
+    const p = proc('100:1', [early, late], { credMismatch: mm({ seq: 5 }) });
+    expect(finding(analyze(capture([p])))?.severity).toBe('high');
+    const p2 = proc('101:1', [early, late], { credMismatch: mm({ seq: 2 }) });
+    expect(finding(analyze(capture([p2])))?.severity).toBe('med');
+  });
+  test('no credMismatch, no finding', () => {
+    expect(finding(one(apple('/bin/ps', ['ps'])))).toBeUndefined();
+  });
+  test('cites T1548.001, which has a name', () => {
+    const r = RULES.find(x => x.id === 'uid-mismatch')!;
+    expect(r.mitre).toEqual(['T1548.001']);
+    expect(MITRE_NAMES['T1548.001']).toBe('Abuse Elevation Control Mechanism: Setuid and Setgid');
+  });
+});

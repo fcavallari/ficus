@@ -58,6 +58,14 @@ function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
+/** Apple tools that are setuid or setgid by design, by signing ID (checked with find -perm and codesign, plus two seen in captures). */
+export const SETUID_ALLOW: Set<string> = new Set([
+  'com.apple.ps', 'com.apple.top', 'com.apple.write', 'com.apple.atrm', 'com.apple.batch', 'com.apple.crontab',
+  'com.apple.newgrp', 'com.apple.su', 'com.apple.sudo', 'com.apple.quota', 'com.apple.login', 'com.apple.traceroute',
+  'com.apple.traceroute6', 'com.apple.postqueue', 'com.apple.postdrop', 'com.apple.authopen',
+  'com.apple.security_authtrampoline', 'com.apple.RemoteDesktopAgent', 'com.apple.loginwindow',
+]);
+
 // ---------------------------------------------------------------------------------------------------------------
 // Recon and security settings
 
@@ -735,6 +743,25 @@ export const RULES: Rule[] = [
       const parent = originalParentImage(m, p)?.path ?? null;
       if (basename(parent) === 'xpcproxy') return null;
       return { evidence: `parent pid ${p.originalPpid}${parent ? ` (${basename(parent)})` : ''} gone; now under launchd` };
+    },
+  },
+  {
+    id: 'uid-mismatch', title: 'Running with borrowed privileges', severity: 'high', gated: 'when-low',
+    explanation: 'Its effective user or group id differs from its real one, so the process holds the privileges of another account. That is what a setuid or setgid binary does, or a process that called setuid(). Apple ships a few setuid tools (ps, sudo, su, crontab and others), so those are expected; the same behaviour from anything else is a way to climb to root.',
+    mitre: ['T1548.001'], scope: 'process',
+    matchProcess: (p) => {
+      const c = p.credMismatch;
+      if (!c) return null;
+      const image = imageAt(p, c.seq);
+      const diffs: string[] = [];
+      if (c.euid !== c.ruid) diffs.push(`euid ${c.euid} ≠ ruid ${c.ruid}`);
+      if (c.egid !== c.rgid) diffs.push(`egid ${c.egid} ≠ rgid ${c.rgid}`);
+      const name = basename(image?.path ?? null);
+      const evidence = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
+      // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
+      const severity: Severity = !image || !image.isPlatform ? 'high'
+        : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
+      return { evidence, severity };
     },
   },
   {
