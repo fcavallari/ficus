@@ -123,6 +123,19 @@ export function nearby(cap: LoadedCapture, anchor: TimelineEvent, windowMs: numb
   return { groups: orderGroups([...groups.values()]), total, untimed: idx.untimed };
 }
 
+/**
+ * Which events to show when only `limit` fit: same-path events first, then the ones nearest the anchor, whichever process
+ * they belong to (ties: the earlier, then capture order). Picking group by group instead lets one busy process fill
+ * every row and hide the processes that did one thing close by.
+ */
+export function pickShown(r: NearbyResult, limit: number): Set<NearbyEvent> {
+  const all: NearbyEvent[] = [];
+  for (const g of r.groups) for (const x of g.events) all.push(x);
+  all.sort((a, b) => Number(b.samePath) - Number(a.samePath) || Math.abs(a.offsetMs) - Math.abs(b.offsetMs)
+    || a.offsetMs - b.offsetMs || a.e.seq - b.e.seq || a.e.key.localeCompare(b.e.key));
+  return new Set(all.length > limit ? all.slice(0, limit) : all);
+}
+
 /** Where to start: the first event with a finding, else the first exec, else the first event. */
 export function defaultAnchor(events: TimelineEvent[]): TimelineEvent | null {
   return events.find(e => e.findings.length > 0) ?? events.find(e => e.kind === 'exec') ?? events[0] ?? null;

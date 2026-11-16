@@ -4,7 +4,7 @@ import { displayName } from '../model/relations';
 import type { ProcId } from '../model/types';
 import { timeMs } from '../model/util';
 import type { Severity } from '../rules/rules';
-import { nearby, NEARBY_WINDOWS, type NearbyGroup, type NearbyLink } from './nearby';
+import { nearby, NEARBY_WINDOWS, pickShown, type NearbyEvent, type NearbyGroup, type NearbyLink } from './nearby';
 import { plural, ProcLink, Sev, TimelineRow } from './shared';
 import { RAW_TYPE, type TimelineEvent } from './timeline';
 import { fmtTime } from './triage-model';
@@ -21,11 +21,15 @@ function LinkNote({ cap, link, onSelect }: { cap: LoadedCapture; link: NearbyLin
   return <span className="muted small">shares <ProcLink cap={cap} id={link.via} onSelect={onSelect} /></span>;
 }
 
-/** One process's events in the window: who it is, how it is (not) tied to the anchor's process, then its rows. */
+/**
+ * One process's events in the window: who it is, how it is (not) tied to the anchor's process, then the rows picked to
+ * show (in time order) and how many of its events are not shown yet.
+ */
 function Group({ cap, g, shown, severity, onSelect }: {
-  cap: LoadedCapture; g: NearbyGroup; shown: number; severity: Map<ProcId, Severity>; onSelect(id: ProcId): void;
+  cap: LoadedCapture; g: NearbyGroup; shown: NearbyEvent[]; severity: Map<ProcId, Severity>; onSelect(id: ProcId): void;
 }) {
   const sev = severity.get(g.proc);
+  const hidden = g.events.length - shown.length;
   return (
     <div className="nb-group">
       <h5 className="nb-head">
@@ -34,38 +38,43 @@ function Group({ cap, g, shown, severity, onSelect }: {
         <LinkNote cap={cap} link={g.link} onSelect={onSelect} />
       </h5>
       <ol className="tl" aria-label={`Events of ${displayName(cap.model, g.proc)} near the anchor`}>
-        {g.events.slice(0, shown).map(x => (
+        {shown.map(x => (
           <TimelineRow key={x.e.key} cap={cap} e={x.e} self={g.proc} multiDay={false} onSelect={onSelect}
             nearby={{ offsetMs: x.offsetMs, samePath: x.samePath }} />
         ))}
       </ol>
+      {hidden > 0 && <p className="muted small nb-more">+{n(hidden)} more in this process</p>}
     </div>
   );
 }
 
 /**
- * The result for one anchor and window. Mounted in steps (the lookup is uncapped and a busy window can hold thousands of
- * events); keyed by anchor and window by the caller, so a new choice starts again at the first rows.
+ * The result for one anchor and window. Shown in steps (the lookup is uncapped and a busy window can hold thousands of
+ * events), the events nearest the anchor first whichever process they belong to; keyed by anchor and window by the
+ * caller, so a new choice starts again at the first rows.
  */
 function Results({ cap, anchor, windowMs, severity, onSelect }: {
   cap: LoadedCapture; anchor: TimelineEvent; windowMs: number; severity: Map<ProcId, Severity>; onSelect(id: ProcId): void;
 }) {
   const [limit, setLimit] = useState(NEARBY_FIRST);
-  // The key stands for the anchor: the Timeline hands over fresh event objects for the same event.
+  // Memoised so "Show more" (which re-renders this component) and the parent's re-renders do not redo the lookup. The
+  // dependency is anchor.key, not the anchor object: the Timeline hands over a fresh object for the same event.
   const r = useMemo(() => nearby(cap, anchor, windowMs), [cap, anchor.key, windowMs]);
+  const shown = useMemo(() => pickShown(r, limit), [r, limit]);
   const note = r.untimed > 0 ? ` · ${plural(r.untimed, 'event')} in this capture ${r.untimed === 1 ? 'has' : 'have'} no time and ${r.untimed === 1 ? 'is' : 'are'} not placed` : '';
-  let left = limit;
-  const rows = r.groups.map(g => { const k = Math.min(left, g.events.length); left -= k; return k; });
-  const mounted = limit - left;
+  const left = r.total - shown.size;
   return (
     <>
       <p className="muted small tl-meta">
         {r.total === 0 ? `Nothing else recorded within ${label(windowMs)}.` : `${plural(r.total, 'event')} in other processes within ${label(windowMs)}`}{note}
       </p>
-      {r.groups.map((g, i) => rows[i]! > 0 && <Group key={g.proc} cap={cap} g={g} shown={rows[i]!} severity={severity} onSelect={onSelect} />)}
-      {r.total > mounted && (
+      {r.groups.map(g => {
+        const mine = g.events.filter(x => shown.has(x));
+        return mine.length > 0 && <Group key={g.proc} cap={cap} g={g} shown={mine} severity={severity} onSelect={onSelect} />;
+      })}
+      {left > 0 && (
         <button onClick={() => { setLimit(l => l + NEARBY_STEP); }}>
-          Show {n(Math.min(NEARBY_STEP, r.total - mounted))} more ({n(r.total - mounted)} left)
+          Show {n(Math.min(NEARBY_STEP, left))} more ({n(left)} left)
         </button>
       )}
     </>

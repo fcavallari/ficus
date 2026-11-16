@@ -2293,6 +2293,22 @@ test('nearby shows at most 200 events, then more on request', async () => {
   expect(nearbyPanel().queryByRole('button', { name: /more/ })).not.toBeInTheDocument();
 });
 
+test('nearby fills its first rows with the events nearest the anchor, across processes', async () => {
+  // The busy process also holds the event nearest the anchor, so its group is listed first.
+  const busy = Array.from({ length: 300 }, (_, i) => writeAt(`/tmp/n${i}`, i === 0 ? 10.1 : i % 2 ? 14 : 6, 10 + i));
+  const singles = Array.from({ length: 20 }, (_, i) => proc(`${200 + i}:1`,
+    [apple('/usr/bin/true', ['true'], { token: `${200 + i}:1`, time: at(300), seq: 400 + i })],
+    { fileOps: [writeAt(`/tmp/s${i}`, i % 2 ? 10.5 : 9.5, 500 + i)] }));
+  await openNearby([proc('100:1', [secAt(10, 1)]), proc('101:1', [osaAt(300, 2)], { fileOps: busy }), ...singles]);
+  expect(nearbyPanel().getAllByRole('list', { name: /Events of true near / })).toHaveLength(20);
+  const busyRows = () => within(nearbyPanel().getByRole('list', { name: /Events of osascript near / })).getAllByRole('listitem');
+  expect(busyRows()).toHaveLength(180);
+  expect(nearbyPanel().getByText('+120 more in this process')).toBeInTheDocument();
+  await user.click(nearbyPanel().getByRole('button', { name: /Show 120 more \(120 left\)/ }));
+  expect(busyRows()).toHaveLength(300);
+  expect(nearbyPanel().queryByText(/more in this process/)).not.toBeInTheDocument();
+});
+
 test('nearby: an anchor with no recorded time says so instead of listing anything', async () => {
   await openNearby([proc('100:1', [secAt(10, 1)], { fileOps: [{ kind: 'write', path: '/tmp/x', time: '', seq: 3 }] }), proc('101:1', [osaAt(12, 2)])]);
   const undated = screen.getAllByRole('button', { name: 'Show what happened nearby' })[1]!;

@@ -3,7 +3,7 @@ import type { LoadedCapture } from '../src/ingest/load';
 import type { FileOp } from '../src/model/types';
 import { analyze } from '../src/rules/engine';
 import { allTimelineEvents, type TimelineEvent } from '../src/ui/timeline';
-import { defaultAnchor, nearby, NEARBY_WINDOWS } from '../src/ui/nearby';
+import { defaultAnchor, nearby, NEARBY_WINDOWS, pickShown } from '../src/ui/nearby';
 import { capture, img, op, proc } from './synth';
 
 const T0 = Date.parse('2026-11-12T00:00:10.000Z');
@@ -175,6 +175,48 @@ describe('nearby', () => {
     const r = nearby(cap, ev(cap, '100:1:op:5'), 5_000);
     expect(r.total).toBe(150_000);
     expect(r.groups).toHaveLength(1);
+  });
+
+  describe('pickShown', () => {
+    /** One busy process with 300 events (299 at ±4 s) and 20 others with one event each at ±0.5 s, around a write at 10 s. */
+    const busyWindow = () => {
+      // The busy process also holds the event nearest the anchor, so its group is listed first.
+      const busy = Array.from({ length: 300 }, (_, i) => wr(`/tmp/busy${i}`, i === 0 ? 10.1 : i % 2 ? 14 : 6, 100 + i));
+      const singles = Array.from({ length: 20 }, (_, i) =>
+        proc(`${300 + i}:1`, [img({ token: `${300 + i}:1`, time: at(1), seq: 10 + i })], { fileOps: [wr(`/tmp/s${i}`, i % 2 ? 10.5 : 9.5, 500 + i)] }));
+      const cap = load([
+        proc('100:1', [img({ token: '100:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 5)] }),
+        proc('200:1', [img({ token: '200:1', time: at(1), seq: 2 })], { fileOps: busy }),
+        ...singles,
+      ]);
+      return nearby(cap, ev(cap, '100:1:op:5'), 5_000);
+    };
+
+    it('takes the events nearest the anchor across all groups, not the first groups in order', () => {
+      const r = busyWindow();
+      const shown = pickShown(r, 200);
+      expect(shown.size).toBe(200);
+      const singles = r.groups.filter(g => g.proc !== '200:1');
+      expect(singles).toHaveLength(20);
+      for (const g of singles) expect(shown.has(g.events[0]!), g.proc).toBe(true);
+      expect(r.groups.find(g => g.proc === '200:1')!.events.filter(x => shown.has(x))).toHaveLength(180);
+    });
+
+    it('a larger limit reveals more, up to everything', () => {
+      const r = busyWindow();
+      expect(pickShown(r, 400).size).toBe(320);
+      const first = pickShown(r, 200);
+      for (const x of first) expect(pickShown(r, 400).has(x)).toBe(true);
+    });
+
+    it('same-path events come first, however far', () => {
+      const cap = load([
+        proc('100:1', [img({ token: '100:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 5)] }),
+        proc('200:1', [img({ token: '200:1', time: at(1), seq: 2 })], { fileOps: [wr('/tmp/near', 10.1, 6), wr('/tmp/a', 14.9, 7)] }),
+      ]);
+      const r = nearby(cap, ev(cap, '100:1:op:5'), 5_000);
+      expect([...pickShown(r, 1)].map(x => x.e.path)).toEqual(['/tmp/a']);
+    });
   });
 
   it('offers three windows, 5 s by default', () => {

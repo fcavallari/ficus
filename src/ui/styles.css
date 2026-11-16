@@ -826,6 +826,7 @@ button.tl-near[aria-pressed="true"] { color: var(--text); font-weight: 600; back
 .nb-group { margin: 0 0 10px; }
 .nb-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 10px 0 2px; font-size: 13px; }
 .nb-unlinked { color: var(--warn); }
+.nb-more { margin: 2px 0 0; }
 @media (forced-colors: active) {
   .tl-row.anchored { outline: 2px solid Highlight; outline-offset: -2px; }
   .tl-row.same-path { border-left: 4px solid CanvasText; }
