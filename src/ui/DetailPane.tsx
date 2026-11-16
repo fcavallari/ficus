@@ -5,13 +5,16 @@ import type { ProcId, Process } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { MITRE_NAMES } from '../rules/mitre';
-import { SEVERITY_RANK, type Severity } from '../rules/rules';
+import type { Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { LaunchItem } from './LaunchItem';
+import { defaultAnchor } from './nearby';
+import { NearbyPanel } from './NearbyPanel';
 import { STATUS_ICON } from './QueueList';
 import { useSession } from './session-context';
-import { processTimeline, RAW_TYPE, recordedCounts, recordedSpan, type TimelineEvent, type TimelineKind } from './timeline';
+import { plural, ProcLink, Sev, TimelineRow } from './shared';
+import { processTimeline, recordedCounts, recordedSpan, type TimelineEvent, type TimelineKind } from './timeline';
 import {
   coverage, fmtArgs, fmtClock, fmtTime, overview, SEVERITY_LABEL, TRIAGE_KEYS, VERDICT_LABEL, verdictKey,
 } from './triage-model';
@@ -20,7 +23,6 @@ const SHOW_FIRST = 40;
 const TIMELINE_FIRST = 60;
 const TIMELINE_STEP = 200;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
-const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
@@ -29,11 +31,6 @@ function Section({ id, title, children }: { id: string; title: string; children:
       {children}
     </section>
   );
-}
-
-/** A severity badge: the short form in lists, the full word (`full`) where there is room. */
-function Sev({ s, full }: { s: Severity; full?: boolean }) {
-  return <span className={`badge sev-${s}${full ? ' full' : ''}`} title={`Severity: ${SEVERITY_LABEL[s]}`}>{full ? SEVERITY_LABEL[s] : s}</span>;
 }
 
 /** One finding, written for a learner: what it means first, then the technique, then the evidence. */
@@ -136,18 +133,6 @@ function Dl({ rows }: { rows: [string, ReactNode][] }) {
   );
 }
 
-/** A process link with its pid, or the bare pid when the capture has no process for it. */
-function ProcLink({ cap, id, onSelect }: { cap: LoadedCapture; id: ProcId | null; onSelect(id: ProcId): void }) {
-  if (id === null) return <span className="muted">not recorded</span>;
-  const q = cap.model.processes.get(id);
-  return (
-    <span>
-      <button className="link" onClick={() => { onSelect(id); }}>{displayName(cap.model, id)}</button>
-      {q && !q.ghost && <span className="muted small"> pid {q.pid}</span>}
-    </span>
-  );
-}
-
 const COUNT_WORDS: [TimelineKind[], string][] = [
   [['exec'], 'exec'], [['image'], 'program change without exec'], [['spawn'], 'fork'],
   [['create', 'rename', 'unlink', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
@@ -196,51 +181,13 @@ function Details({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
   return <Section id="d-details" title="Details"><Dl rows={rows} /></Section>;
 }
 
-/** One timeline entry: when, which event, what it touched, and the finding it carries, if one cites exactly this event. */
-function TimelineRow({ cap, e, self, multiDay, onSelect }: {
-  cap: LoadedCapture; e: TimelineEvent; self: ProcId; multiDay: boolean; onSelect(id: ProcId): void;
-}) {
-  const link = (id: ProcId) => <ProcLink cap={cap} id={id} onSelect={onSelect} />;
-  let body: ReactNode;
-  switch (e.kind) {
-    case 'fork': body = <>forked by {link(e.other!)}</>; break;
-    case 'spawn': body = <>forked {link(e.other!)}</>; break;
-    case 'exec': body = <code className="mono wrap">{e.args && e.args.length > 0 ? fmtArgs(e.args) : (e.path ?? '?')}</code>; break;
-    case 'image': body = <><code className="mono wrap">{e.path ?? '?'}</code> <span className="muted small">(its exec is not in the capture)</span></>; break;
-    case 'rename': body = <code className="mono wrap">{e.path} <span className="muted">→</span> {e.toPath ?? '?'}</code>; break;
-    case 'setextattr': body = <code className="mono wrap">{e.path}{e.xattr !== undefined && <span className="muted"> ({e.xattr})</span>}</code>; break;
-    case 'btm_add': case 'btm_remove': {
-      const verb = e.kind === 'btm_add' ? 'added' : 'removed';
-      const role = e.role === 'app' ? `its app: launch item ${verb}` : e.role === 'instigator' ? `asked for: launch item ${verb}` : `reported: launch item ${verb}`;
-      body = <><span className="muted small">{role}</span> <code className="mono wrap">{e.path ?? '(no path recorded)'}</code></>;
-      break;
-    }
-    case 'exit': body = <span className="muted">exited</span>; break;
-    default: body = <code className="mono wrap">{e.path}</code>;
-  }
-  const worst = e.findings.reduce<Severity | null>((w, f) => (w === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), null);
-  return (
-    <li className={`tl-row k-${e.kind}${worst ? ` flagged sev-border-${worst}` : ''}`}>
-      <time className="tl-t mono" dateTime={e.time ?? undefined} title={e.time ? fmtTime(e.time) : 'no time recorded'}>{e.time ? `${multiDay ? `${e.time.slice(5, 10)} ` : ''}${fmtClock(e.time)}` : '—'}</time>
-      <span className="tl-k">{RAW_TYPE[e.kind]}</span>
-      <span className="tl-body">
-        {e.proc !== self && <span className="tl-who">{link(e.proc)}</span>}
-        {body}
-        {e.findings.length > 0 && (
-          <span className="tl-why">
-            {e.findings.map((f, i) => <span key={i} className="row"><Sev s={f.severity} /><span className="small">{f.title}</span></span>)}
-          </span>
-        )}
-      </span>
-    </li>
-  );
-}
-
 /**
  * What the process did, in capture order: every recorded event that belongs to it (and, on request, to every process
  * under it). Built from the capture alone; event types the viewer does not model are counted elsewhere, never placed.
  */
-function Timeline({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelect(id: ProcId): void }) {
+function Timeline({ cap, p, anchor, onAnchor, onSelect }: {
+  cap: LoadedCapture; p: Process; anchor: TimelineEvent | null; onAnchor(e: TimelineEvent): void; onSelect(id: ProcId): void;
+}) {
   const [withKids, setWithKids] = useState(false);
   const [limit, setLimit] = useState(TIMELINE_FIRST);
   const [flaggedOnly, setFlaggedOnly] = useState(false);
@@ -265,7 +212,7 @@ function Timeline({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSele
       </p>
       {list.length === 0 ? <p className="muted small">No events recorded{flaggedOnly ? ' of these kinds' : ''}.</p> : (
         <ol className="tl" aria-label={`Timeline of ${displayName(cap.model, p.id)}`}>
-          {shown.map(e => <TimelineRow key={e.key} cap={cap} e={e} self={p.id} multiDay={multiDay} onSelect={onSelect} />)}
+          {shown.map(e => <TimelineRow key={e.key} cap={cap} e={e} self={p.id} multiDay={multiDay} onSelect={onSelect} onAnchor={onAnchor} anchored={e.key === anchor?.key} />)}
         </ol>
       )}
       {/* In steps: a subtree can hold tens of thousands of events, and mounting them all at once stalls the pane. */}
@@ -278,8 +225,11 @@ function Timeline({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSele
   );
 }
 
-function DidWhat({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelect(id: ProcId): void }) {
+function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
   const [allKids, setAllKids] = useState(false);
+  // The event the nearby panel is built around: one the person picked on the Timeline, else the most telling own event.
+  const [picked, setPicked] = useState<TimelineEvent | null>(null);
+  const anchor = picked ?? defaultAnchor(own);
   const kids = useMemo(() => childrenIndex(cap.model, 'original').get(p.id) ?? [], [cap, p.id]);
   const severity = useMemo(() => {
     const m = new Map<ProcId, Severity>();
@@ -306,7 +256,8 @@ function DidWhat({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelec
         </ul>
       )}
       {kids.length > SHOW_FIRST && !allKids && <button onClick={() => { setAllKids(true); }}>Show all {kids.length}</button>}
-      <Timeline key={p.id} cap={cap} p={p} onSelect={onSelect} />
+      <Timeline key={p.id} cap={cap} p={p} anchor={anchor} onAnchor={setPicked} onSelect={onSelect} />
+      {anchor && <NearbyPanel key={`nearby-${p.id}`} cap={cap} anchor={anchor} severity={severity} onSelect={onSelect} />}
     </Section>
   );
 }
@@ -623,7 +574,7 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
       <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
       <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
       <Details cap={cap} p={p} own={own} onSelect={onSelectProc} />
-      <DidWhat cap={cap} p={p} onSelect={onSelectProc} />
+      <DidWhat cap={cap} p={p} own={own} onSelect={onSelectProc} />
       <ContextOnly findings={cap.analysis.contextOnly.get(p.id) ?? []} />
       <Actions vkey={p.id} p={p} noteRef={noteRef} />
     </>

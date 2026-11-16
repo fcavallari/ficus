@@ -2221,3 +2221,73 @@ test('opening the guide from a session and coming back keeps the session, its ca
 test('the guide places every rule in exactly one stage of an intrusion', () => {
   expect(STAGES.flatMap(s => s.rules).sort()).toEqual(RULES.map(r => r.id).sort());
 });
+
+// "What happened nearby": other processes' events within a window of one event, inferred from timing alone.
+const at = (s: number): string => new Date(Date.parse('2026-11-12T00:00:00.000Z') + s * 1000).toISOString();
+const writeAt = (path: string, s: number, seq: number) => ({ kind: 'write' as const, path, time: at(s), seq });
+const secAt = (s: number, seq: number) => apple('/usr/bin/security', ['security', 'find-generic-password', '-ga', 'Chrome'], { token: '100:1', time: at(s), seq });
+const osaAt = (s: number, seq: number) => apple('/usr/bin/osascript', ['osascript', '/tmp/x.scpt'], { token: '101:1', time: at(s), seq });
+const nearbyPanel = () => within(screen.getByRole('region', { name: 'What happened nearby' }));
+
+async function openNearby(procs: Process[]): Promise<void> {
+  renderTriage(synthCapture(capture(procs)));
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('security'))!);
+}
+
+test('the nearby panel lists another process\'s event, unlinked, and labels it inferred', async () => {
+  await openNearby([proc('100:1', [secAt(10, 1)]), proc('101:1', [osaAt(12, 2)])]);
+  const panel = nearbyPanel();
+  expect(panel.getByRole('heading', { name: 'What happened nearby' })).toBeInTheDocument();
+  expect(panel.getByText(/inferred from timing/i)).toBeInTheDocument();
+  expect(panel.getByRole('button', { name: 'osascript' })).toBeInTheDocument();
+  expect(panel.getByText('no recorded link')).toBeInTheDocument();
+  expect(panel.getByText('+2.000 s')).toBeInTheDocument();
+  expect(panel.getByText(/1 event in other processes within ±5 s/)).toBeInTheDocument();
+});
+
+test('clicking nearby on a timeline row re-anchors the panel', async () => {
+  await openNearby([
+    proc('100:1', [secAt(10, 1)], { fileOps: [writeAt('/tmp/late', 100, 3)] }),
+    proc('101:1', [osaAt(12, 2)]),
+    proc('102:1', [apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1', time: at(101), seq: 4 })]),
+  ]);
+  const marks = screen.getAllByRole('button', { name: 'Show what happened near this event' });
+  expect(marks).toHaveLength(2);
+  expect(marks[0]).toHaveAttribute('aria-pressed', 'true');   // the first flagged event is the default anchor
+  expect(marks[1]).toHaveAttribute('aria-pressed', 'false');
+  expect(nearbyPanel().getByRole('button', { name: 'osascript' })).toBeInTheDocument();
+  await user.click(marks[1]!);
+  expect(marks[0]).toHaveAttribute('aria-pressed', 'false');
+  expect(marks[1]).toHaveAttribute('aria-pressed', 'true');
+  expect(nearbyPanel().getByRole('button', { name: 'spctl' })).toBeInTheDocument();
+  expect(nearbyPanel().queryByRole('button', { name: 'osascript' })).not.toBeInTheDocument();
+});
+
+test('the nearby window choice changes what is listed', async () => {
+  await openNearby([proc('100:1', [secAt(10, 1)]), proc('101:1', [osaAt(12, 2)])]);
+  const group = within(screen.getByRole('radiogroup', { name: 'Nearby window' }));
+  expect(group.getByRole('radio', { name: '±5 s' })).toBeChecked();
+  await user.click(group.getByRole('radio', { name: '±1 s' }));
+  expect(nearbyPanel().queryByRole('button', { name: 'osascript' })).not.toBeInTheDocument();
+  expect(nearbyPanel().getByText('Nothing else recorded within ±1 s.')).toBeInTheDocument();
+  await user.click(group.getByRole('radio', { name: '±30 s' }));
+  expect(nearbyPanel().getByRole('button', { name: 'osascript' })).toBeInTheDocument();
+});
+
+test('nearby shows at most 200 events, then more on request', async () => {
+  const noisy = Array.from({ length: 250 }, (_, i) => writeAt(`/tmp/n${i}`, 11, 10 + i));
+  await openNearby([proc('100:1', [secAt(10, 1)]), proc('101:1', [osaAt(300, 2)], { fileOps: noisy })]);
+  const rows = () => within(screen.getByRole('list', { name: /near /i })).getAllByRole('listitem');
+  expect(rows()).toHaveLength(200);
+  await user.click(nearbyPanel().getByRole('button', { name: /Show 50 more \(50 left\)/ }));
+  expect(rows()).toHaveLength(250);
+  expect(nearbyPanel().queryByRole('button', { name: /more/ })).not.toBeInTheDocument();
+});
+
+test('nearby: an anchor with no recorded time says so instead of listing anything', async () => {
+  await openNearby([proc('100:1', [secAt(10, 1)], { fileOps: [{ kind: 'write', path: '/tmp/x', time: '', seq: 3 }] }), proc('101:1', [osaAt(12, 2)])]);
+  const undated = screen.getAllByRole('button', { name: 'Show what happened near this event' })[1]!;
+  await user.click(undated);
+  expect(nearbyPanel().getByText(/no recorded time/i)).toBeInTheDocument();
+  expect(nearbyPanel().queryByRole('button', { name: 'osascript' })).not.toBeInTheDocument();
+});
