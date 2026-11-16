@@ -15,7 +15,7 @@
 # array on stdout) so the script can put them in `keep` before the cleaning pass.
 #
 # The cleaner's state: {map: {<kind>: {<real>: <placeholder>}}, next: {<kind>: int}, keep: {<name>: true},
-# words: {<real>: <placeholder>}, multi: {<first word>: [{real, n}]}, nwords: int, stats: {...}, lastSeq: number|null,
+# words: {<real>: <placeholder>}, multi: {<first word>: {<word count>: true}}, nwords: int, stats: {...}, lastSeq: number|null,
 # new: [...]}.
 # `map` says which placeholder a real value already has, `next` the number the next placeholder of a kind gets, `keep`
 # the names that stay as they are, `words` and `multi` the mapped names free text is searched for (replace_mapped) and
@@ -140,28 +140,30 @@ def WORD_TOKENS: "[^" + WORD_SEP + "]+|[" + WORD_SEP + "]+";
 def protected_word($w):
   ($w | ascii_downcase) as $l
   | PROTECTED[$l] == true or KEEP[$l] == true or ($l | test("^(?:python|perl|ruby|php|node)[0-9.]*$"));
-# What the rules match as a phrase, whatever else is around it: a keychain service ending in Safe Storage
-# (SAFE_STORAGE), a wallet name (WALLET), a browser account (BROWSER_ACCOUNT), and osascript's dialog words.
-def RULE_PHRASES:
-  "(?i)safe storage$|\\b(?:exodus|electrum|metamask|ledger live|atomic wallet|coinomi)\\b|display ?dialog|hidden ?answer"
-  + "|^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$";
-# A name the rules need as it is: all its words are protected (Chrome Safe Storage, Ledger Live), or it holds a rule
-# phrase (Gameleira Lab Safe Storage, Exodus Backup).
+# A name all of whose words are protected: Chrome Safe Storage, Ledger Live.
 def protected_name($n):
-  ([$n | scan("[^" + WORD_SEP + "]+")] as $w | ($w | length) > 0 and all($w[]; protected_word(.)))
-  or ($n | test(RULE_PHRASES));
+  [$n | scan("[^" + WORD_SEP + "]+")] as $w | ($w | length) > 0 and all($w[]; protected_word(.));
+
+# What the keychain rule matches in a `security` argument as a phrase, whatever else is around it: a service ending in
+# Safe Storage (SAFE_STORAGE), a wallet name (WALLET), a browser account (BROWSER_ACCOUNT). Such an argument of
+# security stays whole (Gameleira Lab Safe Storage, Exodus Backup); for any other program it is a name like others.
+def KEYCHAIN_PHRASES:
+  "(?i)safe storage$|\\b(?:exodus|electrum|metamask|ledger live|atomic wallet|coinomi)\\b"
+  + "|^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$";
+def keychain_value($prog; $a): $prog == "security" and ($a | test(KEYCHAIN_PHRASES));
 
 # A new placeholder's real value, made findable in free text (General string cleaning, step 4): names of 4 or more
 # characters that are not protected, of the kinds that are names (not hosts, emails or data, which have their own
-# steps). A name of several words (Q3 Financials, M&A Plan) is also listed under its first word, longest first, so
-# replace_mapped finds it from that word without looking at every name. Input: the state.
+# steps). For a name of several words (Q3 Financials, M&A Plan: words and separators as WORD_TOKENS splits them),
+# `multi` notes under its first word how many it has, so replace_mapped can join that many from the text and look the
+# result up in `words`: one lookup per distinct count, however many names share the first word (Screenshot …).
+# Input: the state.
 def index_word($kind; $real; $ph):
   if ({"user": true, "realname": true, "name": true, "volume": true, "seed": true}[$kind] | not)
      or ($real | length) < 4 or .words[$real] != null or protected_name($real) then .
   else .words[$real] = $ph | .nwords += 1
     | [$real | scan(WORD_TOKENS)] as $t
-    | if ($t | length) > 1 then .multi[$t[0]] = ((.multi[$t[0]] // []) + [{real: $real, n: ($t | length)}] | sort_by(-.n))
-      else . end
+    | if ($t | length) > 1 then .multi[$t[0]][$t | length | tostring] = true else . end
   end;
 
 # The placeholder `real` already has, or a new one numbered on from `next` (which a loaded key has moved on).
@@ -364,7 +366,11 @@ def replace_mapped($str):
         reduce range(0; $t | length) as $i ({out: "", skip: 0};
           if .skip > 0 then .skip -= 1
           else $t[$i] as $w
-            | (first(($s.multi[$w] // [])[] | select(. as $m | ($t[$i:$i + $m.n] | join("")) == $m.real and ($s.keep[$m.real] | not))) // null) as $hit
+            | (if $s.multi[$w] == null then null
+               else first($s.multi[$w] | keys | map(tonumber) | sort | reverse | .[]
+                          | {n: ., real: ($t[$i:$i + .] | join(""))}
+                          | select(.n <= ($t | length) - $i and $s.words[.real] != null and ($s.keep[.real] | not))) // null
+               end) as $hit
             | if $hit != null then .out += $s.words[$hit.real] | .skip = $hit.n - 1
               elif $s.words[$w] != null and ($s.keep[$w] | not) then .out += $s.words[$w]
               elif ($w | endswith(".")) and $s.words[$w | rtrimstr(".")] != null and ($s.keep[$w | rtrimstr(".")] | not) then
@@ -423,7 +429,10 @@ def extend_path($str; $start; $end):
   ($str[$start:$end] | split("/") | last) as $last
   | if $last == "" or .multi[$last] == null then $end
     else ($end - ($last | length)) as $at
-      | (first(.multi[$last][] | .real | select(length > ($last | length) and $str[$at:$at + length] == .)) // null) as $real
+      | [$str[$at:] | scan(WORD_TOKENS)] as $rt
+      | . as $s
+      | (first($s.multi[$last] | keys | map(tonumber) | sort | reverse | .[]
+               | select(. <= ($rt | length)) | ($rt[0:.] | join("")) | select($s.words[.] != null)) // null) as $real
       | if $real == null then $end
         else ($at + ($real | length)) as $e2
           | $e2 + ([$str[$e2:] | match("^" + TEXT_CHAR + "*") | .length] | .[0] // 0)
@@ -524,13 +533,14 @@ def relative_name($a):
 # Every string is walked, so a field nobody thought of cannot carry a name through. Programs the event runs are kept
 # before any of its strings is cleaned. create.acl is dropped (it can name users and groups). A new file's separate
 # name (named_in_dir) is cleaned as the last name of its folder. When an exec's cwd is in a cleaned place, its
-# arguments that are relative names are cleaned as names in that folder (argv[0] and option names stay).
+# arguments that are relative names are cleaned as names in that folder; option names stay, and so does argv[0]
+# unless it has folders (./Q3 Kit/tool: the folders are cleaned, the program's name is kept as a program that ran).
 def clean_event($state):
   (if (.event.create | type) == "object" then del(.event.create.acl) else . end) as $e
   | (try $e.event.exec.cwd.path catch null) as $cwd
   | (try $e.event.exec.args catch null) as $args
   | (($cwd | type) == "string" and ($args | type) == "array" and ($cwd | in_cleaned_place)) as $relc
-  | (if $relc then ($args[0] | if type == "string" then split("/") | last else "" end) else "" end) as $prog
+  | (if ($args | type) == "array" then ($args[0] | if type == "string" then split("/") | last else "" end) else "" end) as $prog
   | [$e | paths(worth_cleaning($relc or $state.nwords > 0))] as $ps
   | (reduce ($e | exec_names($ps)[]) as $n ($state; if .keep[$n] then . else .keep[$n] = true end)) as $s0
   | reduce $ps[] as $p ({e: $e, s: ($s0 | .new = [])};
@@ -547,8 +557,10 @@ def clean_event($state):
         elif exempt($p) then .
         elif ({"filename": true, "target_filename": true, "target_name": true}[$p[-1] | tostring])
              and ($e | getpath($p[:-1]) | named_in_dir($p[:-1])) != null then .
-        elif $relc and ($p | length) == 4 and $p[0:3] == ["event", "exec", "args"] and $p[3] > 0
-             and (code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not)
+        elif ($p | length) == 4 and $p[0:3] == ["event", "exec", "args"] and $p[3] > 0 and keychain_value($prog; $v) then .
+        elif $relc and ($p | length) == 4 and $p[0:3] == ["event", "exec", "args"]
+             and (if $p[3] == 0 then ($v | index("/")) != null
+                  else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
              and (option_value($v) as $o | .s | relative_name($o.val)) then
           option_value($v) as $o
           | (.s | clean_relative($cwd; $o.val)) as $r

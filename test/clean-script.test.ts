@@ -866,6 +866,51 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     for (const s of ['board', 'Q3', 'Financials', 'Minutes', 'Offsite', 'Agenda', 'Merger']) expect(r.out, s).not.toContain(s);
   });
 
+  test('a relative argv[0] has its folders cleaned and keeps its program name', () => {
+    const tool = userProc(506, '/usr/local/bin/tool', { pidversion: 2506 });
+    const input = [
+      esExec(child(506), tool, { args: ['./Q3 Kit/tool', '-v'], cwd: '/Users/jdoe/Documents', env: JDOE_ENV, seq: 1 }),
+      esExec(child(507), tool, { args: ['tool', 'x'], cwd: '/Users/jdoe/Documents', env: JDOE_ENV, seq: 2 }),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.exec.args).toEqual([`./${keyed(r.key, 'name').get('Q3 Kit')}/tool`, '-v']);
+    expect(ev[1]!.event.exec.args).toEqual(['tool', 'x']);
+    expect(r.out).not.toContain('Q3');
+  });
+
+  // An argument the keychain rule matches as a phrase stays for security, but is a name for any other program.
+  test('rule phrases are kept for the program that the rule reads them from', () => {
+    const input = [
+      run(508, '/usr/bin/open', ['open', 'Exodus 14 notes.pdf'], '/Users/jdoe/Documents', 1),
+      run(509, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Exodus 14 notes'], '/Users/jdoe/Documents', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.exec.args).toEqual(['open', keyed(r.key, 'name').get('Exodus 14 notes.pdf')]);
+    expect(ev[1]!.event.exec.args).toEqual(['security', 'find-generic-password', '-s', 'Exodus 14 notes']);
+    sameFindings(input, r.out);
+  });
+
+  // Rules that resolve relative arguments against the cwd (archive staging, osascript from a file) see the same place.
+  test('rules that read relative arguments against a strong cwd give the same findings', () => {
+    const input = [
+      run(580, '/usr/bin/zip', ['zip', '-r', 'out.zip', 'loot'], '/Users/jdoe/Downloads', 1),
+      run(581, '/usr/bin/tar', ['tar', 'czf', 'x.tgz', '.hidden/data'], '/tmp/x', 2),
+      run(582, '/usr/bin/osascript', ['osascript', 'collect.scpt'], '/Users/jdoe/Downloads', 3),
+      run(583, '/usr/bin/osascript', ['osascript', 'collect.scpt'], '/tmp/x', 4),
+      run(584, '/usr/bin/ditto', ['ditto', '-c', '-k', 'Board Files', 'board.zip'], '/Users/Shared', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const sig = findingSignature(buildModel(lines(input)));
+    expect(sig.size).toBeGreaterThan(3);
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(sig);
+    expect(r.out).not.toMatch(/collect|Board|board|hidden/);
+  });
+
   test('under a cleaned cwd, URLs, launchctl targets, rule words and inline code stay', () => {
     const input = [
       run(501, '/usr/bin/curl', ['curl', '-H', 'Accept: text/html', '-o', 'x.py', 'https://example.com/a/b.py'], '/Users/jdoe/Desktop/Merger', 1),
@@ -964,7 +1009,8 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[4]).toEqual(['sh', '-c', 'echo Chrome Safe Storage; echo load dialog answer']);
     expect(args[5]).toEqual(['security', 'find-generic-password', '-s', 'Gameleira Lab Safe Storage', '-w']);
     expect(args[6]).toEqual(['security', 'find-generic-password', '-s', 'Exodus Backup', '-a', 'Brave Browser']);
-    expect(args[7]).toEqual(['sh', '-c', 'security find-generic-password -s "Gameleira Lab Safe Storage"']);
+    // In shell text, which the rules do not read, the folder's name is a mapped name like any other.
+    expect(args[7]).toEqual(['sh', '-c', `security find-generic-password -s "${keyed(r.key, 'name').get('Gameleira Lab Safe Storage')}"`]);
     sameFindings(input, r.out);
   });
 
