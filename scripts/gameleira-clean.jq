@@ -129,7 +129,16 @@ def PROTECTED: {
   "md5": true, "sha1": true, "sha224": true, "sha256": true, "sha384": true, "sha512": true, "rmd160": true,
   "ripemd160": true, "safe": true, "storage": true, "google": true, "chrome": true, "chromium": true, "brave": true,
   "microsoft": true, "edge": true, "opera": true, "vivaldi": true, "arc": true, "browser": true, "exodus": true,
-  "electrum": true, "metamask": true, "ledger": true, "live": true, "atomic": true, "wallet": true, "coinomi": true
+  "electrum": true, "metamask": true, "ledger": true, "live": true, "atomic": true, "wallet": true, "coinomi": true,
+  # Subcommands of everyday tools (git, brew, npm, pip, docker, kubectl, launchctl, systemctl-style), so a home folder
+  # called commit or install does not rewrite `git commit` or `brew install` in arguments and text.
+  "git": true, "brew": true, "npm": true, "pip": true, "pip3": true, "docker": true, "kubectl": true, "make": true,
+  "commit": true, "push": true, "pull": true, "clone": true, "fetch": true, "checkout": true, "switch": true,
+  "merge": true, "rebase": true, "branch": true, "tag": true, "diff": true, "log": true, "show": true, "reset": true,
+  "stash": true, "init": true, "list": true, "install": true, "uninstall": true, "upgrade": true, "update": true,
+  "start": true, "stop": true, "restart": true, "run": true, "build": true, "config": true, "exec": true,
+  "logs": true, "apply": true, "get": true, "delete": true, "create": true, "describe": true, "test": true,
+  "publish": true, "info": true, "search": true, "rm": true, "kill": true, "print": true, "help": true, "version": true
 };
 
 # What separates words in free text, and the text as alternating words and separators (joined, the text again).
@@ -146,7 +155,9 @@ def protected_name($n):
 
 # What the keychain rule matches in a `security` argument as a phrase, whatever else is around it: a service ending in
 # Safe Storage (SAFE_STORAGE), a wallet name (WALLET), a browser account (BROWSER_ACCOUNT). Such an argument of
-# security stays whole (Gameleira Lab Safe Storage, Exodus Backup); for any other program it is a name like others.
+# security is never a relative name, and only single mapped words are replaced in it (state.single), so the phrase
+# survives (jdoe Safe Storage becomes user1 Safe Storage; a folder called Gameleira Lab Safe Storage does not swallow
+# the service of that name). For any other program it is a name like others.
 def KEYCHAIN_PHRASES:
   "(?i)safe storage$|\\b(?:exodus|electrum|metamask|ledger live|atomic wallet|coinomi)\\b"
   + "|^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$";
@@ -181,7 +192,7 @@ def initial_state($cfg):
   { map: (reduce $cfg.key[] as $k ({}; .[$k.kind][$k.real] = $k.placeholder)),
     next: (reduce $cfg.key[] as $k ({}; .[$k.kind] = ([.[$k.kind] // 1, ($k.placeholder | placeholder_number) + 1] | max))),
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
-    words: {}, multi: {}, nwords: 0,
+    words: {}, multi: {}, nwords: 0, single: false,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder));
@@ -345,20 +356,25 @@ def in_cleaned_place:
 
 # $rel, a name or relative path in the folder $dir, cleaned as the last names of $dir/$rel, so it gets the placeholders
 # it would get in a full path. `.`, `..`, leading dots and extensions stay. Input: the state. Output: {v, s}.
-def clean_relative($dir; $rel):
+def clean_relative_opts($dir; $rel; $esc):
   ($rel | split("/") | length) as $k
-  | clean_path(($dir | sub("/+$"; "")) + "/" + $rel)
+  | clean_path_opts(($dir | sub("/+$"; "")) + "/" + $rel; $esc)
   | .v |= (split("/") | .[-$k:] | join("/"));
+def clean_relative($dir; $rel): clean_relative_opts($dir; $rel; false);
 
 # ---- mapped names in text ---------------------------------------------------------------------------------------
+# Shell's backslash escapes undone: Secret\ Plan.pdf is the name Secret Plan.pdf.
+def unescape: if index("\\") != null then gsub("\\\\(?<c>.)"; .c) else . end;
+
 # $str with every name that already has a placeholder replaced, as a whole word or path component (General string
 # cleaning, step 4): `open "Q3-acquisition.pdf"` becomes `open "name4.pdf"`. Only names in `words` (4 characters or
 # more, not protected) count, and a program that ran (state.keep) stays. The text is split into words once and each
 # word looked up, so the cost does not grow with the number of names; a name of several words is tried only where its
-# first word is. A word with a full stop after it (end of a sentence) is looked up without it. Input: the state.
+# first word is, with shell's backslash escapes undone (Secret\ Plan.pdf). A word with a full stop after it (end of a
+# sentence) is looked up without it. Input: the state.
 def replace_mapped($str):
   if .nwords == 0 or ($str | length) < 4 then $str
-  elif .words[$str] != null then (if .keep[$str] then $str else .words[$str] end)
+  elif .words[$str] != null and (.single | not) then (if .keep[$str] then $str else .words[$str] end)
   else . as $s
     | [$str | scan(WORD_TOKENS)] as $t
     | if any($t[]; $s.words[.] != null or $s.multi[.] != null or (endswith(".") and $s.words[rtrimstr(".")] != null)) | not then $str
@@ -366,9 +382,9 @@ def replace_mapped($str):
         reduce range(0; $t | length) as $i ({out: "", skip: 0};
           if .skip > 0 then .skip -= 1
           else $t[$i] as $w
-            | (if $s.multi[$w] == null then null
+            | (if $s.multi[$w] == null or $s.single then null
                else first($s.multi[$w] | keys | map(tonumber) | sort | reverse | .[]
-                          | {n: ., real: ($t[$i:$i + .] | join(""))}
+                          | {n: ., real: ($t[$i:$i + .] | join("") | unescape)}
                           | select(.n <= ($t | length) - $i and $s.words[.real] != null and ($s.keep[.real] | not))) // null
                end) as $hit
             | if $hit != null then .out += $s.words[$hit.real] | .skip = $hit.n - 1
@@ -397,16 +413,23 @@ def PLAIN_PATHS:
 # Free text (sh -c, osascript -e: pipes, quotes, several paths) is read in segments. A quoted string ("…" with
 # backslash escapes, or '…') is cleaned inside (QUOTED_PATHS). Outside quotes a path starts at the start or after a
 # space or shell character and runs to the first space or shell character; backslash escapes (Secret\ Folder) are part
-# of it. A path in a cleaned place also runs on over a space when the next word holds a / (/Volumes/Jdoe Passport/x):
-# shell would split it there, but reading too much in a cleaned place is safe, and the words cannot leak.
+# of it. The one exception is a volume name with spaces followed by more path (/Volumes/Jdoe Passport/x): a volume
+# name often has spaces, and it is the only place a space is read as part of a path. Other words after a path are
+# words of their own (see rel_word).
 def TEXT_CHAR: "(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])";
-def TEXT_ON: "[ \\t]+(?=[^\\s\"'`|;&<>():,\\]}/~$-][^\\s\"'`|;&<>():,\\]}]*/)";
+def TEXT_NAME_CHAR: "(?:\\\\.|[^\\s\"'`|;&<>():,\\]}/])";
 def TEXT_START: "(?<![^\\s=:(<>|;,`\\[{])";
+def SPACED_VOLUME: "(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?/(?i:Volumes)/" + TEXT_NAME_CHAR + "+(?:[ \\t]+" + TEXT_NAME_CHAR + "+)+(?=/)";
 def TEXT_SEGMENTS:
   "\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'"
-  + "|" + TEXT_START + "(?:" + HOME_PREFIX + "|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?(?=" + CLEANED_ROOT + "))/(?:" + TEXT_CHAR + "|" + TEXT_ON + ")*"
+  + "|" + SPACED_VOLUME + TEXT_CHAR + "*"
   + "|" + TEXT_START + PATH_PREFIX + "/" + TEXT_CHAR + "*"
-  + "|" + CLEANED_ROOT + "(?:" + TEXT_CHAR + "|" + TEXT_ON + ")*";
+  + "|" + CLEANED_ROOT + TEXT_CHAR + "*";
+# A path in a cleaned place, at the start of a match.
+def CLEANED_START: "^(?:file://(?:localhost)?)?(?:(?:" + HOME_PREFIX + ")/|(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")";
+# The words with a / that follow such a path in free text, each a word of its own (cp /Users/x/a.tgz out/x.tgz).
+def TEXT_REL_WORD: "(?![-~/$])" + TEXT_NAME_CHAR + "*/" + TEXT_CHAR + "*";
+
 # Inside quotes a path runs to the closing quote, spaces and all (Secret Folder), but stops before a space followed by
 # another path (cp "/Users/a/x /tmp/y") and before a quote that ends a word (an inner "…" or \"…\").
 def QUOTED_CHAR: "(?:(?![ \\t]+(?:file:|~[A-Za-z0-9._-]*/|\\$\\{?HOME\\}?/|/)|\\\\?[\"'](?:[\\s;|&)]|\\z))[^\\n\\r])";
@@ -432,12 +455,68 @@ def extend_path($str; $start; $end):
       | [$str[$at:] | scan(WORD_TOKENS)] as $rt
       | . as $s
       | (first($s.multi[$last] | keys | map(tonumber) | sort | reverse | .[]
-               | select(. <= ($rt | length)) | ($rt[0:.] | join("")) | select($s.words[.] != null)) // null) as $real
+               | select(. <= ($rt | length)) | ($rt[0:.] | join("")) | select((. | unescape) as $u | $s.words[$u] != null)) // null) as $real
       | if $real == null then $end
         else ($at + ($real | length)) as $e2
           | $e2 + ([$str[$e2:] | match("^" + TEXT_CHAR + "*") | .length] | .[0] // 0)
         end
     end;
+
+# ---- relative names --------------------------------------------------------------------------------------------
+# What is never a relative name. Each is a regex on the whole argument.
+#   GLUED_PATH      an option, an absolute, ~ or $ path, or a path glued after @ = : , (cleaned as paths)
+#   SHELL_CHARS     shell or AppleScript code
+#   URL_SCHEME      scheme://… (looksLikeUrl's first form, src/rules/args.ts)
+#   HOST_PORT       host:port, host:port/… (localhost:8080/x, intranet:8080/a.sh)
+#   USER_HOST       user@host: (scp, git)
+#   LAUNCHD_TARGET  gui/501, user/501/label, pid/42
+#   HEADER          Name: value (curl -H 'Accept: text/html')
+def GLUED_PATH: "^[/~$-]|^[^A-Za-z0-9\\s.]+/|[@=:,]/";
+def SHELL_CHARS: "[\"'`$;|<>\\n\\r(){}]|&&|&\\s";
+def URL_SCHEME: "^[A-Za-z][A-Za-z0-9+.-]*://|://";
+def HOST_PORT: "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*:[0-9]+(?:/|$)";
+def USER_HOST: "^[^\\s/]*@[^\\s/]*:";
+def LAUNCHD_TARGET: "^(?:gui|user|pid|login|session)/[0-9]+(?:/|$)";
+def HEADER: "^[A-Za-z][A-Za-z0-9-]*:\\s";
+def NOT_RELATIVE: [GLUED_PATH, SHELL_CHARS, URL_SCHEME, HOST_PORT, USER_HOST, LAUNCHD_TARGET, HEADER] | join("|");
+# host.tld or host.tld/… (looksLikeUrl's second form) whose last label is not a file extension: evil.com/a.sh is a
+# host, board.zip and notes.txt/x are files.
+def dotted_host($a):
+  [$a | capture("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.(?<e>[A-Za-z0-9-]+)(?::[0-9]+)?(?:/|$)") | FILE_EXTENSIONS[.e | ascii_downcase] != true] | any;
+# looksLikeUrl from src/rules/args.ts, as it is: the wget rule only counts an argument it accepts. Keep in step with it.
+def looks_like_url:
+  test("^[a-z][a-z0-9+.-]*://"; "i") or test("^[a-z0-9-]+(?:\\.[a-z0-9-]+)+(?::[0-9]+)?(?:/|$)"; "i")
+  or test("^[a-z0-9-]+(?::[0-9]+(?:/|$)|/)"; "i");
+
+# A relative name to clean under its exec's cwd (General string cleaning, step 2). It looks like a path: it holds a /
+# or whitespace, ends in an extension from FILE_EXTENSIONS, or has a mapped name of 4 or more characters as a part. It
+# is nothing NOT_RELATIVE matches, not a host (dotted_host), not a program that ran, and not what the rules look for
+# (protected_name), so zip, -r, launchctl load and find-generic-password stay. For wget, whose rule reads its
+# arguments with looksLikeUrl, nothing looks_like_url accepts (intranet/a.sh) is a relative name either. Input: the state.
+def relative_name($prog; $a):
+  . as $s
+  | ($a | test(NOT_RELATIVE) | not)
+  and (dotted_host($a) | not)
+  and (($prog == "wget" and ($a | looks_like_url)) | not)
+  and (($a | test("[/\\s]"))
+       or FILE_EXTENSIONS[[$a | capture("\\.(?<e>[A-Za-z0-9]{1,11})$") | .e | ascii_downcase] | .[0] // ""] == true
+       or any($a | split("/")[]; length >= 4 and ($s.map.name[.] // $s.map.user[.] // $s.map.volume[.]) != null))
+  and (protected_name($a) | not) and ($s.keep[$a] | not);
+
+# A relative argument cleaned. For wget, when the raw one does not look like a URL to the rules but the cleaned one
+# would (Q3 Report/x becomes name5/name2, Merger_x/y name6/name7, which looksLikeUrl accepts), it is written
+# ./name5/name2, so the download rule sees no URL that was not there. Only for wget: it is the only rule that reads
+# arguments with looksLikeUrl, and every cleaned file name (name2.pdf) passes it. Input: the state. Output: {v, s}.
+def clean_relative_arg($prog; $dir; $a):
+  clean_relative($dir; $a)
+  | if $prog == "wget" and (.v | looks_like_url) and ($a | looks_like_url | not) then .v = "./" + .v else . end;
+
+# A word with a / after a cleaned-place path in free text: a word of its own, cleaned name by name as in a cleaned place
+# (/Users/Shared stands for "some cleaned folder"), unless it is a host, URL or launchd target, which only has mapped
+# names replaced. Input: the state. Output: {v, s}.
+def rel_word($w):
+  if ($w | test(URL_SCHEME + "|" + HOST_PORT + "|" + USER_HOST + "|" + LAUNCHD_TARGET)) or dotted_host($w) then {v: replace_mapped($w), s: .}
+  else clean_relative_opts("/Users/Shared"; $w; true) end;
 
 # Every path the regex finds in $str cleaned, and mapped names replaced in the text between. $mode: "plain",
 # "quoted" (the inside of a quoted string) or "text" (free text in segments, see TEXT_SEGMENTS). A match that begins
@@ -462,6 +541,14 @@ def clean_matches($re; $str; $mode):
               (if $mode == "text" then .s | extend_path($str; $m.offset; $end0) else $end0 end) as $end
               | (.s | clean_path_opts($str[$m.offset:$end]; $mode == "text")) as $r
               | .out += $gap + $r.v | .s = $r.s | .at = $end
+              | if $mode == "text" and ($str[$m.offset:$end] | test(CLEANED_START)) then
+                  ([$str[$end:] | match("^(?:[ \\t]+" + TEXT_REL_WORD + ")+") | .string] | .[0] // "") as $tail
+                  | if $tail == "" then .
+                    else reduce ($tail | [scan("[ \\t]+|[^ \\t]+")])[] as $w (.;
+                        if ($w | test("^[ \\t]")) then .out += $w else (.s | rel_word($w)) as $r | .out += $r.v | .s = $r.s end)
+                      | .at = $end + ($tail | length)
+                    end
+                else . end
             end
         end)
       | .at as $at
@@ -487,23 +574,23 @@ def path_field($p):
   {"path": true, "dyld_exec_path": true, "executable_path": true, "item_url": true, "app_url": true}[$p[-1] | tostring] == true;
 
 # A folder and a bare name in it, as some events report a new file: create and rename's new_path {dir, filename},
-# link's {target_dir, target_filename}, clone's and copyfile's {target_dir, target_name}. The keys of the folder and the
-# name, or null.
+# link's {target_dir, target_filename}, clone's and copyfile's {target_dir, target_name}. BARE_NAMES: each name's key
+# and its folder's. named_in_dir gives the keys of the folder and the name, or null.
+def BARE_NAMES: {"filename": "dir", "target_filename": "target_dir", "target_name": "target_dir"};
 def named_in_dir($p):
   if type != "object" then null
-  elif $p[-1] == "new_path" and (.dir | type) == "object" and (.dir.path | type) == "string" and (.filename | type) == "string" then
-    {dir: "dir", name: "filename"}
-  elif (.target_dir | type) == "object" and (.target_dir.path | type) == "string" then
-    if (.target_filename | type) == "string" then {dir: "target_dir", name: "target_filename"}
-    elif (.target_name | type) == "string" then {dir: "target_dir", name: "target_name"}
-    else null end
-  else null end;
+  else . as $o
+    | first(BARE_NAMES | to_entries[]
+            | select(($o[.key] | type) == "string" and ($o[.value] | type) == "object" and ($o[.value].path | type) == "string"
+                     and (.key != "filename" or $p[-1] == "new_path"))
+            | {dir: .value, name: .key}) // null
+  end;
 
 # What the walk stops at: a string that holds a / (no path without one), every string once there are mapped names
 # to look for or relative arguments to clean ($all), and the objects named_in_dir knows.
 def worth_cleaning($all):
   if type == "string" then $all or index("/") != null
-  elif type == "object" then (.filename | type) == "string" or (.target_filename | type) == "string" or (.target_name | type) == "string"
+  elif type == "object" then . as $o | any(BARE_NAMES | keys_unsorted[]; ($o[.] | type) == "string")
   else false end;
 
 # Programs whose -c or -e value (or -lc, -ne …, --eval, --command) is code: free text, never a relative name.
@@ -513,20 +600,6 @@ def code_value($prog; $prev): ($prog | test(CODE_PROGRAMS)) and ($prev | test("^
 # An argument, or the value of --option=value or NAME=value: {pre: what stays, val: what may be a relative name}.
 def option_value($a):
   ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
-
-# A relative name to clean under its exec's cwd (General string cleaning, step 2). It looks like a path: it holds a /
-# or whitespace, ends in an extension from FILE_EXTENSIONS, or has a mapped name of 4 or more characters as a part. It
-# is not an option, an absolute or ~ path or one glued to @, =, : or , (cleaned as paths), a URL, user@host:, host.tld/…,
-# a header (Accept: text/html), a launchctl target (gui/501), shell or AppleScript code, a program that ran, or what
-# the rules look for (protected_name). So zip, -r, launchctl load and find-generic-password stay. Input: the state.
-def relative_name($a):
-  . as $s
-  | ($a | test("^[/~$-]|^[^A-Za-z0-9\\s.]+/|[@=:,]/|[\"'`$;|<>\\n\\r(){}]|&&|&\\s|://|^[^\\s/]*@[^\\s/]*:|^(?:gui|user|pid|login|session)/[0-9]+(?:/|$)|^[A-Za-z][A-Za-z0-9-]*:\\s") | not)
-  and ([$a | capture("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.(?<e>[A-Za-z0-9-]+)(?::[0-9]+)?/") | FILE_EXTENSIONS[.e | ascii_downcase] != true] | any | not)
-  and (($a | test("[/\\s]"))
-       or FILE_EXTENSIONS[[$a | capture("\\.(?<e>[A-Za-z0-9]{1,11})$") | .e | ascii_downcase] | .[0] // ""] == true
-       or any($a | split("/")[]; length >= 4 and ($s.map.name[.] // $s.map.user[.] // $s.map.volume[.]) != null))
-  and (protected_name($a) | not) and ($s.keep[$a] | not);
 
 # The event (input) cleaned, with the state the cleaning leaves and the key entries it created:
 #   {event, state, new: [{kind, placeholder, real}]}
@@ -555,19 +628,22 @@ def clean_event($state):
                 else . end
             end
         elif exempt($p) then .
-        elif ({"filename": true, "target_filename": true, "target_name": true}[$p[-1] | tostring])
-             and ($e | getpath($p[:-1]) | named_in_dir($p[:-1])) != null then .
-        elif ($p | length) == 4 and $p[0:3] == ["event", "exec", "args"] and $p[3] > 0 and keychain_value($prog; $v) then .
-        elif $relc and ($p | length) == 4 and $p[0:3] == ["event", "exec", "args"]
-             and (if $p[3] == 0 then ($v | index("/")) != null
-                  else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
-             and (option_value($v) as $o | .s | relative_name($o.val)) then
-          option_value($v) as $o
-          | (.s | clean_relative($cwd; $o.val)) as $r
-          | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
+        elif BARE_NAMES[$p[-1] | tostring] != null and ($e | getpath($p[:-1]) | named_in_dir($p[:-1])) != null then .
         else
-          (.s | clean_string($v; path_field($p))) as $r
-          | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end
+          (($p | length) == 4 and $p[0:3] == ["event", "exec", "args"]) as $arg
+          | ($arg and $p[3] > 0 and keychain_value($prog; $v)) as $kc
+          | if $relc and $arg and ($kc | not)
+               and (if $p[3] == 0 then ($v | index("/")) != null
+                    else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
+               and (option_value($v) as $o | .s | relative_name($prog; $o.val)) then
+              option_value($v) as $o
+              | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
+              | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
+            else
+              (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
+               else .s | clean_string($v; path_field($p)) end) as $r
+              | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end
+            end
         end)
   | {event: .e, state: .s, new: .s.new};
 

