@@ -585,10 +585,11 @@ def extract:
   .emit[];
 
 # The prescan of `clean -i FILE`: the names of every program the capture runs, so a dropper's name is kept from its
-# first appearance, before it runs. Lines that do not parse are skipped here and dropped by the cleaning pass.
+# first appearance, before it runs. Lines that do not parse, or events it cannot read, are skipped here (the cleaning
+# pass drops and counts them).
 def prescan:
   reduce (inputs | (try fromjson catch null) | objects
-          | exec_names([paths(type == "string" and index("/") != null)])[]) as $n ({}; .[$n] = true)
+          | try exec_names([paths(type == "string" and index("/") != null)])[] catch empty) as $n ({}; .[$n] = true)
   | keys;
 
 if $cfg[0].prescan == true then prescan
