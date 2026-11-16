@@ -157,6 +157,7 @@ print_summary() {
     "events in: \(.eventsIn)",
     "events out: \(.eventsOut)",
     "unreadable lines dropped: \(.unreadable)",
+    "events the cleaner could not clean: \(.uncleaned // 0)",
     "events dropped by Endpoint Security: \(.seqGaps)",
     (($kinds | split(" "))[] as $k | "placeholders \($k): \(.placeholders[$k] // 0)"),
     "redacted: \(.redacted)"' < "$1" >&2

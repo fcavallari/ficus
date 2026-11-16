@@ -7,8 +7,8 @@
 #                                                              the key file at once, so a cut-short capture keeps its key
 #   S<TAB>stats as JSON                                        once, at the very end
 #
-# Fail closed: a line that does not parse as a JSON object, or an event the cleaner cannot clean, is dropped and counted.
-# Nothing of it is written anywhere.
+# Fail closed: a line that does not parse as a JSON object, or an event the cleaner cannot clean, is dropped and counted
+# (apart: unreadable, uncleaned). Nothing of it is written anywhere.
 #
 # $cfg[0] is {seeds: [{kind, value}], domains: [string], key: [{kind, placeholder, real}], keep: [string]}, or
 # {prescan: true} for the first pass of `clean -i FILE`, which only lists the programs the capture runs (as a JSON
@@ -21,6 +21,7 @@
 # the names that stay as they are, `words` and `multi` the mapped names free text is searched for (replace_mapped) and
 # `nwords` how many there are (jq counts an object's keys one by one, so `length` would cost as much as the object),
 # `rel` the cwd while shell code run from a cleaned place is being cleaned (its relative names are names in that folder),
+# `sec` whether that code runs security,
 # `lastSeq` the highest global_seq_num seen, `new` the key entries the event being cleaned has created. `new` is emptied
 # for each event, never deleted and added back: jq does not reuse a deleted key's slot, so that would grow the state
 # with every event.
@@ -202,8 +203,8 @@ def initial_state($cfg):
   { map: (reduce $cfg.key[] as $k ({}; .[$k.kind][$k.real] = $k.placeholder)),
     next: (reduce $cfg.key[] as $k ({}; .[$k.kind] = ([.[$k.kind] // 1, ($k.placeholder | placeholder_number) + 1] | max))),
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
-    words: {}, multi: {}, nwords: 0, single: false, code: false, rel: null,
-    stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, seqGaps: 0, redacted: 0, placeholders: {} },
+    words: {}, multi: {}, nwords: 0, single: false, code: false, rel: null, sec: false,
+    stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, uncleaned: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder));
 
@@ -568,13 +569,14 @@ def SHELL_TOKENS: "(?:\\\\.|[^" + SHELL_SEP + "])+|[" + SHELL_SEP + "]+";
 def GLOB: "[*?\\[]";
 # One word of shell code ($quoted: the inside of a quoted string) cleaned as a relative name: {v, s}, or null when it
 # is not one. NAME=value and --option=value are cleaned in the value. An unquoted word with a glob (Delta/*.pdf) is
-# cleaned in the folders before the glob. A quoted keychain phrase (jdoe Safe Storage) is left to replace_mapped: the
-# program it belongs to is not known here. Input: the state.
+# cleaned in the folders before the glob. In code that runs security (state.sec), a quoted keychain phrase (jdoe Safe
+# Storage) is left to replace_mapped: which program it belongs to is not known here. In any other code it is a name.
+# Input: the state.
 def shell_word_clean($w; $quoted):
   .rel as $dir
   | (if $quoted then {pre: "", val: $w} else option_value($w) end) as $o
   | (if $quoted then $o.val else $o.val | unescape end) as $u
-  | if $quoted and ($u | test(KEYCHAIN_PHRASES)) then null
+  | if $quoted and .sec and ($u | test(KEYCHAIN_PHRASES)) then null
     elif ($quoted | not) and ($u | test(GLOB)) then
       ($o.val | split("/")) as $c
       | (first(range(0; $c | length) | select($c[.] | test(GLOB))) // 0) as $g
@@ -683,6 +685,9 @@ def worth_cleaning($all):
   elif type == "object" then . as $o | any(BARE_NAMES | keys_unsorted[]; ($o[.] | type) == "string")
   else false end;
 
+# security run in shell code, as a word: security, /usr/bin/security.
+def SECURITY_WORD: "(?:^|[\\s;&|(`])(?:[^\\s;&|()`]*/)?security(?=[\\s;&|)`]|$)";
+
 # Programs whose -c or -e value (or -lc, -ne …, --eval, --command) is code: free text, never a relative name.
 def CODE_PROGRAMS: "^(?:sh|bash|zsh|dash|ksh|csh|tcsh|python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$";
 def code_value($prog; $prev): ($prog | test(CODE_PROGRAMS)) and ($prev | test("^-[A-Za-z]*[ceE]$|^--(?:eval|command)$"));
@@ -705,9 +710,11 @@ def ssh_command_index($args):
             else .host = true end;
           .cmd | select(. != null))) // null;
 
-# A shell, as an argv element: sh, /bin/zsh, and -zsh, a login shell (how sudo -i and su -l run it). su counts: its -c
-# value is run by the account's shell. An assignment (SHELL=/bin/zsh) or an option's value (--shell=/bin/bash) is not one.
-def SHELL_WORD: "^(?:[^=\\s]*/)?-?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
+# A shell, as an argv element: sh, /bin/zsh. su counts: its -c value is run by the account's shell. An assignment
+# (SHELL=/bin/zsh) or an option's value (--shell=/bin/bash) is not one. LOGIN_SHELL_WORD: argv[0] may also be -zsh, a
+# login shell (how sudo -i and su -l run it); anywhere else -sh or -su is a cluster of options (du -sh, grep -sh).
+def SHELL_WORD: "^(?:[^=\\s]*/)?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
+def LOGIN_SHELL_WORD: "^(?:[^=\\s]*/)?-?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
 # A shell's options that take the next argument as their value (bash -o pipefail -c …).
 def SHELL_VALUE_OPTIONS: {"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true};
 # True when argv[$i] is shell code, where a space ends a word and relative names are files: ssh's remote command ($cmd:
@@ -720,15 +727,15 @@ def shell_text($args; $i; $cmd):
   or ((($args[$i - 1] | if type == "string" then . else "" end) | test("^-[A-Za-z]*c$"))
       and any(range(0; $i - 1);
               . as $j
-              | ($args[$j] | type) == "string" and ($args[$j] | test(SHELL_WORD))
-                and (($args[$j] | test("(?:^|/)-?su$"))
+              | ($args[$j] | type) == "string" and ($args[$j] | test(if $j == 0 then LOGIN_SHELL_WORD else SHELL_WORD end))
+                and (($args[$j] | test(if $j == 0 then "(?:^|/)-?su$" else "(?:^|/)su$" end))
                      or all(range($j + 1; $i - 1);
                             ($args[.] | type) == "string"
                             and (($args[.] | test("^[-+]")) or SHELL_VALUE_OPTIONS[$args[. - 1] | tostring] == true)))));
 # True when argv[$i] is code of any kind: shell code ($sh: shell_text), or the value of a code option of another
 # program that runs code (code_value: python -c, perl -e, osascript -e, node --eval …).
 def code_arg($prog; $args; $i; $sh):
-  $sh or ((($prog | test(SHELL_WORD)) | not)
+  $sh or ((($prog | test(LOGIN_SHELL_WORD)) | not)
           and code_value($prog | ltrimstr("-"); $args[$i - 1] | if type == "string" then . else "" end));
 
 # The value-taking short options of wget and curl (WGET_SPEC, CURL_SPEC in src/rules/args.ts).
@@ -791,7 +798,8 @@ def clean_event($state):
             else
               (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
                  elif $code then .s | .code = true | .rel = (if $relc and $sh then $cwd else null end)
-                                 | clean_string($v; false) | .s.code = false | .s.rel = null
+                                 | .sec = ($v | test(SECURITY_WORD))
+                                 | clean_string($v; false) | .s.code = false | .s.rel = null | .s.sec = false
                  else .s | clean_string($v; path_field($p)) end) as $r
               | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end
             end
@@ -809,9 +817,10 @@ def step($line):
         else
           ($counted | track_seq($e)) as $seen
           | ([try ($e | clean_event($seen)) catch null] | .[0]) as $r
-          # A cleaning that failed, yielded nothing, or produced no state counts as unreadable: dropped and counted.
+          # A cleaning that failed, yielded nothing, or produced no state: dropped, and counted apart from lines that
+          # do not parse, so a bug in this program cannot thin a capture unnoticed.
           | if ($r | type) != "object" or ($r.state | type) != "object" or ($r.new | type) != "array" then
-              {s: ($seen | .stats.unreadable += 1), emit: [], new: []}
+              {s: ($seen | .stats.uncleaned += 1), emit: [], new: []}
             else
               { s: (reduce $r.new[] as $n ($r.state; .stats.placeholders[$n.kind] += 1) | .stats.eventsOut += 1),
                 emit: [$r.event], new: $r.new }
