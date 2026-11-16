@@ -413,7 +413,7 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     // Each real value is one JSON string on one line, so tabs, newlines and quotes survive.
     expect(fs.readFileSync(key, 'utf8').split('\n')[1]).toBe(`user\tuser5\t${JSON.stringify(nasty)}`);
     expect(JSON.parse(fs.readFileSync(stats, 'utf8'))).toEqual({
-      eventsIn: 6, eventsOut: 5, unreadable: 1, uncleaned: 0, seqGaps: 2, redacted: 0, placeholders: { user: 3 },
+      eventsIn: 6, eventsOut: 5, unreadable: 1, uncleaned: 0, seqGaps: 2, redacted: 0, placeholders: { user: 3 }, shortAccounts: [],
     });
     expect(r.stderr.toString()).not.toMatch(/^[KS]\t/m);
   });
@@ -1503,5 +1503,190 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(ev[1]!.event.clone.target_dir.path).toBe(`/Users/user1/Desktop/${n.get('Merger')}`);
     expect(ev[1]!.event.clone.target_name).toBe(n.get('Q3-acquisition.pdf'));
     for (const s of ['Q3', 'Board', 'Merger']) expect(r.out, s).not.toContain(s);
+  });
+});
+
+// ---- seeds and account names ------------------------------------------------------------------------------------
+describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
+  const child = (pid: number): ReturnType<typeof esProc> => esProc({ pid, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+  const sysImage = (pid: number, p: string): ReturnType<typeof esProc> =>
+    esProc({ pid, pidversion: pid + 2000, path: p, platform: true, signingId: `com.apple.${p.split('/').pop()!}`, ppid: 300 });
+  const run = (pid: number, p: string, args: string[], cwd: string, seq: number, env: string[] = JDOE_ENV): string =>
+    esExec(child(pid), sysImage(pid, p), { args, cwd, env, seq });
+  const sameFindings = (raw: string, out: string): void => {
+    expect(findingSignature(buildModel(lines(out)))).toEqual(findingSignature(buildModel(lines(raw))));
+  };
+  /** A seed file of `kind<TAB>value` lines, in a fresh folder. */
+  const seedFile = (rows: [string, string][]): string => {
+    const f = path.join(tmpDir(), 'seeds.tsv');
+    fs.writeFileSync(f, rows.map(([k, v]) => `${k}\t${v}\n`).join(''));
+    return f;
+  };
+  const SEEDS: [string, string][] = [['user', 'jdoe'], ['realname', 'Jane Doe'], ['host', 'Janes-MacBook-Pro'], ['seed', 'C02XK1ABJGH5']];
+
+  test('seeds are replaced anywhere', () => {
+    const env = [...JDOE_ENV, 'HOSTNAME=Janes-MacBook-Pro', 'GREETING=hello JANE DOE'];
+    const input = [
+      run(800, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Jane Doe, enter your password" default answer "" with hidden answer'], '/', 1),
+      run(801, '/usr/sbin/scutil', ['scutil', '--set', 'ComputerName', 'Janes-MacBook-Pro'], '/', 2, env),
+      run(802, '/usr/sbin/scutil', ['scutil', '--set', 'LocalHostName', 'janes-macbook-pro'], '/', 3),
+      run(803, '/usr/sbin/ioreg', ['ioreg', '-l', '-k', 'C02XK1ABJGH5'], '/', 4),
+      run(804, '/bin/sh', ['sh', '-c', 'ioreg -l | grep -i c02xk1abjgh5 > /tmp/serial.txt'], '/', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile(SEEDS)], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).not.toMatch(/jane|doe|janes|macbook|c02xk1abjgh5/i);
+    expect(keyed(r.key, 'user')).toEqual(new Map([['jdoe', 'user1']]));
+    expect(keyed(r.key, 'realname')).toEqual(new Map([['Jane Doe', 'Person 1']]));
+    expect(keyed(r.key, 'host')).toEqual(new Map([['Janes-MacBook-Pro', 'host1.internal.invalid']]));
+    expect(keyed(r.key, 'seed')).toEqual(new Map([['C02XK1ABJGH5', 'seed1']]));
+    // Seeds come first in the key, in the seed file's order.
+    expect(parseKey(r.key).slice(0, 4).map(k => k.real)).toEqual(SEEDS.map(s => s[1]));
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]![2]).toBe('display dialog "Person 1, enter your password" default answer "" with hidden answer');
+    expect(args[1]).toEqual(['scutil', '--set', 'ComputerName', 'host1.internal.invalid']);
+    expect(args[2]).toEqual(['scutil', '--set', 'LocalHostName', 'host1.internal.invalid']);
+    expect(args[3]).toEqual(['ioreg', '-l', '-k', 'seed1']);
+    expect(events(r.out)[1]!.event.exec.env).toEqual(expect.arrayContaining(['HOSTNAME=host1.internal.invalid', 'GREETING=hello Person 1']));
+    for (const k of ['user', 'realname', 'host', 'seed']) expect(r.summary[`placeholders ${k}`], k).toBe('1');
+    sameFindings(input, r.out);
+  });
+
+  test('seeds are in the key even when the capture never names them, and a loaded key gives them no second row', () => {
+    const dir = tmpDir();
+    const key = path.join(dir, 'shared.key.tsv');
+    const seeds = seedFile(SEEDS);
+    const first = runClean(['clean', '-o', '-', '-k', key, '-S', seeds], { input: '' });
+    expect(first.status, first.stderr).toBe(0);
+    expect(parseKey(first.key).map(k => k.placeholder)).toEqual(['user1', 'Person 1', 'host1.internal.invalid', 'seed1']);
+    const second = runClean(['clean', '-o', '-', '-k', key, '-S', seeds], { input: synthLines().join('\n') + '\n' });
+    expect(second.status, second.stderr).toBe(0);
+    const rows = parseKey(second.key);
+    expect(rows.filter(k => SEEDS.some(s => s[1] === k.real))).toHaveLength(4);
+    expect(second.summary['placeholders realname']).toBe('0');
+  });
+
+  test('an account name before @ is replaced, however short, and hosts are left for their own step', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/notes.txt' }, 1),
+      run(810, '/usr/bin/ssh', ['ssh', 'jdoe@host.example.com'], '/', 2),
+      run(811, '/usr/bin/scp', ['scp', '/tmp/a.txt', 'JDoe@host.example.com:/tmp/'], '/', 3),
+      run(812, '/bin/sh', ['sh', '-c', 'ssh jdoe@host.example.com uptime; echo jdoe'], '/Users/jdoe/Documents', 4),
+      run(813, '/usr/bin/ssh', ['ssh', 'al@host.example.com', 'echo al'], '/', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'al']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const al = keyed(r.key, 'user').get('al');
+    const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    expect(args[0]).toEqual(['ssh', 'user2@host.example.com']);
+    expect(args[1]![2]).toBe('user2@host.example.com:/tmp/');
+    expect(args[2]![2]).toBe('ssh user2@host.example.com uptime; echo user2');
+    // al is shorter than 4 characters: replaced in user@host, kept as a bare word.
+    expect(al).toBe('user1');
+    expect(args[3]).toEqual(['ssh', 'user1@host.example.com', 'echo al']);
+    expect(r.summary['short or common account names']).toBe('al');
+    expect(r.out).not.toMatch(/jdoe/i);
+    sameFindings(input, r.out);
+  });
+
+  test('signing IDs lose account names only', () => {
+    const image = (pid: number, signingId: string): ReturnType<typeof esProc> =>
+      esProc({ pid, pidversion: pid + 2000, path: `/Users/jdoe/Applications/Tool${pid}`, signingId, teamId: null, ppid: 300 });
+    const ids = ['com.jdoe.tool', 'com.JDoe.Tool', 'jdoe-helper', 'com.apple.jdoe-ish', 'com.acme.Merger', 'com.acme.jdoetools'];
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Merger/x.txt' }, 1),
+      ...ids.map((id, i) => esExec(child(820 + i), image(820 + i, id), { args: [`Tool${820 + i}`], cwd: '/', env: JDOE_ENV, seq: i + 2 })),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const out = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.target.signing_id as string);
+    expect(out).toEqual(['com.user1.tool', 'com.user1.Tool', 'user1-helper', 'com.apple.jdoe-ish', 'com.acme.Merger', 'com.acme.jdoetools']);
+    sameFindings(input, r.out);
+  });
+
+  test('an account named code does not rewrite Code.app, /dev or options', () => {
+    const vsc = '/Applications/Visual Studio Code.app/Contents/MacOS/Electron';
+    const helper = '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper';
+    const codeApp = '/Applications/Code.app/Contents/MacOS/Code';
+    const evil = '/Applications/Evil.app/Contents/MacOS/Evil';
+    // An app (pid N) forks a child (N + 1), which execs a shell: shell-under-app looks at the app.
+    const fromApp = (pid: number, app: string, args: string[], seq: number): string[] => {
+      const a = esProc({ pid, path: app, teamId: 'ABCDE12345', signingId: 'com.example.app', ppid: 1 });
+      const c = esProc({ pid: pid + 1, path: app, teamId: 'ABCDE12345', signingId: 'com.example.app', ppid: pid });
+      return [esFork(a, c, seq), esExec(c, sysImage(pid + 1, '/bin/zsh'), { args, cwd: '/Users/code', env: ['HOME=/Users/code', 'USER=code'], seq: seq + 1 })];
+    };
+    const input = [
+      esCreate(zsh, { path: '/Users/code/Documents/plan.txt' }, 1),
+      ...fromApp(900, vsc, ['/bin/zsh', '-c', 'code --version > /dev/null'], 2),
+      ...fromApp(902, helper, ['/bin/zsh', '-c', 'ps aux | grep "Code Helper"'], 4),
+      ...fromApp(904, codeApp, ['/bin/zsh', '-c', 'open -a "Visual Studio Code.app" --args --code --no-code'], 6),
+      ...fromApp(906, evil, ['/bin/zsh', '-c', 'echo dev; cat /dev/null'], 8),
+      run(910, '/usr/bin/ssh', ['ssh', 'dev@host.example.com', 'ls', '/dev/null'], '/', 10),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'code'], ['user', 'dev']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/Documents\/name\d+\.txt$/);
+    const execs = ev.filter(e => e.event.exec);
+    expect(execs.map(e => e.process.executable.path)).toEqual([vsc, helper, codeApp, evil, '/bin/zsh']);
+    expect(execs.map(e => e.event.exec.args[2])).toEqual([
+      // A bare word that is an account name is replaced, as any account name of 4 characters or more is.
+      'user1 --version > /dev/null', 'ps aux | grep "Code Helper"', 'open -a "Visual Studio Code.app" --args --code --no-code',
+      'echo dev; cat /dev/null', 'ls',
+    ]);
+    expect(execs[4]!.event.exec.args).toEqual(['ssh', 'user2@host.example.com', 'ls', '/dev/null']);
+    expect(execs[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=user1']);
+    const raw = findingSignature(buildModel(lines(input)));
+    // Only Evil.app's shell is a finding: Code.app and Visual Studio Code.app are editors that run shells.
+    const sua = [...raw.entries()].filter(([, v]) => v.some(f => f.startsWith('shell-under-app:'))).map(([k]) => k);
+    expect(sua).toEqual(['907:1907']);
+    sameFindings(input, r.out);
+    expect(r.summary['short or common account names']).toBe('code, dev');
+  });
+
+  test('an account named like a rule word is replaced in paths but stays as a bare word, and is listed', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/test/Documents/plan.txt' }, 1),
+      run(920, '/bin/sh', ['sh', '-c', 'npm test && echo test@host.example.com'], '/', 2, ['HOME=/Users/test']),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/Documents\/name\d+\.txt$/);
+    expect(ev[1]!.event.exec.args[2]).toBe('npm test && echo user1@host.example.com');
+    expect(ev[1]!.event.exec.env).toEqual(['HOME=/Users/user1']);
+    expect(r.summary['short or common account names']).toBe('test');
+  });
+
+  test('account names and seeds are whole words of letters and digits, never variable names', () => {
+    const env = ['HOME=/Users/home', 'USER=home', 'HOME_DIR=/tmp', 'NOTE=jdoe_backup'];
+    const input = [
+      run(940, '/bin/echo', ['echo', 'JOSÉ NÚÑEZ', '$HOME', '${HOME}/x', 'home', 'HOME', 'homework', 'jdoe_backup', 'JDoe-laptop', 'JDOE2', '--home=/tmp', 'x=jdoe'], '/', 1, env),
+      run(941, '/bin/sh', ['sh', '-c', 'cp ~/Library/Application\\ Support/Jane\\ Doe\\ Sync/a.db /tmp/ && echo JANE\\ DOE'], '/', 2, env),
+      run(942, '/bin/ls', ['ls', '/Library/Application Support/Jane Doe Sync'], '/', 3, env),
+    ].join('\n') + '\n';
+    const seeds = seedFile([['user', 'home'], ['user', 'jdoe'], ['realname', 'José Núñez'], ['realname', 'Jane Doe']]);
+    const r = runClean(['clean', '-o', '-', '-S', seeds], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.exec.args).toEqual(['echo', 'Person 1', '$HOME', `\${HOME}/${keyed(r.key, 'name').get('x')}`, 'user1', 'user1', 'homework', 'user2_backup', 'user2-laptop', 'JDOE2', '--home=/tmp', 'x=user2']);
+    expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=user1', 'HOME_DIR=/tmp', 'NOTE=user2_backup']);
+    // A seed written with escaped spaces in shell code is replaced, and its placeholder keeps the escapes.
+    expect(ev[1]!.event.exec.args[2]).toBe(`cp ~/Library/Application\\ Support/Person\\ 2\\ Sync/${keyed(r.key, 'name').get('a.db')} /tmp/ && echo Person\\ 2`);
+    expect(ev[2]!.event.exec.args[1]).toBe('/Library/Application Support/Person 2 Sync');
+    // JDOE2 is another word.
+    expect(r.out.replace('"JDOE2"', '')).not.toMatch(/jdoe|josé|núñez|jane|doe/i);
+  });
+
+  test('placeholders already written are not cleaned again by an account of the same word', () => {
+    const input = [
+      run(930, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Hi Jane Doe" with hidden answer'], '/', 1),
+      run(931, '/bin/echo', ['echo', 'Person', 'person@corp.example'], '/', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['user', 'person'], ['realname', 'Jane Doe']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]![2]).toBe('display dialog "Hi Person 1" with hidden answer');
+    expect(args[1]).toEqual(['echo', 'user1', 'user1@corp.example']);
   });
 });

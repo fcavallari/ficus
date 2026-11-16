@@ -160,7 +160,8 @@ print_summary() {
     "events the cleaner could not clean: \(.uncleaned // 0)",
     "events dropped by Endpoint Security: \(.seqGaps)",
     (($kinds | split(" "))[] as $k | "placeholders \($k): \(.placeholders[$k] // 0)"),
-    "redacted: \(.redacted)"' < "$1" >&2
+    "redacted: \(.redacted)",
+    (.shortAccounts // [] | select(length > 0) | "short or common account names: \(join(", "))")' < "$1" >&2
 }
 
 # ---- command line -------------------------------------------------------------------------------------------
