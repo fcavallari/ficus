@@ -175,7 +175,7 @@ function Details({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
     ['PID', <span className="mono">{p.pid}</span>],
     ['Parent PID', ppid ? <span className="mono">{ppid}</span> : <span className="muted">not recorded</span>],
     ['Parent', <ProcLink cap={cap} id={p.originalParent} onSelect={onSelect} />],
-    ['Command line', exec?.args ? <code className="mono wrap">{fmtArgs(exec.args)}</code> : <span className="muted">no exec event captured</span>],
+    ['Last captured exec command line', exec?.args ? <code className="mono wrap">{fmtArgs(exec.args)}</code> : <span className="muted">no exec event captured</span>],
     ['Working dir', exec?.cwd ? <code className="mono wrap">{exec.cwd}</code> : <span className="muted">unknown</span>],
     ['Program', <code className="mono wrap">{img.path ?? 'unknown'}</code>],
   ];
@@ -589,6 +589,9 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
   const findings = cap.analysis.findings.get(p.id) ?? [];
   const item = cap.analysis.queue.find(x => x.procId === p.id);
   const own = useMemo(() => processTimeline(cap, p.id, false).events, [cap, p.id]);
+  const execArgs = [...p.images].reverse().find(i => i.args !== null)?.args ?? null;
+  const commandLine = execArgs && execArgs.length > 0 ? fmtArgs(execArgs) : null;
+  const observed = recordedSpan(own);
   const status = verdicts.get(p.id)?.status ?? 'unreviewed';
   return (
     <>
@@ -601,6 +604,13 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
           {img?.isPlatform ? ' · Apple platform binary' : ''}
         </p>
         {img?.path && <p className="dpath mono">{img.path}</p>}
+        {commandLine && <p className="dcommand"><span className="muted small">Last captured exec command line</span><code className="mono wrap">{commandLine}</code></p>}
+        {own.length > 0 && (
+          <p className="dactivity muted small">
+            {observed && <><span>Observed </span><span className="mono">{fmtTime(observed.first)}{observed.first !== observed.last && <> → {fmtTime(observed.last)}</>}</span><span> · </span></>}
+            {plural(own.length, 'recorded event')}
+          </p>
+        )}
         <div className="row assess">
           {item
             ? <span className="assess-chip">Severity <Sev s={item.severity} full /></span>

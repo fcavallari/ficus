@@ -34,9 +34,9 @@ function Row({ row, selected, onSelect, style, showTip, hideTip }: {
     <div role="option" id={optionId(item.key)} aria-selected={selected} style={style}
       className={`qrow${selected ? ' sel' : ''}${row.routine ? ' routine' : ''}`}
       onClick={() => { onSelect(item); }}>
-      <span className={`badge sev-${item.severity}`} title={`Severity: ${SEVERITY_LABEL[item.severity]}`}>{item.severity}</span>
+      <span className={`badge sev-${item.severity}`} title={`Severity: ${SEVERITY_LABEL[item.severity]}`}>{SEVERITY_LABEL[item.severity]}</span>
       <span className={`status st-${row.status}`} title={`Verdict: ${VERDICT_LABEL[row.status]}`}>
-        <span aria-hidden="true">{STATUS_ICON[row.status]}</span><span className="sr-only">Verdict: {VERDICT_LABEL[row.status]}</span>
+        <span aria-hidden="true">{STATUS_ICON[row.status]}</span><span className="status-label">{VERDICT_LABEL[row.status]}</span>
       </span>
       <span className="qname truncate" onMouseEnter={e => { showTip(e.currentTarget, row.name); }} onMouseLeave={hideTip}>{row.name}</span>
       <span className="args truncate" onMouseEnter={e => { showTip(e.currentTarget, row.args); }} onMouseLeave={hideTip}>{row.args}</span>
