@@ -142,3 +142,55 @@ describe('live mode', () => {
     expect(err).toMatch(/not as root|without sudo/);
   });
 });
+
+describe('live mode, after review', () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  const liveSteps = source.slice(source.indexOf('live_steps() {'), source.indexOf('\n}\n', source.indexOf('live_steps() {')));
+
+  test('the steps run in a child named by its arguments, which refuses without a lab folder', () => {
+    let status: number | null = null;
+    let err = '';
+    try {
+      execFileSync('/bin/bash', [SCRIPT, '__steps', '/nonexistent'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      status = (e as { status: number }).status;
+      err = String((e as { stderr: Buffer }).stderr);
+    }
+    expect(status).not.toBe(0);
+    expect(err).toMatch(/lab folder/);
+    expect(runLab('live', '--answers')).toMatch(/^#.*gameleira-lab\.sh __steps/m);
+  });
+
+  test('stopping the capture ends a recorder that ignores SIGINT, within a few seconds', () => {
+    const t0 = Date.now();
+    const out = execFileSync('/bin/bash', ['-c', [
+      `GAMELEIRA_LAB_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `SUDO_CMD=''`,
+      `( trap '' INT; exec sleep 60 ) & ES_PID=$!`,
+      'sleep 0.3',
+      'stop_capture',
+      'if kill -0 $ES_PID 2>/dev/null; then echo alive; else echo stopped; fi',
+    ].join('\n')], { stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8');
+    expect(out.trim().split('\n').at(-1)).toBe('stopped');
+    expect(Date.now() - t0).toBeLessThan(15000);
+   }, 20000);
+
+  test('no two commands in live mode carry the same marker, so each names one process', () => {
+    // Lines that start a program; builtins (printf, assignments) and the key itself start none.
+    const live = source.slice(source.indexOf('# ---- live mode'), source.indexOf('# ---- command line'));
+    const lines = live.split('\n').filter(l => !/^\s*(?:#|answer |printf |local |: >|[A-Za-z_]+=|'#)/.test(l));
+    for (const row of parseKey(runLab('live', '--answers'))) {
+      expect(lines.filter(l => l.includes(row.marker)).length, row.marker).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('every step runs a program by its full path', () => {
+    const cmds = [...liveSteps.matchAll(/^\s*step '[^']*' (\S+)/gm)].map(x => x[1]!);
+    expect(cmds.length).toBeGreaterThan(10);
+    for (const c of cmds) expect(c, c).toMatch(/^(\/|"\$LAB\/)/);
+  });
+
+  test('the keychain lookup names a keychain file in the lab folder, so it cannot prompt for the real one', () => {
+    expect(liveSteps).toMatch(/find-generic-password -s 'Gameleira Lab Safe Storage' -w "\$LAB\//);
+  });
+});

@@ -492,7 +492,7 @@ LIVE_LABEL=com.gameleira.lab
 live_answers() {
   answer_header
   printf '%s\n' \
-    '# Live capture: find gameleira-lab.sh in the Tree (search for it). Every step runs under it, in a folder' \
+    '# Live capture: search the Tree for "gameleira-lab.sh __steps": every step runs under that process, in a folder' \
     '# /tmp/gameleira-lab.XXXXXX; match each marker against the command lines of its descendants. Everything else' \
     '# in the capture is this Mac going about its business.' \
     '# The cp step: if the capture attributes the launch agent'"'"'s registration to cp itself, its row shows' \
@@ -520,13 +520,13 @@ live_answers() {
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
   answer app-shell shell-under-app med queued 'echo gameleira-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
-  answer persist persistence-plist high queued 'cp /tmp/gameleira-lab.' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end). macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
+  answer persist persistence-plist high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end). macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
   answer burst recon low burst sw_vers 'Three discovery tools within a minute under one shell: a recon burst.'
   answer burst recon low burst 'uname -a' 'Part of the same burst.'
   answer burst recon low burst hostname 'Part of the same burst.'
-  answer setuid recon low context 'ps -p' 'ps on its own: recon, context only.'
-  answer setuid uid-mismatch low context 'ps -p' 'ps is setuid root by design: an allow-listed Apple tool, context only.'
+  answer setuid recon low context 'pid,comm' 'ps on its own: recon, context only.'
+  answer setuid uid-mismatch low context 'pid,comm' 'ps is setuid root by design: an allow-listed Apple tool, context only.'
 }
 
 LAB=''
@@ -534,18 +534,40 @@ ES_PID=''
 ES_ERR=''
 PLIST=''
 CLEANED=''
+SUDO_CMD=sudo    # how the capture is stopped; plain sudo asks for the password again if the ticket ran out
 
+# stop_capture: stop the recorder (ES_PID is the sudo running eslogger): SIGINT so eslogger flushes, then SIGTERM.
+#   Waits a few seconds for each; never blocks for good. ps, not kill -0: the process belongs to root.
+stop_capture() {
+  [ -n "$ES_PID" ] || return 0
+  local sig i
+  for sig in INT TERM; do
+    $SUDO_CMD kill "-$sig" "$ES_PID" 2>/dev/null
+    i=0
+    while ps -p "$ES_PID" >/dev/null 2>&1 && [ $i -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+    if ! ps -p "$ES_PID" >/dev/null 2>&1; then
+      wait "$ES_PID" 2>/dev/null
+      ES_PID=''
+      return 0
+    fi
+  done
+  printf 'gameleira-lab: eslogger is still recording. Stop it with: sudo kill %s\n' "$ES_PID" >&2
+  return 1
+}
+
+# cleanup: undo everything live mode did. Runs once, with Ctrl-C ignored so a second one cannot cut it short.
 cleanup() {
+  trap '' INT TERM HUP
   [ -z "$CLEANED" ] || return 0
   CLEANED=1
+  case $LAB in /tmp/gameleira-lab.?*) pkill -f "$LAB/" 2>/dev/null ;; esac   # a step still running (the applet)
   if [ -n "$PLIST" ]; then
     launchctl bootout "gui/$(id -u)/$LIVE_LABEL" 2>/dev/null
     rm -f "$PLIST"
   fi
   if [ -n "$ES_PID" ]; then
     sleep 2
-    sudo -n kill -INT "$ES_PID" 2>/dev/null
-    wait "$ES_PID" 2>/dev/null
+    stop_capture
   fi
   case $LAB in /tmp/gameleira-lab.?*) rm -rf "$LAB" ;; esac
   [ -z "$ES_ERR" ] || rm -f "$ES_ERR"
@@ -559,29 +581,34 @@ step() {
   sleep 1
 }
 
+# The steps, run by `gameleira-lab.sh __steps LAB` once eslogger records, so the capture has that exec to search for.
+# Programs by full path: a tool earlier on PATH (a pip-installed xattr) would not be the one the rules know.
 live_steps() {
-  local plist_src="$LAB/$LIVE_LABEL.plist"
-  step 'download' curl -s -o "$LAB/page.html" file:///etc/hosts
+  local plist_src="$LAB/agent-template.plist"
+  step 'download' /usr/bin/curl -s -o "$LAB/page.html" file:///etc/hosts
   printf '  - %s\n' 'a script piped into bash' >&2
   ( cd "$LAB" && printf 'whoami\n' | /bin/bash -s ) >/dev/null 2>&1 || true
   sleep 1
-  step 'fake password prompt (type anything, or wait 8 s)' osascript -e 'display dialog "Gameleira lab: a harmless demo of a fake password prompt. Type anything, or wait." default answer "" with hidden answer with title "Gameleira lab" giving up after 8'
-  step 'password check for an account that does not exist' dscl . -authonly gameleira-lab-nobody not-a-password
-  step 'keychain lookup for an item that does not exist' security find-generic-password -s 'Gameleira Lab Safe Storage' -w
-  step 'csrutil disable (refused outside Recovery)' csrutil disable
+  step 'fake password prompt (type anything, or wait 8 s)' /usr/bin/osascript -e 'display dialog "Gameleira lab: a harmless demo of a fake password prompt. Type anything, or wait." default answer "" with hidden answer with title "Gameleira lab" giving up after 8'
+  step 'password check for an account that does not exist' /usr/bin/dscl . -authonly gameleira-lab-nobody not-a-password
+  # A keychain file that does not exist: nothing to unlock, so no prompt for the real login keychain.
+  step 'keychain lookup for an item that does not exist' /usr/bin/security find-generic-password -s 'Gameleira Lab Safe Storage' -w "$LAB/none.keychain-db"
+  step 'csrutil disable (refused outside Recovery)' /usr/bin/csrutil disable
   : > "$LAB/Installer.dmg"
-  xattr -w com.apple.quarantine '0081;00000000;Gameleira;' "$LAB/Installer.dmg" 2>/dev/null
-  step 'quarantine flag removed' xattr -d com.apple.quarantine "$LAB/Installer.dmg"
+  /usr/bin/xattr -w com.apple.quarantine '0081;00000000;Gameleira;' "$LAB/Installer.dmg" 2>/dev/null
+  step 'quarantine flag removed' /usr/bin/xattr -d com.apple.quarantine "$LAB/Installer.dmg"
   printf '  - %s\n' 'base64 -d' >&2
-  ( cd "$LAB" && printf 'Z2FtZWxlaXJhIGxhYgo=\n' | base64 -d ) >/dev/null 2>&1 || true
+  ( cd "$LAB" && printf 'Z2FtZWxlaXJhIGxhYgo=\n' | /usr/bin/base64 -d ) >/dev/null 2>&1 || true
   sleep 1
-  mkdir -p "$LAB/stage" && cp /etc/hosts "$LAB/stage/"
-  step 'archive staged in /tmp' ditto -c -k "$LAB/stage" "$LAB/stage.zip"
+  /bin/mkdir -p "$LAB/stage" && /bin/cp /etc/hosts "$LAB/stage/"
+  step 'archive staged in /tmp' /usr/bin/ditto -c -k "$LAB/stage" "$LAB/stage.zip"
   printf 'return "gameleira lab"\n' > "$LAB/collect.applescript"
-  step 'osascript running a script file' osascript "$LAB/collect.applescript"
-  cp /usr/bin/true "$LAB/agent" && codesign -f -s - "$LAB/agent" >/dev/null 2>&1
+  step 'osascript running a script file' /usr/bin/osascript "$LAB/collect.applescript"
+  /bin/cp /usr/bin/true "$LAB/agent" && /usr/bin/codesign -f -s - "$LAB/agent" >/dev/null 2>&1
   step 'ad-hoc signed program in /tmp' "$LAB/agent" --lab
-  if osacompile -o "$LAB/Lab Helper.app" -e 'do shell script "echo gameleira-lab-applet"' >/dev/null 2>&1; then
+  # Compiled from a file, so only the applet's shell carries the marker on its command line.
+  printf 'do shell script "echo gameleira-lab-applet"\n' > "$LAB/applet.applescript"
+  if /usr/bin/osacompile -o "$LAB/Lab Helper.app" "$LAB/applet.applescript" >/dev/null 2>&1; then
     printf '  - %s\n' 'an applet running a shell' >&2
     ( cd "$LAB" && exec "$LAB/Lab Helper.app/Contents/MacOS/applet" ) >/dev/null 2>&1 &
     local applet=$! i=0
@@ -593,13 +620,12 @@ live_steps() {
   ( cd "$LAB" && ( /bin/sleep 3 & ) )
   sleep 1
   printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key><string>%s</string>\n  <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>exit 0</string></array>\n  <key>RunAtLoad</key><false/>\n</dict>\n</plist>\n' "$LIVE_LABEL" > "$plist_src"
-  mkdir -p "$HOME/Library/LaunchAgents"
-  PLIST=$HOME/Library/LaunchAgents/$LIVE_LABEL.plist
-  step 'launch agent plist written (removed at the end)' cp "$plist_src" "$PLIST"
-  step 'launchctl bootstrap' launchctl bootstrap "gui/$(id -u)" "$PLIST"
-  printf 'sw_vers\nuname -a\nhostname\n:\n' > "$LAB/recon.sh"
+  /bin/mkdir -p "$HOME/Library/LaunchAgents"
+  step 'launch agent plist written (removed at the end)' /bin/cp "$plist_src" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
+  step 'launchctl bootstrap' /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
+  printf '/usr/bin/sw_vers\n/usr/bin/uname -a\n/bin/hostname\n:\n' > "$LAB/recon.sh"
   step 'recon burst' /bin/sh "$LAB/recon.sh"
-  step 'ps (setuid root)' ps -p $$ -o pid,comm
+  step 'ps (setuid root)' /bin/ps -p $$ -o pid,comm
 }
 
 live_run() {
@@ -621,9 +647,10 @@ EOF
   sudo -v || die "sudo is needed for eslogger"
   mkdir -p "$(dirname "$out")" "$(dirname "$answers")" || die "cannot create the folder for $out"
   trap cleanup EXIT
-  trap 'exit 130' INT TERM
+  trap 'exit 130' INT TERM HUP
   LAB=$(mktemp -d /tmp/gameleira-lab.XXXXXX) || die "cannot create the lab folder"
   ES_ERR=$(mktemp /tmp/gameleira-lab-eslogger.XXXXXX) || die "cannot create a temporary file"
+  PLIST=$HOME/Library/LaunchAgents/$LIVE_LABEL.plist
   : > "$out"
   sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
   ES_PID=$!
@@ -640,10 +667,11 @@ EOF
   done
   printf 'Recording. Steps:\n' >&2
   sleep 5
-  live_steps
+  /bin/bash "$SELF" __steps "$LAB" || true
   sleep 5
   cleanup
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
+  [ -z "$ES_PID" ] || die "the capture in $out may still be growing"
   live_answers 4>"$answers"
   printf '\nwrote %s (%s lines)\nanswer key %s\nLoad the capture into Gameleira and check the queue against the key.\n' \
     "$out" "$(wc -l < "$out" | tr -d ' ')" "$answers" >&2
@@ -651,6 +679,7 @@ EOF
 
 # ---- command line -----------------------------------------------------------------------------------------------
 REPO=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)
+SELF=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/${0##*/}
 
 [ -n "${GAMELEIRA_LAB_SOURCE_ONLY:-}" ] && return 0
 
@@ -659,6 +688,13 @@ main() {
   case $mode in
     -h|--help|help) usage; exit 0 ;;
     synthetic|live) shift ;;
+    __steps)
+      # Internal: the live steps, in a child process of live mode.
+      case ${2:-} in /tmp/gameleira-lab.?*) ;; *) die "__steps needs the lab folder live mode made (/tmp/gameleira-lab.XXXXXX)" ;; esac
+      [ -d "$2" ] || die "__steps: no lab folder $2"
+      LAB=$2
+      live_steps
+      exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
   while [ $# -gt 0 ]; do
