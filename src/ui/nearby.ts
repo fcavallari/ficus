@@ -58,11 +58,12 @@ const pathsOf = (e: TimelineEvent): string[] => [e.path, e.toPath].filter((p): p
  * Events inside a group stay in time order. (By first-event time alone, a busy window buries the nearest events.)
  */
 function orderGroups(groups: NearbyGroup[]): NearbyGroup[] {
-  const key = (g: NearbyGroup) => ({
-    same: g.events.some(x => x.samePath),
-    nearest: Math.min(...g.events.map(x => Math.abs(x.offsetMs))),
-    first: g.events[0]!.offsetMs,
-  });
+  const key = (g: NearbyGroup) => {
+    // A loop, not Math.min(...spread): a busy group can exceed the engine's argument limit (about 65k in Safari).
+    let nearest = Infinity;
+    for (const x of g.events) nearest = Math.min(nearest, Math.abs(x.offsetMs));
+    return { same: g.events.some(x => x.samePath), nearest, first: g.events[0]!.offsetMs };
+  };
   const keys = new Map(groups.map(g => [g, key(g)]));
   return groups.sort((a, b) => {
     const ka = keys.get(a)!, kb = keys.get(b)!;

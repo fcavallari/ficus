@@ -125,6 +125,17 @@ describe('nearby', () => {
     expect(defaultAnchor([])).toBeNull();
   });
 
+  it('copes with a group too large to spread into Math.min (Safari tops out near 65k arguments)', () => {
+    const many = Array.from({ length: 150_000 }, (_, i) => wr(`/tmp/m${i}`, 11, 10 + i));
+    const cap = load([
+      proc('100:1', [img({ token: '100:1', time: at(1), seq: 1 })], { fileOps: [wr('/tmp/a', 10, 5)] }),
+      proc('200:1', [img({ token: '200:1', time: at(1), seq: 2 })], { fileOps: many }),
+    ]);
+    const r = nearby(cap, ev(cap, '100:1:op:5'), 5_000);
+    expect(r.total).toBe(150_000);
+    expect(r.groups).toHaveLength(1);
+  });
+
   it('offers three windows, 5 s by default', () => {
     expect(NEARBY_WINDOWS).toEqual([1_000, 5_000, 30_000]);
   });
