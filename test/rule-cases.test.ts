@@ -1046,6 +1046,7 @@ describe('uid-mismatch', () => {
     const a = one(agentd(), mm({ ruid: 0, euid: 501 }));
     const f = finding(a)!;
     expect(f.severity).toBe('low');
+    expect(f.title).toBe('Dropped privileges');
     expect(f.explanation).toBe(DROP);
     expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd)');
     expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
@@ -1058,6 +1059,7 @@ describe('uid-mismatch', () => {
   test('climbing to root from a user keeps its tier and explanation', () => {
     const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
     expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
     expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
   });
   test('a drop and an escalation together: graded and explained as the escalation', () => {
@@ -1065,6 +1067,7 @@ describe('uid-mismatch', () => {
     const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 0, euid: 501 }), mm({ seq: 2, imgIndex: 1 })] });
     const f = finding(analyze(capture([p])))!;
     expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
     expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
   });
   test('an allow-listed low finding is queued when its process is in a flagged chain', () => {

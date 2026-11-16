@@ -787,7 +787,7 @@ export const RULES: Rule[] = [
         if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
       }
       const evidence = parts.join('; ');
-      return escalation ? { evidence, severity } : { evidence, severity, explanation: PRIVILEGE_DROP };
+      return escalation ? { evidence, severity } : { evidence, severity, title: 'Dropped privileges', explanation: PRIVILEGE_DROP };
     },
   },
   {
