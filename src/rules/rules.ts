@@ -66,6 +66,16 @@ export const SETUID_ALLOW: Set<string> = new Set([
   'com.apple.security_authtrampoline', 'com.apple.RemoteDesktopAgent', 'com.apple.loginwindow',
 ]);
 
+/**
+ * Root running with a user's effective id gave privileges up rather than borrowing them (loginwindow, or a vendor
+ * daemon acting for the console user): it can take them back, but that is not a climb. The uid pair decides when it
+ * differs; the gid pair only when the uids match.
+ */
+function isPrivilegeDrop(c: { ruid: number; euid: number; rgid: number; egid: number }): boolean {
+  return c.euid !== c.ruid ? c.ruid === 0 : c.rgid === 0 && c.egid !== 0;
+}
+const PRIVILEGE_DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
+
 // ---------------------------------------------------------------------------------------------------------------
 // Recon and security settings
 
@@ -753,8 +763,9 @@ export const RULES: Rule[] = [
       const list = p.credMismatches;
       if (!list || list.length === 0) return null;
       // Each image the process ran is judged on its own (an allow-listed tool can exec a shell that keeps euid 0); the
-      // finding takes the worst.
+      // finding takes the worst. A drop from root is always low, and explains itself as a drop when nothing else climbed.
       let severity: Severity = 'low';
+      let escalation = false;
       const parts: string[] = [];
       for (const c of list) {
         const image = p.images[c.imgIndex];
@@ -764,12 +775,15 @@ export const RULES: Rule[] = [
         const name = basename(image?.path ?? null);
         const part = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
         if (!parts.includes(part)) parts.push(part);
+        if (isPrivilegeDrop(c)) continue;
+        escalation = true;
         // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
         const s: Severity = !image || !image.isPlatform ? 'high'
           : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
         if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
       }
-      return { evidence: parts.join('; '), severity };
+      const evidence = parts.join('; ');
+      return escalation ? { evidence, severity } : { evidence, severity, explanation: PRIVILEGE_DROP };
     },
   },
   {

@@ -1040,6 +1040,33 @@ describe('uid-mismatch', () => {
     expect(f.severity).toBe('med');
     expect(f.evidence).toBe('euid 0 ≠ ruid 501 (crontab); euid 0 ≠ ruid 501 (sh)');
   });
+  const DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
+  const agentd = () => img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', teamId: 'ABCDE12345' });
+  test('a root process with a user\'s effective uid dropped its privileges: low, context-only, explained as a drop', () => {
+    const a = one(agentd(), mm({ ruid: 0, euid: 501 }));
+    const f = finding(a)!;
+    expect(f.severity).toBe('low');
+    expect(f.explanation).toBe(DROP);
+    expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd)');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+  });
+  test('a gid-only drop from root is a drop too', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 })))!;
+    expect(f.severity).toBe('low');
+    expect(f.explanation).toBe(DROP);
+  });
+  test('climbing to root from a user keeps its tier and explanation', () => {
+    const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
+    expect(f.severity).toBe('high');
+    expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
+  });
+  test('a drop and an escalation together: graded and explained as the escalation', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/tmp/x', signingId: null, seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 0, euid: 501 }), mm({ seq: 2, imgIndex: 1 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('high');
+    expect(f.explanation).toBe(RULES.find(r => r.id === 'uid-mismatch')!.explanation);
+  });
   test('no mismatch, no finding', () => {
     expect(finding(one(apple('/bin/ps', ['ps'])))).toBeUndefined();
   });
