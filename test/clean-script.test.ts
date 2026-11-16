@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
-import { esBtm, esCreate, esExec, esExit, esFork, esProc } from './clean-fixture';
+import { RECON_TOOLS, SHELLS } from '../src/rules/rules';
+import { esBtm, esClone, esCreate, esExec, esExit, esFork, esLink, esProc } from './clean-fixture';
 import { fixture } from './fixtures';
 import { findingSignature } from './helpers';
 
@@ -46,19 +47,21 @@ export interface CleanRun {
 
 /**
  * Runs the script in a fresh folder, with its own key folder unless `-k` is passed, and this Mac's accounts left out.
- * Without `-o` the capture goes to `out.jsonl` in that folder. `input` is written to a file and passed as `-i`.
+ * Without `-o` the capture goes to `out.jsonl` in that folder. `input` is written to a file and passed as `-i`, or
+ * with `-i -` given on standard input.
  */
 export function runClean(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): CleanRun {
   const dir = tmpDir();
   const argv = [...args];
-  if (opts.input !== undefined) {
+  const fromStdin = argv[argv.indexOf('-i') + 1] === '-' && argv.includes('-i');
+  if (opts.input !== undefined && !fromStdin) {
     fs.writeFileSync(path.join(dir, 'input'), opts.input);
     if (!argv.includes('-i')) argv.push('-i', path.join(dir, 'input'));
   }
   if (argv[0] === 'clean' && !argv.includes('-o')) argv.push('-o', path.join(dir, 'out.jsonl'));
   const keyDir = path.join(dir, 'keys');
   const r = spawnSync('/bin/bash', [SCRIPT, ...argv], {
-    cwd: dir, maxBuffer: 64 << 20, input: '',
+    cwd: dir, maxBuffer: 64 << 20, input: fromStdin ? opts.input ?? '' : '',
     env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: keyDir, GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', ...opts.env },
   });
   const stderr = r.stderr.toString('utf8');
@@ -608,7 +611,8 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(findingSignature(buildModel(lines(r.out)))).toEqual(sig);
   });
 
-  test('a name that had a placeholder before its program ran keeps it in the key, and is kept from then on', () => {
+  // Read from standard input there is no prescan, so the name is only known as a program once it has run.
+  test('without the prescan, a name that had a placeholder before its program ran keeps it in the key, and is kept from then on', () => {
     const child = esProc({ pid: 410, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
     const dropper = userProc(410, '/Users/jdoe/Downloads/Zoom_Installer', { pidversion: 2410 });
     const input = [
@@ -616,7 +620,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
       esExec(child, dropper, { args: ['/Users/jdoe/Downloads/Zoom_Installer'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 2 }),
       esCreate(zsh, { path: '/Users/jdoe/Downloads/Zoom_Installer' }, 3),
     ].join('\n') + '\n';
-    const r = runClean(['clean', '-o', '-'], { input });
+    const r = runClean(['clean', '-i', '-', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const ph = keyed(r.key, 'name').get('Zoom_Installer');
     expect(ph).toMatch(/^name\d+$/);
@@ -816,5 +820,266 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     ]);
     expect(r.summary['placeholders name']).toBe('2');
     expect(r.summary['placeholders user']).toBe('1');
+  });
+});
+
+// ---- arguments and text -----------------------------------------------------------------------------------------
+describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
+  // Each program runs in its own process: a shell child (pid N) execs it (pid N, a new pidversion).
+  const child = (pid: number): ReturnType<typeof esProc> => esProc({ pid, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+  const sysImage = (pid: number, p: string): ReturnType<typeof esProc> =>
+    esProc({ pid, pidversion: pid + 2000, path: p, platform: true, signingId: `com.apple.${p.split('/').pop()!}`, ppid: 300 });
+  const run = (pid: number, p: string, args: string[], cwd: string, seq: number, extra: { stdinPipe?: boolean } = {}): string =>
+    esExec(child(pid), sysImage(pid, p), { args, cwd, env: JDOE_ENV, seq, ...extra });
+  const sameFindings = (raw: string, out: string): void => {
+    const sig = findingSignature(buildModel(lines(raw)));
+    expect(findingSignature(buildModel(lines(out)))).toEqual(sig);
+  };
+
+  test('clean -i - reads standard input', () => {
+    const r = runClean(['clean', '-i', '-', '-o', '-'], { input: fs.readFileSync(SYNTHETIC, 'utf8') });
+    expect(r.status, r.stderr).toBe(0);
+    expect(lines(r.out)).toHaveLength(synthLines().length);
+    expect(r.summary['raw capture, left as it was']).toBe('(standard input)');
+  });
+
+  test('relative arguments under a cleaned cwd are cleaned', () => {
+    const input = [
+      run(500, '/usr/bin/zip', ['zip', '-r', 'board.zip', 'Q3 Financials', '--out=Minutes.pdf', './Offsite/Agenda.docx', '../Merger.key'],
+        '/Users/jdoe/Documents', 1),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3 Financials/x.xlsx' }, 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const names = keyed(r.key, 'name');
+    const ev = events(r.out);
+    const args = ev[0]!.event.exec.args as string[];
+    expect(args).toHaveLength(7);
+    expect(args.slice(0, 2)).toEqual(['zip', '-r']);
+    expect(args[2]).toMatch(/^name\d+\.zip$/);
+    expect(args[3]).toBe(names.get('Q3 Financials'));
+    expect(args[4]).toMatch(/^--out=name\d+\.pdf$/);
+    expect(args[5]).toMatch(/^\.\/name\d+\/name\d+\.docx$/);
+    expect(args[6]).toMatch(/^\.\.\/name\d+\.key$/);
+    // The same name in a full path gets the same placeholder.
+    expect(ev[1]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Documents/${names.get('Q3 Financials')}/${names.get('x.xlsx')}`);
+    for (const s of ['board', 'Q3', 'Financials', 'Minutes', 'Offsite', 'Agenda', 'Merger']) expect(r.out, s).not.toContain(s);
+  });
+
+  test('under a cleaned cwd, URLs, launchctl targets, rule words and inline code stay', () => {
+    const input = [
+      run(501, '/usr/bin/curl', ['curl', '-H', 'Accept: text/html', '-o', 'x.py', 'https://example.com/a/b.py'], '/Users/jdoe/Desktop/Merger', 1),
+      run(502, '/bin/launchctl', ['launchctl', 'bootstrap', 'gui/501', 'agent.plist'], '/Users/jdoe/Desktop/Merger', 2),
+      run(503, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w'], '/Users/jdoe/Desktop/Merger', 3),
+      run(504, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Board pack.pdf is ready" with hidden answer'], '/Users/jdoe/Desktop/Merger', 4),
+      run(505, '/usr/bin/python3', ['python3', '-c', 'print 1 2.py'], '/Users/jdoe/Desktop/Merger', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]!.slice(0, 4)).toEqual(['curl', '-H', 'Accept: text/html', '-o']);
+    expect(args[0]![4]).toMatch(/^name\d+\.py$/);
+    expect(args[0]![5]).toBe('https://example.com/a/b.py');
+    expect(args[1]!.slice(0, 3)).toEqual(['launchctl', 'bootstrap', 'gui/501']);
+    expect(args[1]![3]).toMatch(/^name\d+\.plist$/);
+    expect(args[2]).toEqual(['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w']);
+    expect(args[3]).toEqual(['osascript', '-e', 'display dialog "Board pack.pdf is ready" with hidden answer']);
+    expect(args[4]).toEqual(['python3', '-c', 'print 1 2.py']);
+    sameFindings(input, r.out);
+  });
+
+  test('relative arguments under a kept cwd keep unknown names, and replace mapped ones', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3-acquisition.pdf' }, 1),
+      run(510, '/bin/ls', ['ls', 'Foo', 'Q3-acquisition.pdf'], '/usr/local', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(events(r.out)[1]!.event.exec.args).toEqual(['ls', 'Foo', keyed(r.key, 'name').get('Q3-acquisition.pdf')]);
+  });
+
+  test('a mapped name is replaced in free text', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3-acquisition.pdf' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Board Deck.key' }, 2),
+      esCreate(zsh, { path: '/Users/jdoe/Desktop/Merger/Z5' }, 3),
+      run(520, '/usr/bin/osascript', ['osascript', '-e', 'tell app "Finder" to open "Q3-acquisition.pdf"',
+        '-e', 'tell app "Keynote" to open "Board Deck.key" -- see Merger. Z5'], '/', 4),
+      run(521, '/bin/sh', ['sh', '-c', 'cp Q3-acquisition.pdf Merger/;echo Merger'], '/', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const names = keyed(r.key, 'name');
+    const ev = events(r.out);
+    expect(ev[3]!.event.exec.args).toEqual(['osascript', '-e', `tell app "Finder" to open "${names.get('Q3-acquisition.pdf')}"`,
+      // Names shorter than 4 characters are only replaced inside paths.
+      '-e', `tell app "Keynote" to open "${names.get('Board Deck.key')}" -- see ${names.get('Merger')}. Z5`]);
+    expect(ev[4]!.event.exec.args).toEqual(['sh', '-c', `cp ${names.get('Q3-acquisition.pdf')} ${names.get('Merger')}/;echo ${names.get('Merger')}`]);
+    for (const s of ['Q3', 'Board', 'Merger']) expect(r.out, s).not.toContain(s);
+  });
+
+  test('a name seen before its program ran', () => {
+    const dropper = userProc(530, '/Users/jdoe/Downloads/Zoom_Installer', { pidversion: 2530 });
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/Zoom_Installer' }, 1),
+      esExec(child(530), dropper, { args: ['/Users/jdoe/Downloads/Zoom_Installer'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 2 }),
+    ].join('\n') + '\n';
+    // clean -i FILE looks for the programs first, so the name is kept everywhere, also as a pretty-printed export.
+    const pretty = lines(input).map(l => JSON.stringify(JSON.parse(l), null, 2)).join('\n') + '\n';
+    for (const viaFile of [runClean(['clean', '-o', '-'], { input }), runClean(['clean', '-o', '-'], { input: pretty })]) {
+      expect(viaFile.status, viaFile.stderr).toBe(0);
+      expect(keyed(viaFile.key, 'name').has('Zoom_Installer')).toBe(false);
+      expect(events(viaFile.out)[0]!.event.create.destination.existing_file.path).toBe('/Users/user1/Downloads/Zoom_Installer');
+      sameFindings(input, viaFile.out);
+    }
+    // From standard input there is no prescan: the name has a placeholder until the program runs, and findings stay.
+    const viaStdin = runClean(['clean', '-i', '-', '-o', '-'], { input });
+    expect(viaStdin.status, viaStdin.stderr).toBe(0);
+    expect(keyed(viaStdin.key, 'name').has('Zoom_Installer')).toBe(true);
+    sameFindings(input, viaStdin.out);
+  });
+
+  test('folders named after rule words do not break rules', () => {
+    const input = [
+      ...['Chrome', 'dialog', 'load', 'Volumes', 'Safe Storage', 'answer'].map((w, i) => esCreate(zsh, { path: `/Users/jdoe/Documents/${w}/x${i}.txt` }, i + 1)),
+      run(540, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w'], '/Users/jdoe/Documents', 10),
+      run(541, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Update needed" default answer "" with hidden answer'], '/Users/jdoe/Documents', 11),
+      run(542, '/bin/launchctl', ['launchctl', 'load', '/Users/jdoe/Library/LaunchAgents/x.plist'], '/Users/jdoe/Documents', 12),
+      run(543, '/bin/launchctl', ['launchctl', 'load', 'Volumes/x.plist'], '/Users/jdoe/Documents', 13),
+      run(544, '/bin/sh', ['sh', '-c', 'echo Chrome Safe Storage; echo load dialog answer'], '/Users/jdoe/Documents', 14),
+      // What the rules match as a phrase stays whole, even with other words in it, and even when a folder has that name.
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Gameleira Lab Safe Storage/y.txt' }, 15),
+      run(545, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Gameleira Lab Safe Storage', '-w'], '/Users/jdoe/Documents', 16),
+      run(546, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Exodus Backup', '-a', 'Brave Browser'], '/Users/jdoe/Documents', 17),
+      run(547, '/bin/sh', ['sh', '-c', 'security find-generic-password -s "Gameleira Lab Safe Storage"'], '/', 18),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    expect(args[0]).toEqual(['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w']);
+    expect(args[1]).toEqual(['osascript', '-e', 'display dialog "Update needed" default answer "" with hidden answer']);
+    expect(args[2]).toEqual(['launchctl', 'load', '/Users/user1/Library/LaunchAgents/x.plist']);
+    expect(args[3]!.slice(0, 2)).toEqual(['launchctl', 'load']);
+    expect(args[3]![2]).toMatch(/^Volumes\/name\d+\.plist$/);
+    expect(args[4]).toEqual(['sh', '-c', 'echo Chrome Safe Storage; echo load dialog answer']);
+    expect(args[5]).toEqual(['security', 'find-generic-password', '-s', 'Gameleira Lab Safe Storage', '-w']);
+    expect(args[6]).toEqual(['security', 'find-generic-password', '-s', 'Exodus Backup', '-a', 'Brave Browser']);
+    expect(args[7]).toEqual(['sh', '-c', 'security find-generic-password -s "Gameleira Lab Safe Storage"']);
+    sameFindings(input, r.out);
+  });
+
+  // The words come partly from src/rules/rules.ts itself, so a new recon tool or shell there fails this test until
+  // PROTECTED in scripts/gameleira-clean.jq has it.
+  test('words the rules look for stay outside paths, even when a folder has that name', () => {
+    const sample = [
+      'load', 'bootstrap', 'submit', 'disable', 'enable', 'display', 'dialog', 'hidden', 'answer', 'authonly', '-authonly',
+      'Safe', 'Storage', 'Chrome', 'Chromium', 'Brave', 'Vivaldi', 'Opera', 'quarantine', 'com.apple.quarantine',
+      'Exodus', 'Electrum', 'MetaMask', 'Ledger', 'Atomic', 'Wallet', 'Coinomi', 'find-generic-password', 'find-internet-password',
+      'dump-keychain', 'unlock-keychain', 'export', 'add-trusted-cert', 'authorizationdb', 'write', 'deny', 'unspecified',
+      'authenticated-root', 'clear', 'remove', 'empty', 'javascript', 'dgst', 'sha256', 'ripemd160', 'curl', 'wget', 'osascript',
+      'python3', 'perl5.30', 'ruby', 'node', 'launchctl', 'xattr', 'base64', 'openssl', 'ditto', 'zip', 'tar', 'dscl', 'security',
+      'spctl', 'csrutil', 'networksetup', 'xpcproxy',
+      ...RECON_TOOLS.keys(), ...[...SHELLS].map(s => s.split('/').pop()!),
+    ];
+    const folders = sample.filter(w => !w.startsWith('-'));
+    const input = [
+      ...folders.map((w, i) => esCreate(zsh, { path: `/Users/jdoe/Documents/${w}/f.txt` }, i + 1)),
+      esExec(child(550), userProc(550, '/usr/local/bin/tool', { pidversion: 2550 }), { args: ['tool', ...sample], cwd: '/Users/jdoe/Documents', env: JDOE_ENV, seq: 500 }),
+      run(551, '/bin/sh', ['sh', '-c', sample.join(' ')], '/', 501),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[folders.length]!.event.exec.args).toEqual(['tool', ...sample]);
+    expect(ev[folders.length + 1]!.event.exec.args).toEqual(['sh', '-c', sample.join(' ')]);
+  });
+
+  test('the every-rule story run from a home folder', () => {
+    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
+    const moved = lines(lab).map(l => {
+      const e = JSON.parse(l) as { event?: { exec?: { cwd?: { path: string } } } };
+      if (e.event?.exec?.cwd) e.event.exec.cwd.path = '/Users/learner/Documents/Board';
+      return JSON.stringify(e);
+    }).join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input: moved });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).not.toContain('Board');
+    const sig = findingSignature(buildModel(lines(moved)));
+    expect(sig.size).toBeGreaterThan(5);
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(sig);
+  });
+
+  test('two runs sharing a key give the same placeholders', () => {
+    const key = path.join(tmpDir(), 'shared.key.tsv');
+    const a = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3-acquisition.pdf' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Desktop/Merger/x.txt' }, 2),
+    ].join('\n') + '\n';
+    const b = [
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/Payroll.xlsx' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/Q3-acquisition.pdf' }, 2),
+      run(560, '/usr/bin/osascript', ['osascript', '-e', 'open "Q3-acquisition.pdf"'], '/', 3),
+    ].join('\n') + '\n';
+    const ra = runClean(['clean', '-o', '-', '-k', key], { input: a });
+    expect(ra.status, ra.stderr).toBe(0);
+    const afterA = keyed(ra.key, 'name');
+    const rb = runClean(['clean', '-o', '-', '-k', key], { input: b });
+    expect(rb.status, rb.stderr).toBe(0);
+    const q3 = afterA.get('Q3-acquisition.pdf')!;
+    const ev = events(rb.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/Downloads\/name\d+\.xlsx$/);
+    expect(ev[1]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Downloads/${q3}`);
+    expect(ev[2]!.event.exec.args).toEqual(['osascript', '-e', `open "${q3}"`]);
+    const num = (ph: string): number => Number(/\d+/.exec(ph)![0]);
+    const payroll = keyed(rb.key, 'name').get('Payroll.xlsx')!;
+    expect(num(payroll)).toBe(Math.max(...[...afterA.values()].map(num)) + 1);
+    expect(keyed(rb.key, 'user')).toEqual(new Map([['jdoe', 'user1']]));
+  });
+
+  test('free text: quoted names with spaces, escaped spaces, $HOME, and chained paths', () => {
+    const texts = [
+      'echo "see /Users/jdoe/Secret Folder/x.pdf"',
+      "echo 'see /Users/jdoe/Secret Folder/x.pdf' && ls",
+      'ls /Users/jdoe/Secret\\ Folder/x.pdf | wc',
+      'cat $HOME/Payroll/q.txt ${HOME}/Payroll/r.txt',
+      '/Users/jdoe/Z5;/usr/bin/curl',
+      '/usr/bin/x;/Volumes/Jdoe Passport/Z13',
+      'osascript -e "do shell script \\"cp /Users/jdoe/Secret Folder/x.pdf /tmp/out\\""',
+      'du -sh /Volumes/Jdoe Passport; echo done',
+    ];
+    const input = run(570, '/bin/sh', ['sh', ...texts], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const vol = keyed(r.key, 'volume').get('Jdoe Passport');
+    expect(vol).toBe('vol1');
+    const sf = `/Users/user1/${n.get('Secret Folder')}/${n.get('x.pdf')}`;
+    expect(events(r.out)[0]!.event.exec.args).toEqual(['sh',
+      `echo "see ${sf}"`,
+      `echo 'see ${sf}' && ls`,
+      `ls ${sf} | wc`,
+      `cat $HOME/${n.get('Payroll')}/${n.get('q.txt')} \${HOME}/${n.get('Payroll')}/${n.get('r.txt')}`,
+      `/Users/user1/${n.get('Z5')};/usr/bin/curl`,
+      `/usr/bin/x;/Volumes/vol1/${n.get('Z13')}`,
+      `osascript -e "do shell script \\"cp ${sf} /tmp/${n.get('out')}\\""`,
+      'du -sh /Volumes/vol1; echo done',
+    ]);
+    for (const s of ['jdoe', 'Secret', 'Folder', 'Payroll', 'Passport', 'Z13', 'Z5']) expect(r.out, s).not.toContain(s);
+  });
+
+  test('the bare name of a link or a clone is cleaned as the last name of its folder', () => {
+    const input = [
+      esLink(zsh, '/Users/jdoe/Documents/Q3-acquisition.pdf', '/Users/jdoe/Desktop', 'Board copy.pdf', 1),
+      esClone(zsh, '/Users/jdoe/Documents/Q3-acquisition.pdf', '/Users/jdoe/Desktop/Merger', 'Q3-acquisition.pdf', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const ev = events(r.out);
+    expect(ev[0]!.event.link.target_dir.path).toBe('/Users/user1/Desktop');
+    expect(ev[0]!.event.link.target_filename).toBe(n.get('Board copy.pdf'));
+    expect(ev[1]!.event.clone.target_dir.path).toBe(`/Users/user1/Desktop/${n.get('Merger')}`);
+    expect(ev[1]!.event.clone.target_name).toBe(n.get('Q3-acquisition.pdf'));
+    for (const s of ['Q3', 'Board', 'Merger']) expect(r.out, s).not.toContain(s);
   });
 });

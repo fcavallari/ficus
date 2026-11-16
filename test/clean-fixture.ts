@@ -128,3 +128,11 @@ export function esBtm(proc: Json, o: BtmOpts, seq: SeqArg): string {
 }
 
 export const esExit = (proc: Json, seq: SeqArg): string => line(proc, 'exit', 15, { stat: 0 }, seqOf(seq));
+
+/** A hard link `target_dir/target_filename` to `source`: eslogger names the new link by folder and bare name. */
+export const esLink = (proc: Json, source: string, targetDir: string, name: string, seq: SeqArg): string =>
+  line(proc, 'link', 19, { source: file(source), target_dir: file(targetDir), target_filename: name }, seqOf(seq));
+
+/** A clone (APFS copy) of `source` as `target_dir/target_name`. */
+export const esClone = (proc: Json, source: string, targetDir: string, name: string, seq: SeqArg): string =>
+  line(proc, 'clone', 61, { source: file(source), target_dir: file(targetDir), target_name: name }, seqOf(seq));

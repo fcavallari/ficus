@@ -27,6 +27,8 @@ Usage:
 
 clean   Read the capture RAW (JSONL, a pretty-printed export or a JSON array) and write the cleaned capture as JSONL.
         RAW is never changed or deleted: remove it yourself once you are happy with the result.
+        With -i - the capture (JSONL) is read from standard input, in one pass: a program's name is then only known
+        as one from the moment it runs, not from its first appearance as it is for a file.
 record  Record with eslogger and write the cleaned capture as it goes (not built yet).
 
   -o FILE       The cleaned capture; - for standard output. Default: capture.cleaned.jsonl here. Made, with its folder, if missing.
@@ -71,6 +73,7 @@ new_tmp() {
 #   DOMAINS      the -D values (an array)
 #   SEED_FILE    the -S file, or empty
 #   LOADED_KEY   the key file to load, or empty
+#   KEEP_FILE    the prescan's list of program names (a JSON array), or empty
 CONFIG_JQ='
 def kinds: ($kinds | split(" "));
 def lines($text): $text | split("\n") | map(rtrimstr("\r") | select(length > 0));
@@ -92,14 +95,15 @@ def lines($text): $text | split("\n") | map(rtrimstr("\r") | select(length > 0))
           else {kind: $f[0], placeholder: $f[1],
                 real: ($f[2] | (try fromjson catch null) | if type == "string" then . else error("line \($n) of the key file has a real value that is not a JSON string") end)} end]
       end),
-  keep: []
+  keep: ($keep[0] // [])
 }'
 
 # write_config FILE: the config JSON, from DOMAINS, SEED_FILE and LOADED_KEY.
 write_config() {
   local file=$1 err
   err=$(printf '%s\n' "${DOMAINS[@]}" | "$JQ" -n -R -c --arg kinds "$KINDS" --arg header "$KEY_HEADER" \
-    --rawfile seeds "${SEED_FILE:-/dev/null}" --rawfile key "${LOADED_KEY:-/dev/null}" "$CONFIG_JQ" 2>&1 >"$file") ||
+    --rawfile seeds "${SEED_FILE:-/dev/null}" --rawfile key "${LOADED_KEY:-/dev/null}" \
+    --slurpfile keep "${KEEP_FILE:-/dev/null}" "$CONFIG_JQ" 2>&1 >"$file") ||
     die "cannot read the seed or key file: ${err#jq: error (at <unknown>): }"
 }
 
@@ -123,6 +127,13 @@ run_cleaner() {
     rc=${PIPESTATUS[0]}
   } 3>&1
   return "$rc"
+}
+
+# prescan CONFIG: raw lines on stdin; on stdout, the names of the programs the capture runs (a JSON array), which
+# write_config puts in `keep` so they are kept from their first appearance. jq's own messages are dropped: they could
+# quote the capture.
+prescan() {
+  "$JQ" -n -R -c --slurpfile cfg "$1" -f "$CLEAN_PROGRAM" 2>/dev/null
 }
 
 # The capture as one event per line: a pretty-printed export or a JSON array is turned into lines first. If that stops on
@@ -193,9 +204,9 @@ main() {
     jq-1.[7-9]*|jq-1.[1-9][0-9]*|jq-[2-9]*) ;;
     *) die "jq 1.7 or later is needed ($JQ is $("$JQ" --version 2>&1))" ;;
   esac
-  [ -f "$in" ] && [ -r "$in" ] || die "cannot read $in"
+  [ "$in" = - ] || { [ -f "$in" ] && [ -r "$in" ]; } || die "cannot read $in"
   [ -z "$SEED_FILE" ] || { [ -f "$SEED_FILE" ] && [ -r "$SEED_FILE" ]; } || die "cannot read the seed file $SEED_FILE"
-  if [ "$out" != - ] && [ "$out" -ef "$in" ]; then die "-o and -i are the same file; the capture would be erased"; fi
+  if [ "$in" != - ] && [ "$out" != - ] && [ "$out" -ef "$in" ]; then die "-o and -i are the same file; the capture would be erased"; fi
 
   # The key: found, or refused, before anything is created.
   local key=$keyarg
@@ -220,12 +231,24 @@ main() {
   if [ "$out" != - ]; then
     mkdir -p "$(dirname "$out")" || die "cannot make the folder for $out"
   fi
-  local old_umask config stats
+  local old_umask config stats normalize_input=
   old_umask=$(umask)
   umask 077
   new_tmp; config=$TMP_OUT
   new_tmp; stats=$TMP_OUT
   new_tmp; NORM_STATUS_FILE=$TMP_OUT
+  # A file is read twice: first for the names of the programs it runs (from standard input there is one pass only).
+  KEEP_FILE=
+  if [ "$in" != - ]; then
+    needs_normalizing "$in" && normalize_input=1
+    printf '{"prescan":true}\n' > "$config"
+    new_tmp; KEEP_FILE=$TMP_OUT
+    if [ -n "$normalize_input" ]; then
+      normalize "$in" | prescan "$config" > "$KEEP_FILE"
+    else
+      prescan "$config" < "$in" > "$KEEP_FILE"
+    fi || die "cannot read the programs in $in"
+  fi
   write_config "$config"
 
   # The key is made, private, before the first event is read, so a capture cut short still has its key.
@@ -234,9 +257,9 @@ main() {
   chmod 600 "$key"
   umask "$old_umask"
 
-  local normalize_input=
-  needs_normalizing "$in" && normalize_input=1
-  if [ -n "$normalize_input" ]; then
+  if [ "$in" = - ]; then
+    if [ "$out" = - ]; then run_cleaner "$config" "$key" "$stats"; else run_cleaner "$config" "$key" "$stats" > "$out"; fi
+  elif [ -n "$normalize_input" ]; then
     if [ "$out" = - ]; then
       normalize "$in" | run_cleaner "$config" "$key" "$stats"
     else
@@ -255,7 +278,7 @@ main() {
   fi
   if [ "$out" = - ]; then echo 'capture: (standard output)' >&2; else echo "capture: $out" >&2; fi
   echo "key: $key" >&2
-  echo "raw capture, left as it was: $in" >&2
+  if [ "$in" = - ]; then echo 'raw capture, left as it was: (standard input)' >&2; else echo "raw capture, left as it was: $in" >&2; fi
 }
 
 [ -n "${GAMELEIRA_CLEAN_SOURCE_ONLY:-}" ] && return 0
