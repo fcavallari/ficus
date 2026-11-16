@@ -155,13 +155,22 @@ def protected_name($n):
 
 # What the keychain rule matches in a `security` argument as a phrase, whatever else is around it: a service ending in
 # Safe Storage (SAFE_STORAGE), a wallet name (WALLET), a browser account (BROWSER_ACCOUNT). Such an argument of
-# security is never a relative name, and only single mapped words are replaced in it (state.single), so the phrase
-# survives (jdoe Safe Storage becomes user1 Safe Storage; a folder called Gameleira Lab Safe Storage does not swallow
-# the service of that name). For any other program it is a name like others.
+# security is never a relative name, and in it a mapped name is replaced only when it has no keychain word
+# (state.single, KEYCHAIN_WORDS), so the phrase survives (jdoe Safe Storage becomes user1 Safe Storage). For any other
+# program it is a name like others.
 def KEYCHAIN_PHRASES:
   "(?i)safe storage$|\\b(?:exodus|electrum|metamask|ledger live|atomic wallet|coinomi)\\b"
   + "|^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$";
 def keychain_value($prog; $a): $prog == "security" and ($a | test(KEYCHAIN_PHRASES));
+# The words of KEYCHAIN_PHRASES. In a keychain argument a mapped name is replaced only when it has none of them, so
+# Board Minutes Safe Storage becomes name5 Safe Storage, but a folder called Gameleira Lab Safe Storage does not take
+# the service of that name.
+def KEYCHAIN_WORDS: {
+  "safe": true, "storage": true, "exodus": true, "electrum": true, "metamask": true, "ledger": true, "live": true,
+  "atomic": true, "wallet": true, "coinomi": true, "google": true, "chrome": true, "chromium": true, "brave": true,
+  "microsoft": true, "edge": true, "opera": true, "vivaldi": true, "arc": true, "browser": true
+};
+def keychain_free($n): all($n | scan("[^" + WORD_SEP + "]+"); KEYCHAIN_WORDS[ascii_downcase] != true);
 
 # A new placeholder's real value, made findable in free text (General string cleaning, step 4): names of 4 or more
 # characters that are not protected, of the kinds that are names (not hosts, emails or data, which have their own
@@ -374,7 +383,7 @@ def unescape: if index("\\") != null then gsub("\\\\(?<c>.)"; .c) else . end;
 # sentence) is looked up without it. Input: the state.
 def replace_mapped($str):
   if .nwords == 0 or ($str | length) < 4 then $str
-  elif .words[$str] != null and (.single | not) then (if .keep[$str] then $str else .words[$str] end)
+  elif .words[$str] != null and ((.single | not) or keychain_free($str)) then (if .keep[$str] then $str else .words[$str] end)
   else . as $s
     | [$str | scan(WORD_TOKENS)] as $t
     | if any($t[]; $s.words[.] != null or $s.multi[.] != null or (endswith(".") and $s.words[rtrimstr(".")] != null)) | not then $str
@@ -382,10 +391,11 @@ def replace_mapped($str):
         reduce range(0; $t | length) as $i ({out: "", skip: 0};
           if .skip > 0 then .skip -= 1
           else $t[$i] as $w
-            | (if $s.multi[$w] == null or $s.single then null
+            | (if $s.multi[$w] == null then null
                else first($s.multi[$w] | keys | map(tonumber) | sort | reverse | .[]
                           | {n: ., real: ($t[$i:$i + .] | join("") | unescape)}
-                          | select(.n <= ($t | length) - $i and $s.words[.real] != null and ($s.keep[.real] | not))) // null
+                          | select(.n <= ($t | length) - $i and $s.words[.real] != null and ($s.keep[.real] | not)
+                                   and (($s.single | not) or keychain_free(.real)))) // null
                end) as $hit
             | if $hit != null then .out += $s.words[$hit.real] | .skip = $hit.n - 1
               elif $s.words[$w] != null and ($s.keep[$w] | not) then .out += $s.words[$w]
@@ -440,11 +450,13 @@ def QUOTED_PATHS:
 # A string that starts with a path in a cleaned place (or NAME= or --option= and one) is one value (M&A Plan, R&D):
 # free text only when it also holds a line break or a second path after a space. A string that starts with a system
 # or app path (/usr/bin/x;/Users/…, /usr/bin/open "/Users/…") keeps names, so it is read as free text and the paths
-# after a separator or quote are cleaned on their own.
+# after a separator or quote are cleaned on their own; so is a string with spaces whose cleaned-place path is glued
+# after something (curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c): the path ends at the space.
 def free_text:
   if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:(?:" + HOME_PREFIX + ")/|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")")
   then test("[\\n\\r]|\\s(?:~?/|file:|\\$\\{?HOME)")
-  else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)") end;
+  else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)")
+    or (test("\\s") and test(CLEANED_ROOT + "|[@=]~/")) end;
 
 # Where an unquoted path in free text ends when the name it ends in begins a mapped name of several words: the whole
 # name (du -sh /Volumes/Jdoe Passport; …, once Jdoe Passport has its placeholder), and any path after it. Input: the state.
@@ -483,6 +495,22 @@ def NOT_RELATIVE: [GLUED_PATH, SHELL_CHARS, URL_SCHEME, HOST_PORT, USER_HOST, LA
 # host, board.zip and notes.txt/x are files.
 def dotted_host($a):
   [$a | capture("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.(?<e>[A-Za-z0-9-]+)(?::[0-9]+)?(?:/|$)") | FILE_EXTENSIONS[.e | ascii_downcase] != true] | any;
+# wget's options that take the next argument as their value (WGET_SPEC in src/rules/args.ts): a short letter ending a
+# cluster (-O, -qO), or a long name. Their values are files, not the URLs the download rule looks for.
+def WGET_SHORT_VALUES: "aABDeiIlnoOPQRtTUwX";
+def WGET_LONG_VALUES: {
+  "--output-document": true, "--output-file": true, "--append-output": true, "--input-file": true, "--user-agent": true,
+  "--header": true, "--post-data": true, "--post-file": true, "--directory-prefix": true, "--tries": true,
+  "--timeout": true, "--wait": true, "--user": true, "--password": true, "--referer": true, "--load-cookies": true,
+  "--save-cookies": true, "--execute": true, "--base": true, "--level": true, "--accept": true, "--reject": true,
+  "--domains": true, "--quota": true, "--limit-rate": true, "--method": true, "--body-data": true, "--body-file": true,
+  "--ca-certificate": true, "--ca-directory": true, "--certificate": true, "--private-key": true
+};
+def wget_value_option($prev):
+  WGET_LONG_VALUES[$prev] == true
+  or (($prev | test("^-[A-Za-z]+$"))
+      and ([$prev[1:] | explode[] | [.] | implode] as $l
+           | (first(range(0; $l | length) | . as $k | select(WGET_SHORT_VALUES | contains($l[$k]))) // -1) == ($l | length) - 1));
 # looksLikeUrl from src/rules/args.ts, as it is: the wget rule only counts an argument it accepts. Keep in step with it.
 def looks_like_url:
   test("^[a-z][a-z0-9+.-]*://"; "i") or test("^[a-z0-9-]+(?:\\.[a-z0-9-]+)+(?::[0-9]+)?(?:/|$)"; "i")
@@ -491,13 +519,14 @@ def looks_like_url:
 # A relative name to clean under its exec's cwd (General string cleaning, step 2). It looks like a path: it holds a /
 # or whitespace, ends in an extension from FILE_EXTENSIONS, or has a mapped name of 4 or more characters as a part. It
 # is nothing NOT_RELATIVE matches, not a host (dotted_host), not a program that ran, and not what the rules look for
-# (protected_name), so zip, -r, launchctl load and find-generic-password stay. For wget, whose rule reads its
-# arguments with looksLikeUrl, nothing looks_like_url accepts (intranet/a.sh) is a relative name either. Input: the state.
-def relative_name($prog; $a):
+# (protected_name), so zip, -r, launchctl load and find-generic-password stay. A wget positional ($url_arg), which its
+# rule reads with looksLikeUrl, is not a relative name when looks_like_url accepts it (intranet/a.sh); wget's option
+# values (-O file, --output-document=file) are files and are cleaned. Input: the state.
+def relative_name($url_arg; $a):
   . as $s
   | ($a | test(NOT_RELATIVE) | not)
   and (dotted_host($a) | not)
-  and (($prog == "wget" and ($a | looks_like_url)) | not)
+  and (($url_arg and ($a | looks_like_url)) | not)
   and (($a | test("[/\\s]"))
        or FILE_EXTENSIONS[[$a | capture("\\.(?<e>[A-Za-z0-9]{1,11})$") | .e | ascii_downcase] | .[0] // ""] == true
        or any($a | split("/")[]; length >= 4 and ($s.map.name[.] // $s.map.user[.] // $s.map.volume[.]) != null))
@@ -635,7 +664,10 @@ def clean_event($state):
           | if $relc and $arg and ($kc | not)
                and (if $p[3] == 0 then ($v | index("/")) != null
                     else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
-               and (option_value($v) as $o | .s | relative_name($prog; $o.val)) then
+               and (option_value($v) as $o
+                    | ($prog == "wget" and $o.pre == "" and $p[3] > 0
+                       and (wget_value_option($args[$p[3] - 1] | if type == "string" then . else "" end) | not)) as $url_arg
+                    | .s | relative_name($url_arg; $o.val)) then
               option_value($v) as $o
               | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
               | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)

