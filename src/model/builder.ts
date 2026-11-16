@@ -111,15 +111,21 @@ export class ModelBuilder {
     if (info.path !== null && cur !== null && info.path !== cur) known.images.push(imageFrom(info, seq));
   }
 
-  /** Records the first sighting of euid != ruid or egid != rgid on p. */
-  private noteIds(p: Process, info: ProcInfo, seq: number, time: string): void {
+  /**
+   * Records euid != ruid or egid != rgid on p, the first sighting per image: `imgIndex` is the image p was running when
+   * the token was seen, by default its latest. Keeping one per image means a later image (a shell exec'd by a setuid
+   * tool) is not hidden by an earlier, routine one.
+   */
+  private noteIds(p: Process, info: ProcInfo, seq: number, time: string, imgIndex = p.images.length - 1): void {
     const ids = info.ids;
-    if (p.credMismatch || ids === null) return;
-    if (ids.euid !== ids.ruid || ids.egid !== ids.rgid) p.credMismatch = { ...ids, seq, time };
+    if (ids === null || (ids.euid === ids.ruid && ids.egid === ids.rgid)) return;
+    const list = p.credMismatches ??= [];
+    if (!list.some(c => c.imgIndex === imgIndex)) list.push({ ...ids, seq, time, imgIndex });
   }
 
   private apply(ev: NormEvent): void {
     const p = this.ensure(ev.proc, ev.seq, ev.time);
+    // Before an exec pushes its target: the emitter's token belongs to the image it ran until then.
     this.noteIds(p, ev.proc, ev.seq, ev.time);
     if (ev.kind !== 'other') this.kinds.set(ev.rawType, (this.kinds.get(ev.rawType) ?? 0) + 1);
     switch (ev.kind) {
@@ -129,13 +135,13 @@ export class ModelBuilder {
         if (existing !== undefined) {
           const known = this.processes.get(existing)!;
           known.forkParent = p.id;
-          this.noteIds(known, child, ev.seq, ev.time);
+          this.noteIds(known, child, ev.seq, ev.time, 0);
           break;
         }
         const c = newProcess(child, { ...imageFrom(child, ev.seq), time: ev.time, inherited: true }, ev.seq);
         c.forkParent = p.id;
         this.add(c, child.token);
-        this.noteIds(c, child, ev.seq, ev.time);
+        this.noteIds(c, child, ev.seq, ev.time, 0);
         break;
       }
       case 'exec': {

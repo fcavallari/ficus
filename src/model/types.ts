@@ -47,8 +47,11 @@ export interface Process {
   startTime: string | null; exitTime: string | null; firstSeq: number; fileOps: FileOp[];
   /** Sequence number of the exit event, when one was captured. */
   exitSeq?: number;
-  /** The first event whose audit_token had euid != ruid or egid != rgid (setuid/setgid), with those ids. */
-  credMismatch?: Ids & { seq: number; time: string };
+  /**
+   * Per image the process ran, the first event whose audit_token had euid != ruid or egid != rgid (setuid/setgid), with
+   * those ids. `imgIndex` is the image running when that token was seen (for the emitter of an exec, the one before it).
+   */
+  credMismatches?: (Ids & { seq: number; time: string; imgIndex: number })[];
 }
 export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath: string | null;
   executablePath: string | null; appPath: string | null; time: string; seq: number;

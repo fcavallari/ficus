@@ -750,18 +750,26 @@ export const RULES: Rule[] = [
     explanation: 'Its effective user or group id differs from its real one, so the process holds the privileges of another account. That is what a setuid or setgid binary does, or a process that called setuid(). Apple ships a few setuid tools (ps, sudo, su, crontab and others), so those are expected; the same behaviour from anything else is a way to climb to root.',
     mitre: ['T1548.001'], scope: 'process',
     matchProcess: (p) => {
-      const c = p.credMismatch;
-      if (!c) return null;
-      const image = imageAt(p, c.seq);
-      const diffs: string[] = [];
-      if (c.euid !== c.ruid) diffs.push(`euid ${c.euid} ≠ ruid ${c.ruid}`);
-      if (c.egid !== c.rgid) diffs.push(`egid ${c.egid} ≠ rgid ${c.rgid}`);
-      const name = basename(image?.path ?? null);
-      const evidence = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
-      // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
-      const severity: Severity = !image || !image.isPlatform ? 'high'
-        : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
-      return { evidence, severity };
+      const list = p.credMismatches;
+      if (!list || list.length === 0) return null;
+      // Each image the process ran is judged on its own (an allow-listed tool can exec a shell that keeps euid 0); the
+      // finding takes the worst.
+      let severity: Severity = 'low';
+      const parts: string[] = [];
+      for (const c of list) {
+        const image = p.images[c.imgIndex];
+        const diffs: string[] = [];
+        if (c.euid !== c.ruid) diffs.push(`euid ${c.euid} ≠ ruid ${c.ruid}`);
+        if (c.egid !== c.rgid) diffs.push(`egid ${c.egid} ≠ rgid ${c.rgid}`);
+        const name = basename(image?.path ?? null);
+        const part = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
+        if (!parts.includes(part)) parts.push(part);
+        // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
+        const s: Severity = !image || !image.isPlatform ? 'high'
+          : SETUID_ALLOW.has(image.signingId ?? '') ? 'low' : 'med';
+        if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
+      }
+      return { evidence: parts.join('; '), severity };
     },
   },
   {

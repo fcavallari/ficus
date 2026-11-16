@@ -994,10 +994,10 @@ describe('spctl --disable naming, rule explanations, ruby and perl probes', () =
 
 describe('uid-mismatch', () => {
   const T = '2026-11-12T00:00:00.000Z';
-  const mm = (o: Partial<{ ruid: number; euid: number; rgid: number; egid: number; seq: number }> = {}) =>
-    ({ ruid: 501, euid: 0, rgid: 20, egid: 20, seq: 1, time: T, ...o });
-  const one = (image: ReturnType<typeof img>, credMismatch?: ReturnType<typeof mm>) =>
-    analyze(capture([proc('100:1', [image], credMismatch ? { credMismatch } : {})]));
+  const mm = (o: Partial<{ ruid: number; euid: number; rgid: number; egid: number; seq: number; imgIndex: number }> = {}) =>
+    ({ ruid: 501, euid: 0, rgid: 20, egid: 20, seq: 1, time: T, imgIndex: 0, ...o });
+  const one = (image: ReturnType<typeof img>, c?: ReturnType<typeof mm>) =>
+    analyze(capture([proc('100:1', [image], c ? { credMismatches: [c] } : {})]));
   const finding = (a: ReturnType<typeof analyze>) => allFindings(a).find(f => f.ruleId === 'uid-mismatch');
 
   test('allow-listed ps is low and context-only', () => {
@@ -1025,15 +1025,22 @@ describe('uid-mismatch', () => {
     expect(ev({ euid: 501, egid: 80 })).toBe('egid 80 ≠ rgid 20 (foo)');
     expect(ev({ euid: 0, egid: 80 })).toBe('euid 0 ≠ ruid 501, egid 80 ≠ rgid 20 (foo)');
   });
-  test('uses the image running at the mismatch', () => {
+  test('uses the image recorded with the mismatch', () => {
     const early = apple('/bin/zsh', ['zsh'], { seq: 1 });
     const late = img({ path: '/tmp/x', signingId: 'com.example.x', seq: 5, token: '100:1' });
-    const p = proc('100:1', [early, late], { credMismatch: mm({ seq: 5 }) });
+    const p = proc('100:1', [early, late], { credMismatches: [mm({ seq: 5, imgIndex: 1 })] });
     expect(finding(analyze(capture([p])))?.severity).toBe('high');
-    const p2 = proc('101:1', [early, late], { credMismatch: mm({ seq: 2 }) });
+    const p2 = proc('101:1', [early, late], { credMismatches: [mm({ seq: 5, imgIndex: 0 })] });
     expect(finding(analyze(capture([p2])))?.severity).toBe('med');
   });
-  test('no credMismatch, no finding', () => {
+  test('several images: the worst one grades the finding, and each distinct pair is named once', () => {
+    const imgs = [apple('/usr/bin/crontab', ['crontab'], { seq: 1 }), apple('/bin/sh', ['sh', '-p'], { seq: 2 }), apple('/bin/sh', ['sh'], { seq: 3 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ imgIndex: 0 }), mm({ seq: 2, imgIndex: 1 }), mm({ seq: 3, imgIndex: 2 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('med');
+    expect(f.evidence).toBe('euid 0 ≠ ruid 501 (crontab); euid 0 ≠ ruid 501 (sh)');
+  });
+  test('no mismatch, no finding', () => {
     expect(finding(one(apple('/bin/ps', ['ps'])))).toBeUndefined();
   });
   test('cites T1548.001, which has a name', () => {
