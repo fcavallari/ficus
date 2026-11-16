@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
+import { parseLine } from '../src/model/parse';
+import type { NormEvent } from '../src/model/types';
 import { displayName } from '../src/model/relations';
 import { imagePaths, model, procByPid } from './helpers';
 import { readLines } from './fixtures';
@@ -230,4 +232,57 @@ test('new token with same pid but different start_time is a new process', () => 
     ev(2, proc('500:2', { path: '/tmp/payload', start: '2026-01-01T00:00:01.5Z' }), { write: { target: { path: '/tmp/x' } } }),
   ]);
   expect([...m8.processes.values()].filter(p => p.pid === 500)).toHaveLength(2);
+});
+
+// uid/gid mismatch: the first event showing euid != ruid or egid != rgid is kept on the process.
+type Cred = { pid: number; pidversion: number; ruid?: number; euid?: number; rgid?: number; egid?: number };
+const cred = (pid: number, over: Partial<Cred> = {}): Cred =>
+  ({ pid, pidversion: pid * 10, ruid: 501, euid: 501, rgid: 20, egid: 20, ...over });
+function line(o: { seq: number; time?: string; proc: Cred; path?: string; event: object }): string {
+  return JSON.stringify({
+    global_seq_num: o.seq, time: o.time ?? `2026-01-01T00:00:${String(o.seq).padStart(2, '0')}Z`, version: 11,
+    process: {
+      audit_token: o.proc, executable: { path: o.path ?? '/bin/zsh' }, signing_id: 'com.apple.zsh',
+      is_platform_binary: true, start_time: '2026-01-01T00:00:00Z',
+    },
+    event: o.event,
+  });
+}
+const procObj = (c: Cred, path: string) => ({
+  audit_token: c, executable: { path }, signing_id: 'x', is_platform_binary: true, start_time: '2026-01-01T00:00:00Z',
+});
+
+test('exec into a setuid binary records the mismatch', () => {
+  const m = buildModel([line({
+    seq: 7, time: '2026-01-01T00:00:07Z', proc: cred(100),
+    event: { exec: { target: procObj(cred(100, { pidversion: 1001, euid: 0 }), '/bin/ps'), args: ['/bin/ps'] } },
+  })]);
+  expect(m.processes.get('100:1000')!.credMismatch)
+    .toEqual({ ruid: 501, euid: 0, rgid: 20, egid: 20, seq: 7, time: '2026-01-01T00:00:07Z' });
+});
+test('mismatch seen on a later non-exec event is recorded', () => {
+  const m = buildModel([
+    line({ seq: 1, proc: cred(100), event: { fork: { child: procObj(cred(200), '/bin/zsh') } } }),
+    line({ seq: 2, proc: cred(200, { euid: 0 }), event: { write: { target: { path: '/tmp/x' } } } }),
+  ]);
+  expect(m.processes.get('200:2000')!.credMismatch).toMatchObject({ euid: 0, ruid: 501, seq: 2 });
+});
+test('only the first mismatch is kept', () => {
+  const m = buildModel([
+    line({ seq: 1, proc: cred(100, { euid: 0 }), event: { write: { target: { path: '/tmp/a' } } } }),
+    line({ seq: 2, proc: cred(100, { egid: 0 }), event: { write: { target: { path: '/tmp/b' } } } }),
+  ]);
+  expect(m.processes.get('100:1000')!.credMismatch!.seq).toBe(1);
+});
+test('ids are null when audit_token lacks them', () => {
+  const l = line({ seq: 1, proc: { pid: 100, pidversion: 1000 }, event: { write: { target: { path: '/tmp/a' } } } });
+  const ev = parseLine(l);
+  expect(ev).not.toBeNull();
+  expect(ev).not.toBe('bad');
+  expect((ev as NormEvent).proc.ids).toBeNull();
+  expect(buildModel([l]).processes.get('100:1000')!.credMismatch).toBeUndefined();
+});
+test('matching ids record nothing', () => {
+  const m = buildModel([line({ seq: 1, proc: cred(100), event: { write: { target: { path: '/tmp/a' } } } })]);
+  expect(m.processes.get('100:1000')!.credMismatch).toBeUndefined();
 });

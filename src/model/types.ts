@@ -1,5 +1,7 @@
 export type TokenKey = string;            // `${pid}:${pidversion}`
 export type ProcId = string;              // first TokenKey of the exec chain, or `ghost:${pid}`
+/** Real and effective user and group ids of an audit_token. */
+export interface Ids { ruid: number; euid: number; rgid: number; egid: number }
 export interface ProcInfo {               // normalized es process object
   token: TokenKey; pid: number; path: string | null;
   signingId: string | null; teamId: string | null;
@@ -7,6 +9,7 @@ export interface ProcInfo {               // normalized es process object
   ppid: number | null; originalPpid: number | null;
   parentToken: TokenKey | null; responsibleToken: TokenKey | null;
   startTime: string | null;
+  ids: Ids | null;                          // null when the audit_token lacks any of the four
 }
 export type EventKind = 'fork' | 'exec' | 'exit' | 'create' | 'rename' | 'unlink'
   | 'write' | 'setextattr' | 'btm_add' | 'btm_remove' | 'other';
@@ -44,6 +47,8 @@ export interface Process {
   startTime: string | null; exitTime: string | null; firstSeq: number; fileOps: FileOp[];
   /** Sequence number of the exit event, when one was captured. */
   exitSeq?: number;
+  /** The first event whose audit_token had euid != ruid or egid != rgid (setuid/setgid), with those ids. */
+  credMismatch?: Ids & { seq: number; time: string };
 }
 export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath: string | null;
   executablePath: string | null; appPath: string | null; time: string; seq: number;
