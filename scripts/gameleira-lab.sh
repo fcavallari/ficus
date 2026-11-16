@@ -495,9 +495,9 @@ live_answers() {
     '# Live capture: search the Tree for "gameleira-lab.sh __steps": every step runs under that process, in a folder' \
     '# /tmp/gameleira-lab.XXXXXX; match each marker against the command lines of its descendants. Everything else' \
     '# in the capture is this Mac going about its business.' \
-    '# The cp step: if the capture attributes the launch agent'"'"'s registration to cp itself, its row shows' \
-    '# persistence-item instead of persistence-plist; if it attributes it to launchctl, the launchctl row shows' \
-    '# persistence-item as well.' \
+    '# The cp step: macOS names smd as the caller that registered the launch agent, and smd only relays requests,' \
+    '# so the registration is credited to the process that wrote the plist: cp shows persistence-item. A plist' \
+    '# written with no registration at all would show persistence-plist instead (the synthetic capture has one).' \
     '# Not set off in live mode (the synthetic capture has them):' \
     '#   unsigned: Apple Silicon refuses to run a program with no signature at all.' \
     '#   uid-mismatch high: needs a setuid-root copy of a program; the lab will not make one.' \
@@ -520,7 +520,7 @@ live_answers() {
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
   answer app-shell shell-under-app med queued 'echo gameleira-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
-  answer persist persistence-plist high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end). macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
+  answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
   answer burst recon low burst sw_vers 'Three discovery tools within a minute under one shell: a recon burst.'
   answer burst recon low burst 'uname -a' 'Part of the same burst.'
