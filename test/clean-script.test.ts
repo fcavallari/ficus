@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
-import { esCreate, esExec, esExit, esFork, esProc } from './clean-fixture';
+import { esBtm, esCreate, esExec, esExit, esFork, esProc } from './clean-fixture';
 import { fixture } from './fixtures';
 import { findingSignature } from './helpers';
 
@@ -111,7 +111,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(r.summary['events out']).toBe(String(out.length));
     expect(r.summary['unreadable lines dropped']).toBe('0');
     expect(r.summary['events dropped by Endpoint Security']).toBe('0');
-    expect(r.summary['placeholders user']).toBe('0');
+    expect(r.summary['placeholders user']).toBe('1');   // alice
     expect(r.summary['redacted']).toBe('0');
     expect(r.summary['capture']).toBe('(standard output)');
   });
@@ -186,7 +186,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(r.summary['key']).toBe(keyFile);
     expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
     expect(fs.readFileSync(keyFile, 'utf8').split('\n')[0]).toBe('kind\tplaceholder\treal');
-    expect(parseKey(r.key)).toEqual([]);
+    expect(parseKey(r.key)[0]).toEqual({ kind: 'user', placeholder: 'user1', real: 'alice' });
     expect(r.summary['capture']).toBe(out);
     expect(r.summary['raw capture, left as it was']).toBe(SYNTHETIC);
   });
@@ -228,15 +228,18 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
   test('-k names where the key goes; an existing key is loaded and appended to, not replaced', () => {
     const dir = tmpDir();
     const key = path.join(dir, 'mine', 'my.key.tsv');
-    const first = runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-k', key]);
+    const p = esProc({ pid: 100, path: '/bin/zsh', platform: true });
+    const c = esProc({ pid: 101, path: '/bin/zsh', platform: true, ppid: 100 });
+    const quiet = [esFork(p, c, 1), esExit(c, 2)].join('\n') + '\n';   // nothing in it to clean
+    const first = runClean(['clean', '-o', '-', '-k', key], { input: quiet });
     expect(first.status).toBe(0);
     expect(first.summary['key']).toBe(key);
     expect(fs.statSync(key).mode & 0o777).toBe(0o600);
     fs.appendFileSync(key, 'user\tuser1\t"alice"\n');
     fs.chmodSync(key, 0o644);
-    const second = runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-k', key]);
+    const second = runClean(['clean', '-o', '-', '-k', key], { input: quiet + esCreate(p, { path: '/Users/alice/x' }, 3) + '\n' });
     expect(second.status).toBe(0);
-    expect(second.key).toBe('kind\tplaceholder\treal\nuser\tuser1\t"alice"\n');
+    expect(second.key).toBe('kind\tplaceholder\treal\nuser\tuser1\t"alice"\nname\tname1\t"x"\n');
     expect(fs.statSync(key).mode & 0o777).toBe(0o600);
   });
 
@@ -415,5 +418,263 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
       key: [{ kind: 'name', placeholder: 'name7', real: 'a\tb\nc' }, { kind: 'realname', placeholder: 'Person 2', real: 'Alice A' }],
       keep: [],
     });
+  });
+});
+
+// ---- paths ------------------------------------------------------------------------------------------------------
+// A Mac whose user is jdoe (uid 501). The environment is given explicitly: bare account names outside paths (USER=jdoe)
+// are cleaned by a later step, so none is planted here.
+const JDOE_ENV = ['HOME=/Users/jdoe', 'LANG=C.UTF-8', 'PATH=/usr/bin:/bin:/Users/jdoe/.pyenv/shims', 'SHELL=/bin/zsh', 'TMPDIR=/var/folders/ab/cdef/T/'];
+const zsh = esProc({ pid: 300, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh' });
+const sysProc = (pid: number, p: string): ReturnType<typeof esProc> =>
+  esProc({ pid, path: p, platform: true, signingId: `com.apple.${p.split('/').pop()!}`, ppid: 300 });
+const userProc = (pid: number, p: string, extra: Partial<Parameters<typeof esProc>[0]> = {}): ReturnType<typeof esProc> =>
+  esProc({ pid, path: p, signingId: null, ppid: 300, ...extra });
+
+/** The events of a cleaned capture, parsed. */
+const events = (out: string): Record<string, any>[] => lines(out).map(l => JSON.parse(l) as Record<string, any>);
+/** The real values of a key of one kind. */
+const keyed = (key: string, kind: string): Map<string, string> =>
+  new Map(parseKey(key).filter(r => r.kind === kind).map(r => [r.real, r.placeholder]));
+
+describe.skipIf(!fs.existsSync(JQ))('paths', () => {
+  const planted = [
+    '/Users/jdoe/Documents/Board – Q3 "final"/Q3-acquisition.pdf',
+    '/Users/jdoe/Desktop/Merger/notes.txt',
+    '/Users/jdoe/Library/Application Support/Microsoft/Office/AutoRecovery/Offer.docx',
+    '/Users/jdoe/Library/Group Containers/UBF8T346G9.Office/Budget.xlsx',
+    '/Users/Shared/Payroll.xlsx',
+    '/Volumes/Jdoe Passport/Clients/acme.pdf',
+    '/tmp/Board.key',
+    '/var/folders/ab/cdef/T/TemporaryItems/Notes.txt',
+    '/System/Volumes/Data/Users/jdoe/Desktop/Merger/notes.txt',
+  ];
+  const open = sysProc(310, '/usr/bin/open');
+  const leakInput = [
+    ...planted.map((p, i) => esCreate(zsh, { path: p }, i + 1)),
+    esCreate(zsh, { dir: '/Users/jdoe/Documents/Board', filename: 'Minutes.pages' }, 20),
+    esExec(zsh, open, { args: ['open', '~/Documents/Offsite.txt', '--out=/Users/jdoe/Desktop/Merger/plan.key'], cwd: '/Users/jdoe/Desktop/Merger', env: JDOE_ENV, seq: 21 }),
+  ].join('\n') + '\n';
+
+  test('home, shared, volume and temp names become placeholders', () => {
+    const r = runClean(['clean', '-o', '-'], { input: leakInput });
+    expect(r.status, r.stderr).toBe(0);
+    const out = r.out.toLowerCase();
+    for (const s of ['jdoe', 'board', 'q3', 'acquisition', 'merger', 'notes.txt', 'offer', 'budget', 'payroll', 'passport',
+      'clients', 'acme', 'minutes', 'offsite', 'plan.key']) expect(out, s).not.toContain(s);
+    expect(keyed(r.key, 'user')).toEqual(new Map([['jdoe', 'user1']]));
+    expect(keyed(r.key, 'volume')).toEqual(new Map([['Jdoe Passport', 'vol1']]));
+    const names = keyed(r.key, 'name');
+    for (const n of ['Board – Q3 "final"', 'Q3-acquisition.pdf', 'Merger', 'notes.txt', 'Offer.docx', 'Budget.xlsx', 'Payroll.xlsx',
+      'Clients', 'acme.pdf', 'Board.key', 'Notes.txt', 'Board', 'Minutes.pages', 'Offsite.txt', 'plan.key']) expect(names.has(n), n).toBe(true);
+    expect(names.get('Q3-acquisition.pdf')).toMatch(/^name\d+\.pdf$/);
+    expect(names.get('Board – Q3 "final"')).toMatch(/^name\d+$/);
+    const ev = events(r.out);
+    const paths = ev.slice(0, planted.length).map(e => e.event.create.destination.existing_file.path as string);
+    expect(paths[0]).toBe(`/Users/user1/Documents/${names.get('Board – Q3 "final"')}/${names.get('Q3-acquisition.pdf')}`);
+    expect(paths[2]).toMatch(/^\/Users\/user1\/Library\/Application Support\/name\d+\/name\d+\/name\d+\/name\d+\.docx$/);
+    expect(paths[3]).toMatch(/^\/Users\/user1\/Library\/Group Containers\/UBF8T346G9\.Office\/name\d+\.xlsx$/);
+    expect(paths[4]).toMatch(/^\/Users\/Shared\/name\d+\.xlsx$/);
+    expect(paths[5]).toMatch(/^\/Volumes\/vol1\/name\d+\/name\d+\.pdf$/);
+    expect(paths[6]).toMatch(/^\/tmp\/name\d+\.key$/);
+    expect(paths[7]).toMatch(/^\/var\/folders\/ab\/cdef\/T\/TemporaryItems\/name\d+\.txt$/);
+    expect(paths[8]).toBe(`/System/Volumes/Data${paths[1]}`);
+    // A new file's separate name is cleaned as the last name of its folder.
+    const np = ev[planted.length]!.event.create.destination.new_path;
+    expect(np.dir.path).toBe(`/Users/user1/Documents/${names.get('Board')}`);
+    expect(np.filename).toBe(names.get('Minutes.pages'));
+    expect(ev[planted.length]!.event.create).not.toHaveProperty('acl');
+    // ~/ paths and paths after = are cleaned too; arguments keep their count and order.
+    const exec = ev[planted.length + 1]!.event.exec;
+    expect(exec.args).toEqual(['open', `~/Documents/${names.get('Offsite.txt')}`, `--out=/Users/user1/Desktop/${names.get('Merger')}/${names.get('plan.key')}`]);
+    expect(exec.cwd.path).toBe(`/Users/user1/Desktop/${names.get('Merger')}`);
+  });
+
+  test('the same name gets the same placeholder in every field', () => {
+    const backup = userProc(320, '/usr/local/bin/backup');
+    const btmd = sysProc(330, '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd');
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3-acquisition.pdf' }, 1),
+      esExec(zsh, backup, { args: ['backup', '/tmp/Q3-acquisition.pdf', 'sh', '-c', 'cp "/Users/jdoe/Board Q3/Q3-acquisition.pdf" /tmp/x'], cwd: '/Volumes/Jdoe Passport/Q3-acquisition.pdf', env: JDOE_ENV, seq: 2 }),
+      esBtm(btmd, { itemUrl: 'file:///Users/jdoe/Library/LaunchAgents/Q3-acquisition.pdf', executablePath: '/usr/local/bin/backup', itemType: 1 }, 3),
+      esCreate(zsh, { path: '/Users/jdoe/Board Q3/notes.txt' }, 4),
+      esBtm(btmd, { itemUrl: 'file:///Users/jdoe/Board%20Q3/notes.txt', executablePath: '/usr/local/bin/backup', itemType: 1 }, 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const rows = parseKey(r.key).filter(k => k.real === 'Q3-acquisition.pdf');
+    expect(rows).toHaveLength(1);
+    const ph = rows[0]!.placeholder;
+    expect(ph).toMatch(/^name\d+\.pdf$/);
+    const board = keyed(r.key, 'name').get('Board Q3')!;
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Documents/${ph}`);
+    expect(ev[1]!.event.exec.cwd.path).toBe(`/Volumes/vol1/${ph}`);
+    expect(ev[1]!.event.exec.args).toEqual(['backup', `/tmp/${ph}`, 'sh', '-c', `cp "/Users/user1/${board}/${ph}" /tmp/${keyed(r.key, 'name').get('x')}`]);
+    expect(ev[2]!.event.btm_launch_item_add.item.item_url).toBe(`file:///Users/user1/Library/LaunchAgents/${ph}`);
+    // A file URL is read name by name with its %-escapes undone, so a name in it matches the same name in a path.
+    expect(ev[4]!.event.btm_launch_item_add.item.item_url).toBe(`file:///Users/user1/${board}/${keyed(r.key, 'name').get('notes.txt')}`);
+    expect(r.out).not.toContain('Q3');
+  });
+
+  test('shapes the rules need survive', () => {
+    const agent = userProc(340, '/Users/jdoe/Applications/Foo.app/Contents/MacOS/Foo', { teamId: 'ABCDE12345', signingId: 'com.foo.Foo' });
+    const translocated = '/private/var/folders/ab/cdef/T/AppTranslocation/0E7A1C2B-5D4F-4A3B-9C8D-112233445566/d/Foo.app/Contents/MacOS/Foo';
+    const moved = userProc(341, translocated, { teamId: 'ABCDE12345', signingId: 'com.foo.Foo' });
+    const btmd = sysProc(330, '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd');
+    const curl = sysProc(342, '/usr/bin/curl');
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/setup.pkg' }, 1),
+      esCreate(zsh, { path: '/Users/Shared/drop.txt' }, 2),
+      esCreate(zsh, { path: '/Users/jdoe/Projects/.hidden/x' }, 3),
+      esCreate(zsh, { path: '/Users/jdoe/Projects/node_modules/.bin/tool' }, 4),
+      esCreate(zsh, { path: '/Users/jdoe/Projects/.git/hooks/pre-commit' }, 5),
+      esCreate(zsh, { path: '/Users/jdoe/Library/LaunchAgents/com.jdoe.agent.plist' }, 6),
+      esBtm(btmd, { itemUrl: 'file:///Users/jdoe/Library/LaunchAgents/com.jdoe.agent.plist', executablePath: '/Users/jdoe/Applications/Foo.app/Contents/MacOS/Foo', itemType: 1 }, 7),
+      esExec(zsh, agent, { args: ['/Users/jdoe/Applications/Foo.app/Contents/MacOS/Foo'], cwd: '/var/folders/ab/cdef/T/', env: JDOE_ENV, seq: 8 }),
+      esExec(zsh, moved, { args: [translocated], cwd: '/', env: JDOE_ENV, seq: 9 }),
+      // Names that look like bundle IDs, but in Documents: a person's files, not an app's.
+      esCreate(zsh, { path: '/Users/jdoe/Documents/first.last.resume.pdf' }, 10),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/com.acme.secret-plan.docx' }, 11),
+      // Home folders named like system ones do not change system paths.
+      esCreate(zsh, { path: '/Users/jdoe/homebrew/bin/tool' }, 12),
+      esCreate(zsh, { path: '/Users/jdoe/Projects/usr/lib/System/x' }, 13),
+      esExec(zsh, curl, { args: ['curl', '-o', '/usr/lib/libz.dylib'], cwd: '/System/Library/Frameworks', env: JDOE_ENV, seq: 14 }),
+      esCreate(zsh, { path: '/Users/jdoe/Library/Developer/Xcode/DerivedData/App-abc/Build/x' }, 15),
+    ].join('\n') + '\n';
+    const raw = lines(input);
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    const created = (i: number): string => ev[i]!.event.create.destination.existing_file.path as string;
+    expect(created(0)).toMatch(/^\/Users\/user1\/Downloads\/name\d+\.pkg$/);
+    expect(created(1)).toMatch(/^\/Users\/Shared\/name\d+\.txt$/);
+    expect(created(2)).toMatch(/^\/Users\/user1\/name\d+\/\.name\d+\/name\d+$/);
+    expect(created(3)).toMatch(/^\/Users\/user1\/name\d+\/node_modules\/\.name\d+\/name\d+$/);
+    expect(created(4)).toMatch(/^\/Users\/user1\/name\d+\/\.git\/name\d+\/name\d+$/);
+    expect(created(5)).toBe('/Users/user1/Library/LaunchAgents/com.user1.agent.plist');
+    expect(ev[6]!.event.btm_launch_item_add.item.item_url).toBe('file:///Users/user1/Library/LaunchAgents/com.user1.agent.plist');
+    expect(ev[6]!.event.btm_launch_item_add.executable_path).toBe('/Users/user1/Applications/Foo.app/Contents/MacOS/Foo');
+    expect(ev[7]!.event.exec.target.executable.path).toBe('/Users/user1/Applications/Foo.app/Contents/MacOS/Foo');
+    expect(ev[7]!.event.exec.cwd.path).toBe('/var/folders/ab/cdef/T/');
+    expect(ev[8]!.event.exec.target.executable.path).toBe(translocated);
+    expect(ev[8]!.event.exec.args).toEqual([translocated]);
+    expect(created(9)).toMatch(/^\/Users\/user1\/Documents\/name\d+\.pdf$/);
+    expect(created(10)).toMatch(/^\/Users\/user1\/Documents\/name\d+\.docx$/);
+    expect(created(11)).toMatch(/^\/Users\/user1\/name\d+\/bin\/name\d+$/);
+    expect(created(12)).toMatch(/^\/Users\/user1\/name\d+\/usr\/lib\/System\/name\d+$/);
+    expect(ev[13]!.event.exec.args).toEqual(['curl', '-o', '/usr/lib/libz.dylib']);
+    expect(ev[13]!.event.exec.cwd.path).toBe('/System/Library/Frameworks');
+    expect(created(14)).toMatch(/^\/Users\/user1\/Library\/Developer\/name\d+\/DerivedData\/name\d+\/name\d+\/name\d+$/);
+    // PATH lists are cleaned entry by entry.
+    expect(ev[7]!.event.exec.env).toContain('HOME=/Users/user1');
+    expect(ev[7]!.event.exec.env.find((e: string) => e.startsWith('PATH='))).toMatch(/^PATH=\/usr\/bin:\/bin:\/Users\/user1\/\.name\d+\/shims$/);
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(findingSignature(buildModel(raw)));
+  });
+
+  test('programs that ran keep their names', () => {
+    // Each program runs in its own process: a shell child (pid N) execs it (pid N, a new pidversion).
+    const child = (pid: number): ReturnType<typeof esProc> => esProc({ pid, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+    const image = (pid: number, p: string): ReturnType<typeof esProc> => userProc(pid, p, { pidversion: pid + 2000 });
+    const input = [
+      esExec(child(400), image(400, '/Users/jdoe/homebrew/bin/curl'), { args: ['curl', '-o', 'x', 'https://example.com/a.py'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 1 }),
+      esExec(child(401), image(401, '/Users/jdoe/.pyenv/shims/python3'), { args: ['python3'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, stdinPipe: true, seq: 2 }),
+      esExec(child(402), image(402, '/Users/jdoe/.nvm/versions/node/v22.0.0/bin/node'), { args: ['node', '-e', 'require("child_process")'], cwd: '/Users/jdoe/Projects', env: JDOE_ENV, seq: 3 }),
+      esExec(child(403), image(403, '/Users/jdoe/Downloads/Zoom_Installer'), { args: ['/Users/jdoe/Downloads/Zoom_Installer'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 4 }),
+      // From now on these names stay, in any path.
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Zoom_Installer' }, 5),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/curl/node' }, 6),
+    ].join('\n') + '\n';
+    const raw = lines(input);
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev.map(e => e.event.exec?.target.executable.path)).toEqual([
+      '/Users/user1/homebrew/bin/curl'.replace('homebrew', keyed(r.key, 'name').get('homebrew')!),
+      expect.stringMatching(/^\/Users\/user1\/\.name\d+\/shims\/python3$/),
+      expect.stringMatching(/^\/Users\/user1\/\.name\d+\/versions\/node\/name\d+\.0\/bin\/node$/),
+      '/Users/user1/Downloads/Zoom_Installer',
+      undefined, undefined,
+    ]);
+    expect(ev[3]!.event.exec.args).toEqual(['/Users/user1/Downloads/Zoom_Installer']);
+    expect(ev[4]!.event.create.destination.existing_file.path).toBe('/Users/user1/Documents/Zoom_Installer');
+    expect(ev[5]!.event.create.destination.existing_file.path).toBe('/Users/user1/Documents/curl/node');
+    const sig = findingSignature(buildModel(raw));
+    expect(sig.size).toBeGreaterThan(2);
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(sig);
+  });
+
+  test('a name that had a placeholder before its program ran keeps it in the key, and is kept from then on', () => {
+    const child = esProc({ pid: 410, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+    const dropper = userProc(410, '/Users/jdoe/Downloads/Zoom_Installer', { pidversion: 2410 });
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/Zoom_Installer' }, 1),
+      esExec(child, dropper, { args: ['/Users/jdoe/Downloads/Zoom_Installer'], cwd: '/Users/jdoe/Downloads', env: JDOE_ENV, seq: 2 }),
+      esCreate(zsh, { path: '/Users/jdoe/Downloads/Zoom_Installer' }, 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    const ph = keyed(r.key, 'name').get('Zoom_Installer');
+    expect(ph).toMatch(/^name\d+$/);
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Downloads/${ph}`);
+    expect(ev[1]!.event.exec.target.executable.path).toBe('/Users/user1/Downloads/Zoom_Installer');
+    expect(ev[2]!.event.create.destination.existing_file.path).toBe('/Users/user1/Downloads/Zoom_Installer');
+  });
+
+  test('a launch agent plist with a space in its name is matched to its registration as in the raw capture', () => {
+    const btmd = sysProc(330, '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd');
+    const sh = sysProc(350, '/bin/sh');
+    const input = [
+      esCreate(sh, { path: '/Users/jdoe/Library/LaunchAgents/My Agent.plist' }, 1),
+      esBtm(btmd, { itemUrl: 'file:///Users/jdoe/Library/LaunchAgents/My%20Agent.plist', executablePath: '/Users/jdoe/Downloads/Zoom_Installer', itemType: 1 }, 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    const ph = keyed(r.key, 'name').get('My Agent.plist');
+    expect(ph).toMatch(/^name\d+\.plist$/);
+    expect(events(r.out)[1]!.event.btm_launch_item_add.item.item_url).toBe(`file:///Users/user1/Library/LaunchAgents/${ph}`);
+    expect(findingSignature(buildModel(lines(r.out)))).toEqual(findingSignature(buildModel(lines(input))));
+  });
+
+  test('same findings: the synthetic-lab fixture and the lab script\'s synthetic capture', () => {
+    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
+    for (const [input, user] of [[fs.readFileSync(SYNTHETIC, 'utf8'), 'alice'], [lab, 'learner']] as const) {
+      const r = runClean(['clean', '-o', '-'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      expect(keyed(r.key, 'user').get(user)).toBe('user1');
+      const raw = findingSignature(buildModel(lines(input)));
+      expect(raw.size).toBeGreaterThan(5);
+      expect(findingSignature(buildModel(lines(r.out)))).toEqual(raw);
+    }
+  });
+
+  test('same output every run, for the same input and a fresh key', () => {
+    const a = runClean(['clean', '-o', '-'], { input: leakInput });
+    const b = runClean(['clean', '-o', '-'], { input: leakInput });
+    expect(a.out).not.toBe('');
+    expect(b.out).toBe(a.out);
+    expect(b.key).toBe(a.key);
+  });
+
+  test('a loaded key keeps its placeholders, and new names are numbered after it', () => {
+    const dir = tmpDir();
+    const key = path.join(dir, 'shared.key.tsv');
+    fs.writeFileSync(key, 'kind\tplaceholder\treal\nuser\tuser1\t"jdoe"\nname\tname4.pdf\t"Q3-acquisition.pdf"\n');
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Q3-acquisition.pdf' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Merger.key' }, 2),
+      esCreate(zsh, { path: '/Users/kim/Desktop/x' }, 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-k', key], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(events(r.out).map(e => e.event.create.destination.existing_file.path)).toEqual([
+      '/Users/user1/Documents/name4.pdf', '/Users/user1/Documents/name5.key', '/Users/user2/Desktop/name6',
+    ]);
+    expect(parseKey(r.key).slice(2)).toEqual([
+      { kind: 'name', placeholder: 'name5.key', real: 'Merger.key' },
+      { kind: 'user', placeholder: 'user2', real: 'kim' },
+      { kind: 'name', placeholder: 'name6', real: 'x' },
+    ]);
+    expect(r.summary['placeholders name']).toBe('2');
+    expect(r.summary['placeholders user']).toBe('1');
   });
 });
