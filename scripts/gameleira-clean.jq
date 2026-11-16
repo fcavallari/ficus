@@ -215,6 +215,9 @@ def kept_by_place($pl; $lc; $i; $n):
   or ($pl.top != null and $lc[$pl.top] == "apptranslocation" and ($i == $pl.top or $i == $pl.top + 1
                                                                      or ($i == $pl.top + 2 and $n == "d")));
 
+# System accounts (root, daemon, nobody, _www …) are not people: ~root/ gets no account placeholder.
+def system_account($n): $n == "root" or $n == "daemon" or $n == "nobody" or ($n | startswith("_"));
+
 # One absolute path, ~/ or ~name/ path, or file:// URL, cleaned name by name (General string cleaning, step 1). Input: the state.
 # Output: {v: the cleaned path, s: the state}. Extra leading slashes (//Users/…) are kept and the path cleaned as usual.
 # The fixed system structure (/System, but not /System/Volumes/Data, which holds /Users; /usr, /bin, /sbin, /dev) is
@@ -235,7 +238,7 @@ def clean_path($text):
       | if $pl.from == null and unchanged_elsewhere($text) then {v: $text, s: .}
         else
           # ~name/ is that account's home folder: the name becomes its user placeholder.
-          (if ($tu // "") != "" then placeholder("user"; $tu) | {pre: ("~" + .ph), s: .state} else {pre: $pre0, s: .} end) as $h
+          (if ($tu // "") != "" and (system_account($tu) | not) then placeholder("user"; $tu) | {pre: ("~" + .ph), s: .state} else {pre: $pre0, s: .} end) as $h
           | ($h.pre + $split.extra) as $pre
           | $h.s
           | reduce range(1; $raw | length) as $i ({s: ., out: [""]};
@@ -273,10 +276,14 @@ def TEXT_PATHS:
   + "|(?<=')(?:file://(?:localhost)?|~[A-Za-z0-9._-]*)?/[^'\\n]*"
   + "|(?<![^\\s=:(<>|;,`\\[{])(?:file://(?:localhost)?|~[A-Za-z0-9._-]*)?/(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])*"
   + "|" + CLEANED_ROOT + "(?:\\\\.|[^\\s\"'`|;&<>():,\\]}])*";
-# A string that starts with a path, or NAME= or --option= and a path, is one value (M&A Plan, R&D): free text only when it also
-# holds a line break or a second path after a space.
+# A string that starts with a path in a cleaned place (or NAME= or --option= and one) is one value (M&A Plan, R&D):
+# free text only when it also holds a line break or a second path after a space. Every name in such a path is
+# cleaned, so reading a chained second path as part of it is safe. A string that starts with a system or app path
+# (/usr/bin/x;/Users/…, /usr/bin/open "/Users/…") keeps names, so it is read as free text and the paths after a
+# separator or quote are cleaned on their own.
 def free_text:
-  if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:/|~[A-Za-z0-9._-]*/|file:)") then test("[\\n\\r]|\\s(?:~?/|file:)")
+  if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:~[A-Za-z0-9._-]*/|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")")
+  then test("[\\n\\r]|\\s(?:~?/|file:)")
   else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:)|[\"'(,](?:~?/|file:)") end;
 
 # Every path the regex finds in $str, cleaned. A match that begins // right after a : is a URL's host part

@@ -730,6 +730,36 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(exec.cwd.path).toBe(`//Users/user1/${names.get('Secret')}`);
   });
 
+  test('what follows a system path in a chained or quoted string is cleaned', () => {
+    const sh = sysProc(313, '/bin/sh');
+    const chained = ['/usr/bin/x;/Users/jdoe/Secret', '/usr/bin/x&&/Users/jdoe/Secret', '/usr/bin/x<>/Users/jdoe/Secret3',
+      'FOO=/bin/ls;/Users/jdoe/Secret3', '/usr/bin/open "/Users/jdoe/Quoted Secret/z"'];
+    const input = esExec(zsh, sh, { args: ['sh', ...chained], cwd: '/', env: [...JDOE_ENV, 'FOO=/bin/ls;/Users/jdoe/Secret3'], seq: 1 }) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const names = keyed(r.key, 'name');
+    const exec = events(r.out)[0]!.event.exec;
+    expect(exec.args).toEqual(['sh', `/usr/bin/x;/Users/user1/${names.get('Secret')}`, `/usr/bin/x&&/Users/user1/${names.get('Secret')}`,
+      `/usr/bin/x<>/Users/user1/${names.get('Secret3')}`, `FOO=/bin/ls;/Users/user1/${names.get('Secret3')}`,
+      `/usr/bin/open "/Users/user1/${names.get('Quoted Secret')}/${names.get('z')}"`]);
+    expect(exec.env).toContain(`FOO=/bin/ls;/Users/user1/${names.get('Secret3')}`);
+    expect(r.out).not.toMatch(/jdoe|Secret/);
+  });
+
+  test('~root/ and other system accounts get no account placeholder, so /var/root stays', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/x' }, 1),
+      esExec(zsh, sysProc(314, '/usr/bin/open'), { args: ['open', '~root/Library/x', '~_www/y', '~jdoe/Documents/z.txt'], cwd: '/', env: JDOE_ENV, seq: 2 }),
+      esCreate(zsh, { path: '/var/root/Library/LaunchDaemons/y.plist' }, 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(keyed(r.key, 'user')).toEqual(new Map([['jdoe', 'user1']]));
+    const ev = events(r.out);
+    expect(ev[1]!.event.exec.args.slice(1, 3)).toEqual(['~root/Library/x', `~_www/${keyed(r.key, 'name').get('y')}`]);
+    expect(ev[2]!.event.create.destination.existing_file.path).toBe('/var/root/Library/LaunchDaemons/y.plist');
+  });
+
   test('a name placeholder keeps only a common file extension, never a personal word or an account name', () => {
     const input = [
       esCreate(zsh, { path: '/Users/jdoe/x' }, 1),
