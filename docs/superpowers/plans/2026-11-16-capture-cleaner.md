@@ -59,7 +59,7 @@ No cleaning yet: this task builds the command line, the fail-closed stream, the 
   - `the key is 0600, in the key folder, with a header`: `fs.statSync(key).mode & 0o777` is `0o600`; first line `kind\tplaceholder\treal`.
   - `findingSignature of raw and cleaned synthetic-lab captures match` (trivially true now; it guards every later task).
 - [ ] **Step 2: Run** `npx vitest run test/clean-script.test.ts` — expected FAIL (script missing).
-- [ ] **Step 3: Implement the script and jq program.** `clean -i`: if the first non-blank line is exactly `{` or starts with `[`, normalize first with `jq -c 'if type=="array" then .[] else . end'`; if that normalizer fails, the summary says `input ended with a parse error`. jq runs with `-n -R -c --unbuffered -f gameleira-clean.jq --slurpfile cfg CONFIG`; its stderr goes through `2> >(awk ...)` that appends `K` lines (minus the tag) to the key with `fflush()`, writes the `S` line to the stats file, and passes anything else to the terminal's stderr. Config and stats files: `mktemp` under `umask 077`, removed on exit.
+- [ ] **Step 3: Implement the script and jq program.** `clean -i`: if the first non-blank line is exactly `{` or starts with `[`, normalize first with `jq -c 'if type=="array" then .[] else . end'`; if that normalizer fails, the summary says `input ended with a parse error`. jq runs with `-n -R -c --unbuffered -f gameleira-clean.jq --slurpfile cfg CONFIG`. Its stderr goes to awk through an fd swap in one waited pipeline, `{ jq … 2>&1 1>&3 3>&- | awk …; } 3>&1`, not process substitution (bash 3.2 cannot wait for `>(…)`, so the key and stats could be read before awk finished). awk appends `K` lines (minus the tag) to the key with `fflush()`, writes the `S` line to the stats file, and passes anything else to the terminal's stderr. Config and stats files: `mktemp` under `umask 077`, removed on exit.
 - [ ] **Step 4: Run** the test file and `npx vitest run test/lab-script.test.ts` — expected PASS.
 - [ ] **Step 5: Commit** `feat: capture cleaner skeleton that streams, fails closed and keeps a key` (also add the spec and this plan with `git add -f`, since `docs/superpowers/specs` and `plans` are globally gitignored on this machine).
 
@@ -89,17 +89,19 @@ No cleaning yet: this task builds the command line, the fail-closed stream, the 
 
 **Interfaces:**
 - Consumes: `clean_path`, `placeholder`, `state.keep`.
-- Produces: `in_cleaned_place(path) -> bool` (home, `/Users/Shared`, `/Volumes/<vol>`, temp folders); relative arguments and option values cleaned when the exec's `cwd` is in a cleaned place (option names and `argv[0]` untouched; `.`/`..`/leading dots/extensions kept); `replace_mapped(s)` replacing any already-mapped name of 4+ characters as a whole word or path component in any string; `-k` loading an existing key into `cfg.key` (placeholders continue numbering after it); `clean -i` prescan: one jq pass collecting `exec_names` into `cfg.keep` before cleaning.
+- Produces: `in_cleaned_place(path) -> bool` (home, `/Users/Shared`, `/Volumes/<vol>`, temp folders); `PROTECTED`, a set of words that are never treated as names outside a path: the rule vocabulary from `src/rules/rules.ts` (subcommands and keywords such as `load`, `bootstrap`, `submit`, `disable`, `display`, `dialog`, `hidden`, `answer`, `authonly`, `Safe`, `Storage`, `Chrome`, `quarantine`, wallet names), the standard folder names, and every kept program name; relative arguments and option values cleaned when the exec's `cwd` is in a cleaned place, but only when the argument is path-like (contains `/`, whitespace or a 1–5 character extension, or is already mapped) and not in `PROTECTED` (option names and `argv[0]` untouched; `.`/`..`/leading dots/extensions kept), so subcommands such as `zip -r` or `launchctl load` survive; `replace_mapped(s)` replacing already-mapped names of 4+ characters that are not in `PROTECTED`, as whole words or path components in any string. It scans the string's tokens once and looks each up in the map (an object lookup), never loops over the map's names, so cost does not grow with the number of names; `-k` loading an existing key into `cfg.key` (placeholders continue numbering after it); `clean -i` prescan: one jq pass collecting `exec_names` into `cfg.keep` before cleaning.
 
 - [ ] **Step 1: Write the failing tests**, `describe('arguments and text')`:
   - `relative arguments under a cleaned cwd are cleaned`: `zip -r board.zip "Q3 Financials"` with cwd `/Users/jdoe/Documents` → no `board`, no `Q3 Financials`; `-r` and `zip` intact; argument count unchanged.
   - `relative arguments under a kept cwd keep unknown names`: `ls Foo` with cwd `/usr/local` → `Foo` kept.
   - `a mapped name is replaced in free text`: `osascript -e 'tell app "Finder" to open "Q3-acquisition.pdf"'` after that file appeared in a path → placeholder in the text, `tell app "Finder"` intact.
   - `a name seen before its program ran`: create `~/Downloads/Zoom_Installer`, then exec it; via `clean -i` the name is kept everywhere; via stdin (`-i -`, no prescan) findings still match raw.
+  - `folders named after rule words do not break rules`: home folders `Chrome`, `dialog`, `load`, `Volumes` appear in paths, then `security find-generic-password -s "Chrome Safe Storage" -w`, `osascript -e 'display dialog …'`, `launchctl load ~/Library/LaunchAgents/x.plist` → those words intact, findings equal raw.
+  - `the every-rule story run from a home folder`: `gameleira-lab.sh synthetic --stdout` with every exec's `cwd` rewritten to `/Users/learner/Documents/Board` → findings equal raw.
   - `two runs sharing a key give the same placeholders`: run A with `-k K`, run B with `-k K` on a second fixture sharing `jdoe` and `Q3-acquisition.pdf` → same `user1` and `nameN`, and new names numbered after A's.
 - [ ] **Step 2: Run** — expected FAIL.
 - [ ] **Step 3: Implement.** `clean -i -` reads stdin and skips the prescan.
-- [ ] **Step 4: Run** — expected PASS.
+- [ ] **Step 4: Run** — expected PASS. Then time `clean -i` on a `scripts/make-big.mjs` capture with thousands of distinct names, and on `../es-lab.jsonl` when present: expected at least 700 events per second. Check that the `foreach` state is not copied per event (time grows linearly with input size). If well short, stop and bring the numbers to the user.
 - [ ] **Step 5: Commit** `feat: the cleaner follows names into relative arguments and free text`.
 
 ### Task 4: Seeds, account names and signing IDs
@@ -152,7 +154,7 @@ No cleaning yet: this task builds the command line, the fail-closed stream, the 
   - `environment values are redacted, except the useful ones`: `AWS_SESSION_TOKEN`, `MY_VAR=Board`, `PATH=/Users/jdoe/bin:/usr/bin`, `DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib` → first two `<redacted>`, `PATH` and `DYLD_*` cleaned (`user1`).
 - [ ] **Step 2: Run** — expected FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the whole clean suite — expected PASS.
+- [ ] **Step 4: Run** the whole clean suite — expected PASS. Repeat Task 3's timing: still at least 700 events per second.
 - [ ] **Step 5: Commit** `feat: the cleaner redacts credentials and keys data it cannot judge`.
 
 ### Task 7: Record mode and local seeds
@@ -161,22 +163,23 @@ No cleaning yet: this task builds the command line, the fail-closed stream, the 
 
 **Interfaces:**
 - Consumes: `run_cleaner`, `write_config`.
-- Produces: `local_seeds` (accounts with uid ≥ 500 from `dscl . -list /Users UniqueID` and their `RealName`; `scutil --get ComputerName|LocalHostName|HostName`; `IOPlatformSerialNumber` and `IOPlatformUUID` from `ioreg -rd1 -c IOPlatformExpertDevice`), skipped when `GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1`; `record`: refuses as root (`GAMELEIRA_CLEAN_FAKE_UID`), refuses off macOS, `sudo -v`, then `sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove | run_cleaner ...`, with `stop_capture` (SIGINT then SIGTERM to the sudo'd eslogger only, as in `gameleira-lab.sh`) on Ctrl-C or after `-t SECONDS`; `clean -i` warns `this capture's home folders name no account of this Mac; names outside paths are only caught with -S` when no `/Users/<name>/` in the first 1000 events matches a local account; the summary prints where the capture and the key are, and for `clean -i` that the raw file still exists.
+- Produces: `local_seeds` (accounts with uid ≥ 500 from `dscl . -list /Users UniqueID` and their `RealName`; `scutil --get ComputerName|LocalHostName|HostName`; `IOPlatformSerialNumber` and `IOPlatformUUID` from `ioreg -rd1 -c IOPlatformExpertDevice`), skipped when `GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1`; `record`: refuses as root (`GAMELEIRA_CLEAN_FAKE_UID`), refuses off macOS, `sudo -v`, then `sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove | run_cleaner ...`, with `stop_capture` (SIGINT then SIGTERM to the sudo'd eslogger only, as in `gameleira-lab.sh`) on Ctrl-C or after `-t SECONDS`. A terminal Ctrl-C signals the whole foreground process group, so jq and awk are started with SIGINT ignored (`trap '' INT` in their subshell before they start; ignored signals survive exec) and end when the pipe closes; `clean -i` warns `this capture's home folders name no account of this Mac; names outside paths are only caught with -S` when no `/Users/<name>/` in the first 1000 events matches a local account; the summary prints where the capture and the key are, and for `clean -i` that the raw file still exists.
 
 - [ ] **Step 1: Write the failing tests**, `describe('record')`:
   - `record refuses to run as root` (`GAMELEIRA_CLEAN_FAKE_UID=0`), message matches `/not as root|without sudo/`.
   - `stopping the recorder lets the cleaner finish`: source the script, `SUDO_CMD=''`, a fake recorder (`( trap '' INT; while :; do cat fixture-line; sleep 0.05; done )`) piped through `run_cleaner`, `stop_capture` → recorder stopped within 15 s, every output line parses, key complete.
+  - `Ctrl-C to the whole process group leaves complete output`: run the same pipeline detached in its own process group (`spawn` with `detached: true`), send SIGINT to `-pgid`, → the cleaner's last line is complete JSON and the summary was printed.
   - `clean -i warns about a capture from another Mac` (darwin only, without `GAMELEIRA_CLEAN_NO_LOCAL_SEEDS`): a fixture user `nobody-here-xyz` → warning on stderr, exit 0.
 - [ ] **Step 2: Run** — expected FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — expected PASS. Then by hand on a Mac: `scripts/gameleira-clean.sh record -t 30 -o scratch/clean-test.jsonl`, run a few commands in another terminal, check the summary, open the capture in Gameleira, and grep it for your user name and computer name (expected: no hits).
+- [ ] **Step 4: Run** — expected PASS. Then by hand on a Mac: `scripts/gameleira-clean.sh record -t 30 -o scratch/clean-test.jsonl`, run a few commands in another terminal, stop one run with `-t` and another with a real Ctrl-C, check the summary, open the capture in Gameleira, and grep it for your user name and computer name (expected: no hits).
 - [ ] **Step 5: Commit** `feat: record mode cleans eslogger's stream before it reaches disk`.
 
 ### Task 8: Real captures, speed and the README
 
 **Files:** Modify `test/clean-script.test.ts`, `README.md`.
 
-- [ ] **Step 1: Write the tests**: `realDescribe('real captures')` — for each of `REAL_FIXTURES`, `findingSignature` raw vs cleaned equal, and `unreadable lines dropped: 0`.
+- [ ] **Step 1: Write the tests**: `realDescribe('real captures')` — for each of `REAL_FIXTURES`, `findingSignature` raw vs cleaned equal, and `unreadable lines dropped: 0`; and no key `real` value of kind `user`, `realname`, `host`, `email`, `volume` or `data` (4+ characters) appears anywhere in the cleaned output, which catches fields nobody planted.
 - [ ] **Step 2: Run** — expected PASS where the captures are present; fix any difference in the jq program, adding a fixture case for it to the owning `describe`.
 - [ ] **Step 3: Measure speed**: `time scripts/gameleira-clean.sh clean -i ../es-lab.jsonl -o /dev/null` and on `scratch/gameleira-lab-live.jsonl` and a `scripts/make-big.mjs` capture. Expected: at least 700 events per second. If well short, stop and bring the numbers to the user.
 - [ ] **Step 4: Write the README section** after "Capturing", per the spec's *Docs* section: why, the two commands with `-D`/`-S`/`-k`/`-t`, what is replaced and what is kept, the key's location and that it holds real values (names, request bodies, payloads), must stay on the Mac, and that deleting it makes the cleaning irreversible; pseudonymized, not anonymous. Run `npx vitest run test/readme.test.ts` — expected PASS.
