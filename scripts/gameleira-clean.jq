@@ -455,10 +455,11 @@ def free_text:
   if test("^(?:-{0,2}[A-Za-z_][A-Za-z0-9_-]*=)?(?:(?:" + HOME_PREFIX + ")/|(?:file://(?:localhost)?)?(?:/System/Volumes/Data)?" + CLEANED_ROOT + ")")
   then test("[\\n\\r]|\\s(?:~?/|file:|\\$\\{?HOME)")
   else test("[|;&<>`\\n\\r]|\\$\\(|\\s(?:~?/|file:|\\$\\{?HOME)|[\"'(,](?:~?/|file:|\\$\\{?HOME)") end;
-# Shell code (state.code: the value of sh -c, osascript -e …, an ssh command) with a space and a cleaned-place path
-# glued after something (curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c) is free text too: there a space
-# ends a word, so the path ends at it. A single argument (curl -F file=@/Users/x/John Smith.pdf) is one value, and its
-# glued path runs to its end.
+# Shell code (state.code, see shell_code: the value of sh -c behind any wrapper, osascript -e …, an ssh remote
+# command) with a space and a cleaned-place path, at its start or glued after something (/Users/x/a.sh https://…,
+# curl --data-binary @/Users/x/y -H …, cc -I/Users/x/y a.c), is free text too: there a space ends a word, so the path
+# ends at it. A single argument (curl -F file=@/Users/x/John Smith.pdf, ssh -i '/Users/x/My Keys') is one value, and
+# its path runs to its end.
 def glued_in_code: test("\\s") and test(CLEANED_ROOT + "|[@=]~/");
 
 # Where an unquoted path in free text ends when the name it ends in begins a mapped name of several words: the whole
@@ -629,6 +630,37 @@ def worth_cleaning($all):
 def CODE_PROGRAMS: "^(?:sh|bash|zsh|dash|ksh|csh|tcsh|python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$";
 def code_value($prog; $prev): ($prog | test(CODE_PROGRAMS)) and ($prev | test("^-[A-Za-z]*[ceE]$|^--(?:eval|command)$"));
 
+# ssh's options that take a value (ssh(1)): attached (-i/Users/x/key, -oIdentityFile=…) or the next argument. A value
+# letter that ends a cluster (-i, -vi) takes the next argument.
+def SSH_NEXT_VALUE: "^-[^bcDEeFIiJLlmOopQRSWwB]*[bcDEeFIiJLlmOopQRSWwB]$";
+# The index in ssh's argv where the remote command starts: the first argument after the host that is neither an
+# option nor an option's value (ssh reads options after the host too: ssh host -p 2222 -i key cmd). null when there is
+# no command. The host is the first such argument. Everything before the command is a single value. After the host,
+# -- ends the options.
+def ssh_command_index($args):
+  first(foreach range(1; $args | length) as $i ({skip: false, host: false, cmd: null};
+          $args[$i] as $a
+          | if .skip then .skip = false
+            elif ($a | type) != "string" then .
+            elif $a == "--" then (if .host then .cmd = $i + 1 else . end)
+            elif $a | startswith("-") then .skip = ($a | test(SSH_NEXT_VALUE))
+            elif .host then .cmd = $i
+            else .host = true end;
+          .cmd | select(. != null))) // null;
+
+# A shell, as an argv element: sh, /bin/zsh. su counts: its -c value is run by the account's shell. An assignment
+# (SHELL=/bin/zsh) or an option's value (--shell=/bin/bash) is not one.
+def SHELL_WORD: "^(?:[^=\\s]*/)?(?:sh|bash|zsh|dash|ksh|csh|tcsh|fish|su)$";
+# True when argv[$i] is shell code, where a space ends a word: the value of a code option of a program that runs code
+# (code_value: sh -c, osascript -e, python -c …); the value of -c or a cluster ending in c (-lc, -ec) when a shell
+# comes anywhere before it in argv, whatever runs that shell (sudo sh -c, env bash -c, nohup sh -c, xargs sh -c,
+# su root -c); and ssh's remote command ($cmd: ssh_command_index, null for other programs).
+def shell_code($prog; $args; $i; $cmd):
+  ($args[$i - 1] | if type == "string" then . else "" end) as $prev
+  | ($cmd != null and $i >= $cmd)
+    or code_value($prog; $prev)
+    or (($prev | test("^-[A-Za-z]*c$")) and any($args[0:$i - 1][]; type == "string" and test(SHELL_WORD)));
+
 # An argument, or the value of --option=value or NAME=value: {pre: what stays, val: what may be a relative name}.
 def option_value($a):
   ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
@@ -658,6 +690,7 @@ def clean_event($state):
   | (try $e.event.exec.args catch null) as $args
   | (($cwd | type) == "string" and ($args | type) == "array" and ($cwd | in_cleaned_place)) as $relc
   | (if ($args | type) == "array" then ($args[0] | if type == "string" then split("/") | last else "" end) else "" end) as $prog
+  | (if $prog == "ssh" then ssh_command_index($args) else null end) as $cmd
   | [$e | paths(worth_cleaning($relc or $state.nwords > 0))] as $ps
   | (reduce ($e | exec_names($ps)[]) as $n ($state; if .keep[$n] then . else .keep[$n] = true end)) as $s0
   | reduce $ps[] as $p ({e: $e, s: ($s0 | .new = [])};
@@ -676,9 +709,11 @@ def clean_event($state):
         else
           (($p | length) == 4 and $p[0:3] == ["event", "exec", "args"]) as $arg
           | ($arg and $p[3] > 0 and keychain_value($prog; $v)) as $kc
+          | ($arg and $p[3] > 0 and shell_code($prog; $args; $p[3]; $cmd)) as $code
+          # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
           | if $relc and $arg and ($kc | not)
                and (if $p[3] == 0 then ($v | index("/")) != null
-                    else code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end) | not end)
+                    else ($code and ($cmd == null or ($v | test("\\s")))) | not end)
                and (arg_value($prog; $v) as $o
                     | ($prog == "wget" and $o.pre == "" and $p[3] > 0
                        and (wget_value_option($args[$p[3] - 1] | if type == "string" then . else "" end) | not)) as $url_arg
@@ -687,9 +722,7 @@ def clean_event($state):
               | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
               | .s = $r.s | .e |= setpath($p; $o.pre + $r.v)
             else
-              ($arg and $p[3] > 0 and (($prog == "ssh" and ($v | startswith("-") | not))
-                                         or code_value($prog; $args[$p[3] - 1] | if type == "string" then . else "" end))) as $code
-              | (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
+              (if $kc then .s | .single = true | clean_string($v; false) | .s.single = false
                  elif $code then .s | .code = true | clean_string($v; false) | .s.code = false
                  else .s | clean_string($v; path_field($p)) end) as $r
               | .s = $r.s | if $r.v != $v then .e |= setpath($p; $r.v) else . end

