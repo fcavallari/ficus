@@ -248,7 +248,7 @@ main() {
     run_cleaner "$config" "$key" "$stats" < "$in" > "$out"
   fi
 
-  [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and so is $key"
+  [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and $key holds only the placeholders made so far: pass -k $key to carry on from it, or remove it"
   print_summary "$stats"
   if [ -n "$normalize_input" ]; then
     case $(cat "$NORM_STATUS_FILE") in 0) ;; *) echo 'input ended with a parse error: yes' >&2 ;; esac

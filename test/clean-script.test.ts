@@ -83,7 +83,9 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(runClean(['clean', '--nope']).status).toBe(2);
     expect(runClean(['clean', '-i', SYNTHETIC, '--nope']).status).toBe(2);
     expect(runClean(['frobnicate']).status).toBe(2);
-    expect(runClean(['clean', '-i']).status).toBe(2);
+    const noValue = runClean(['clean', '-o', '-', '-i']);
+    expect(noValue.status).toBe(2);
+    expect(noValue.stderr).toMatch(/-i needs a value/);
   });
 
   test('clean without -i exits 2', () => {
@@ -324,7 +326,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
 
 describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () => {
   // A stand-in for jq that says what the real program says on stderr, so the plumbing is tested on its own.
-  test('key lines reach the key file as they come, the stats line the stats file, anything else stderr, and stdout is only the capture', () => {
+  test('with a stand-in jq: K lines go to the key file, the S line to the stats file, anything else to stderr, and stdout is only the capture', () => {
     const dir = tmpDir();
     const fakeJq = path.join(dir, 'fake-jq');
     fs.writeFileSync(fakeJq, [
@@ -349,6 +351,52 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     expect(err).toContain('a diagnostic about one');
     expect(err).not.toMatch(/^K\t/m);
     expect(err).toContain('status 0');
+  });
+
+  // The real program, with only the cleaning swapped for a minting stand-in: the call in `step` is renamed, so the real
+  // state, numbering, K lines and S line run under the real jq, whatever clean_event grows into.
+  test('the real program writes a K line per placeholder, numbers on from a loaded key, and ends with the stats', () => {
+    const dir = tmpDir();
+    const program = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'gameleira-clean.jq'), 'utf8');
+    expect(program).toContain('clean_event($seen)');
+    const mint = [
+      'def mint_event($state):',
+      '  .who as $w',
+      '  | if $state.map.user[$w] != null then {event: (.who = $state.map.user[$w]), state: $state, new: []}',
+      '    else ($state.next.user // 1) as $n | "user\\($n)" as $p',
+      '      | {event: (.who = $p), state: ($state | .map.user[$w] = $p | .next.user = $n + 1), new: [{kind: "user", placeholder: $p, real: $w}]}',
+      '    end;',
+    ].join('\n');
+    const scratch = path.join(dir, 'mint.jq');
+    fs.writeFileSync(scratch, mint + '\n' + program.replace('clean_event($seen)', 'mint_event($seen)'));
+    const loadedKey = path.join(dir, 'loaded.key.tsv');
+    fs.writeFileSync(loadedKey, 'kind\tplaceholder\treal\nuser\tuser4\t"known"\n');
+    const key = path.join(dir, 'run.key.tsv');
+    fs.writeFileSync(key, 'kind\tplaceholder\treal\n');
+    const stats = path.join(dir, 'stats');
+    const nasty = 'a\tb\n"c"\\d';
+    const input = [nasty, 'known', nasty, 'fresh'].map(w => JSON.stringify({ who: w, global_seq_num: 1 })).join('\n') + '\n'
+      + 'not json\n' + JSON.stringify({ who: 'late', global_seq_num: 4 }) + '\n';
+    const r = spawnSync('/bin/bash', ['-c', [
+      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `CLEAN_PROGRAM="${scratch}"; DOMAINS=(); SEED_FILE=; LOADED_KEY="${loadedKey}"`,
+      `write_config "${dir}/cfg.json" && run_cleaner "${dir}/cfg.json" "${key}" "${stats}"`,
+    ].join('\n')], { input, env: process.env });
+    expect(r.status, r.stderr.toString()).toBe(0);
+    // `known` keeps its loaded placeholder; new values continue at user5, and a repeat reuses its placeholder.
+    expect(lines(r.stdout.toString()).map(l => (JSON.parse(l) as { who: string }).who))
+      .toEqual(['user5', 'user4', 'user5', 'user6', 'user7']);
+    expect(parseKey(fs.readFileSync(key, 'utf8'))).toEqual([
+      { kind: 'user', placeholder: 'user5', real: nasty },
+      { kind: 'user', placeholder: 'user6', real: 'fresh' },
+      { kind: 'user', placeholder: 'user7', real: 'late' },
+    ]);
+    // Each real value is one JSON string on one line, so tabs, newlines and quotes survive.
+    expect(fs.readFileSync(key, 'utf8').split('\n')[1]).toBe(`user\tuser5\t${JSON.stringify(nasty)}`);
+    expect(JSON.parse(fs.readFileSync(stats, 'utf8'))).toEqual({
+      eventsIn: 6, eventsOut: 5, unreadable: 1, seqGaps: 2, redacted: 0, placeholders: { user: 3 },
+    });
+    expect(r.stderr.toString()).not.toMatch(/^[KS]\t/m);
   });
 
   test('write_config turns -D, -S and a loaded key into the config the program reads', () => {
