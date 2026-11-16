@@ -1,6 +1,6 @@
 import { ancestry } from '../model/relations';
 import type { CaptureModel, Image, ProcId, Process } from '../model/types';
-import { basename } from '../model/util';
+import { basename, timeMs } from '../model/util';
 import { persistenceOwner, RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
@@ -29,13 +29,6 @@ function maxSeverity(hits: Hit[]): Severity {
 
 function ordered(hits: Hit[]): Finding[] {
   return [...hits].sort((a, b) => RANK[b.f.severity] - RANK[a.f.severity] || a.seq - b.seq).map(h => h.f);
-}
-
-/** Milliseconds since the epoch; tolerates eslogger's nanosecond fractions. */
-function timeMs(t: string | null): number | null {
-  if (t === null) return null;
-  const ms = Date.parse(t.replace(/(\.\d{3})\d+/, '$1'));
-  return Number.isNaN(ms) ? null : ms;
 }
 
 function finding(rule: Rule, res: MatchResult, imgIndex: number | null, persistenceId: string | null): Finding {
