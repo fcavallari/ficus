@@ -1057,6 +1057,26 @@ describe('uid-mismatch', () => {
     expect(f.title).toBe('Dropped privileges');
     expect(f.explanation).toBe('Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.');
   });
+  const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
+  test('a real-root process that gains wheel as its effective group is not an escalation', () => {
+    const a = one(agentd(), mm({ ruid: 0, euid: 0, rgid: 20, egid: 0 }));
+    const f = finding(a)!;
+    expect(f.severity).toBe('low');
+    expect(f.title).toBe('Root with another effective group');
+    expect(f.explanation).toBe(ROOT_GROUP);
+    expect(f.evidence).toBe('egid 0 ≠ rgid 20 (agentd)');
+    expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
+  });
+  test('a root group change next to a user climbing to root is graded as the climb', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/tmp/x', signingId: null, seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 0, euid: 0, rgid: 20, egid: 0 }), mm({ seq: 2, imgIndex: 1 })] });
+    const f = finding(analyze(capture([p])))!;
+    expect(f.severity).toBe('high');
+    expect(f.title).toBe('Running with borrowed privileges');
+  });
+  test('a user process gaining wheel as its effective group still climbs', () => {
+    expect(finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 20, egid: 0 })))!.severity).toBe('high');
+  });
   test('a uid drop and a gid-only drop together are explained as the uid drop', () => {
     const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/Library/Agent/helper', signingId: 'com.vendor.helper', seq: 2 })];
     const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 }), mm({ ruid: 0, euid: 501, seq: 2, imgIndex: 1 })] });

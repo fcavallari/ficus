@@ -71,15 +71,20 @@ export const SETUID_ALLOW: Set<string> = new Set([
 ]);
 
 /**
- * Root running with a user's effective id gave privileges up rather than borrowing them (loginwindow, or a vendor
- * daemon acting for the console user): it can take them back, but that is not a climb. The uid pair decides when it
- * differs; the gid pair only when the uids match.
+ * What one mismatch means. Root running with a user's effective id gave privileges up rather than borrowing them
+ * (loginwindow, or a vendor daemon acting for the console user): it can take them back, but that is not a climb. The
+ * uid pair decides when it differs; the gid pair only when the uids match. A process whose real and effective user is
+ * root already holds every privilege, so a different effective group gives it nothing new.
  */
-function isPrivilegeDrop(c: { ruid: number; euid: number; rgid: number; egid: number }): boolean {
-  return c.euid !== c.ruid ? c.ruid === 0 : c.rgid === 0 && c.egid !== 0;
+type MismatchKind = 'escalation' | 'uid-drop' | 'gid-drop' | 'root-group';
+function mismatchKind(c: { ruid: number; euid: number; rgid: number; egid: number }): MismatchKind {
+  if (c.euid !== c.ruid) return c.ruid === 0 ? 'uid-drop' : 'escalation';
+  if (c.rgid === 0 && c.egid !== 0) return 'gid-drop';
+  return c.ruid === 0 ? 'root-group' : 'escalation';
 }
 const PRIVILEGE_DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
 const GROUP_DROP = 'Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.';
+const ROOT_GROUP = 'Its real and effective user is root, so it already holds every privilege; a different effective group gives it nothing new. Context, not escalation.';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Recon and security settings
@@ -768,10 +773,11 @@ export const RULES: Rule[] = [
       const list = p.credMismatches;
       if (!list || list.length === 0) return null;
       // Each image the process ran is judged on its own (an allow-listed tool can exec a shell that keeps euid 0); the
-      // finding takes the worst. A drop from root is always low, and explains itself as a drop when nothing else climbed.
+      // finding takes the worst. A drop from root, or a group change by root, is always low and explains itself when
+      // nothing else climbed.
       let severity: Severity = 'low';
       let escalation = false;
-      let uidDrop = false;
+      const kinds = new Set<MismatchKind>();
       const parts: string[] = [];
       for (const c of list) {
         const image = p.images[c.imgIndex];
@@ -781,10 +787,9 @@ export const RULES: Rule[] = [
         const name = basename(image?.path ?? null);
         const part = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
         if (!parts.includes(part)) parts.push(part);
-        if (isPrivilegeDrop(c)) {
-          if (c.euid !== c.ruid) uidDrop = true;
-          continue;
-        }
+        const kind = mismatchKind(c);
+        kinds.add(kind);
+        if (kind !== 'escalation') continue;
         escalation = true;
         // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
         const s: Severity = !image || !image.isPlatform ? 'high'
@@ -792,7 +797,11 @@ export const RULES: Rule[] = [
         if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
       }
       const evidence = parts.join('; ');
-      return escalation ? { evidence, severity } : { evidence, severity, title: 'Dropped privileges', explanation: uidDrop ? PRIVILEGE_DROP : GROUP_DROP };
+      if (escalation) return { evidence, severity };
+      // Nothing climbed: say what it did instead, the strongest kind first.
+      if (kinds.has('uid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: PRIVILEGE_DROP };
+      if (kinds.has('gid-drop')) return { evidence, severity, title: 'Dropped privileges', explanation: GROUP_DROP };
+      return { evidence, severity, title: 'Root with another effective group', explanation: ROOT_GROUP };
     },
   },
   {
