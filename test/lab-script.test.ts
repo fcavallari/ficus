@@ -118,3 +118,27 @@ describe('the synthetic story', () => {
     expect(queueStatus(a, p)).toBe(row.queue);
   });
 });
+
+describe('live mode', () => {
+  test('live --answers names only real rules and lists what live mode cannot set off', () => {
+    const tsv = runLab('live', '--answers');
+    const ids = new Set(RULES.map(r => r.id));
+    const rows = parseKey(tsv);
+    expect(rows.length).toBeGreaterThan(10);
+    for (const r of rows) expect(ids.has(r.rule), r.rule).toBe(true);
+    expect(tsv).toMatch(/^#.*unsigned/m);
+    expect(tsv).toMatch(/^#.*gameleira-lab\.sh/m);
+  });
+  test.runIf(process.platform !== 'darwin')('live refuses to run off macOS', () => {
+    expect(() => runLab('live', '-o', path.join(os.tmpdir(), 'x.jsonl'))).toThrow(/macOS/);
+  });
+  test.runIf(process.platform === 'darwin')('live refuses to run as root', () => {
+    let err = '';
+    try {
+      execFileSync('/bin/bash', [SCRIPT, 'live'], { env: { ...process.env, GAMELEIRA_LAB_FAKE_UID: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      err = String((e as { stderr: Buffer }).stderr);
+    }
+    expect(err).toMatch(/not as root|without sudo/);
+  });
+});
