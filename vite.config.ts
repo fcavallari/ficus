@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Plugin } from 'vite';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
@@ -33,5 +33,6 @@ export default defineConfig(({ command }) => ({
   server: { fs: { allow: [path.resolve(import.meta.dirname, '..'), import.meta.dirname] } },
   // The dev-only fixture autoload needs the fixtures dir; a production build must not carry a local path.
   define: command === 'serve' ? { __FIXTURES_DIR__: JSON.stringify(path.resolve(import.meta.dirname, '..')) } : {},
-  test: { environment: 'node', globalSetup: ['test/global-setup.ts'] },
+  // Claude Code session worktrees live under .claude/worktrees: full copies of the repo whose tests must not run here.
+  test: { environment: 'node', globalSetup: ['test/global-setup.ts'], exclude: [...configDefaults.exclude, '.claude/**'] },
 }));
