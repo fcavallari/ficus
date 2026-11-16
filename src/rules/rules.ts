@@ -79,6 +79,7 @@ function isPrivilegeDrop(c: { ruid: number; euid: number; rgid: number; egid: nu
   return c.euid !== c.ruid ? c.ruid === 0 : c.rgid === 0 && c.egid !== 0;
 }
 const PRIVILEGE_DROP = 'Running as root with a user\'s effective id: it dropped its privileges and can take them back. Common for system and vendor daemons acting for the logged-in user; context, not escalation.';
+const GROUP_DROP = 'Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Recon and security settings
@@ -770,6 +771,7 @@ export const RULES: Rule[] = [
       // finding takes the worst. A drop from root is always low, and explains itself as a drop when nothing else climbed.
       let severity: Severity = 'low';
       let escalation = false;
+      let uidDrop = false;
       const parts: string[] = [];
       for (const c of list) {
         const image = p.images[c.imgIndex];
@@ -779,7 +781,10 @@ export const RULES: Rule[] = [
         const name = basename(image?.path ?? null);
         const part = `${diffs.join(', ')}${name ? ` (${name})` : ''}`;
         if (!parts.includes(part)) parts.push(part);
-        if (isPrivilegeDrop(c)) continue;
+        if (isPrivilegeDrop(c)) {
+          if (c.euid !== c.ruid) uidDrop = true;
+          continue;
+        }
         escalation = true;
         // Only a real Apple platform binary earns the allow list: a copy named sudo in /tmp does not.
         const s: Severity = !image || !image.isPlatform ? 'high'
@@ -787,7 +792,7 @@ export const RULES: Rule[] = [
         if (SEVERITY_RANK[s] > SEVERITY_RANK[severity]) severity = s;
       }
       const evidence = parts.join('; ');
-      return escalation ? { evidence, severity } : { evidence, severity, title: 'Dropped privileges', explanation: PRIVILEGE_DROP };
+      return escalation ? { evidence, severity } : { evidence, severity, title: 'Dropped privileges', explanation: uidDrop ? PRIVILEGE_DROP : GROUP_DROP };
     },
   },
   {

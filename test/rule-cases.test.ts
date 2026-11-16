@@ -1051,10 +1051,16 @@ describe('uid-mismatch', () => {
     expect(f.evidence).toBe('euid 501 ≠ ruid 0 (agentd)');
     expect(a.queue.some(q => q.procId === '100:1')).toBe(false);
   });
-  test('a gid-only drop from root is a drop too', () => {
+  test('a gid-only drop from root\'s group is a drop too, worded for the group', () => {
     const f = finding(one(agentd(), mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 })))!;
     expect(f.severity).toBe('low');
-    expect(f.explanation).toBe(DROP);
+    expect(f.title).toBe('Dropped privileges');
+    expect(f.explanation).toBe('Its real group is wheel (gid 0) but its effective group is another one: it dropped its group privileges and can take them back. Context, not escalation.');
+  });
+  test('a uid drop and a gid-only drop together are explained as the uid drop', () => {
+    const imgs = [img({ path: '/Library/Agent/agentd', signingId: 'com.vendor.agentd', seq: 1 }), img({ path: '/Library/Agent/helper', signingId: 'com.vendor.helper', seq: 2 })];
+    const p = proc('100:1', imgs, { credMismatches: [mm({ ruid: 501, euid: 501, rgid: 0, egid: 20 }), mm({ ruid: 0, euid: 501, seq: 2, imgIndex: 1 })] });
+    expect(finding(analyze(capture([p])))!.explanation).toBe(DROP);
   });
   test('climbing to root from a user keeps its tier and explanation', () => {
     const f = finding(one(agentd(), mm({ ruid: 501, euid: 0 })))!;
