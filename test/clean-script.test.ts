@@ -1063,11 +1063,12 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
       expect(events(viaFile.out)[0]!.event.create.destination.existing_file.path).toBe('/Users/user1/Downloads/Zoom_Installer');
       sameFindings(input, viaFile.out);
     }
-    // From standard input there is no prescan: the name has a placeholder until the program runs, and findings stay.
+    // Known limitation of stdin mode: with no prescan the name has a placeholder until the program runs, so a finding
+    // that joins a file write to the later run (dropped-then-executed) can be lost. Other findings stay (README: Cleaning).
     const viaStdin = runClean(['clean', '-i', '-', '-o', '-'], { input });
     expect(viaStdin.status, viaStdin.stderr).toBe(0);
     expect(keyed(viaStdin.key, 'name').has('Zoom_Installer')).toBe(true);
-    // dropped-then-executed joins the create to the exec by path, and here the create still carries the placeholder.
+    // Here the create still carries the placeholder, so the join by path fails: pinned as the known loss.
     const expected = findingSignature(buildModel(lines(input)));
     expect(expected.get('530:1530')).toContain('dropped-then-executed:high:queued');
     expected.set('530:1530', expected.get('530:1530')!.filter(f => !f.startsWith('dropped-then-executed:')));

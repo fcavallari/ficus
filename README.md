@@ -50,7 +50,7 @@ sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add
 
 ### Cleaning a capture before it leaves the Mac
 
-A raw capture holds the account's names, file and folder names, hosts, command lines, environment variables and sometimes secrets. If the Mac belongs to someone else, such as an executive, the capture should not leave it as it is. `scripts/ficus-clean.sh` replaces the identifying values with placeholders and keeps what the rules and the investigator need. It needs only what macOS 15 and later has (bash and `/usr/bin/jq`). The findings stay the same: a test runs the rule engine on a capture and on its cleaned copy and compares them.
+A raw capture holds the account's names, file and folder names, hosts, command lines, environment variables and sometimes secrets. If the Mac belongs to someone else, such as an executive, the capture should not leave it as it is. `scripts/ficus-clean.sh` replaces the identifying values with placeholders and keeps what the rules and the investigator need. It needs only what macOS 15 and later has (bash and `/usr/bin/jq`). The findings stay the same, with one exception noted below for standard input: a test runs the rule engine on a capture and on its cleaned copy and compares them.
 
 Two commands. `record` runs `sudo eslogger` and cleans the stream as it comes, so the raw capture is never written to disk. Run it as yourself, not under `sudo`: the script refuses to run as root and asks for your password once, for its own `sudo`. `clean` cleans a capture you already have.
 
@@ -65,7 +65,7 @@ scripts/ficus-clean.sh clean -i capture.jsonl -o capture.cleaned.jsonl -D exampl
 - `-k KEYFILE` is where the real values are kept (see "The key" below). An existing key is loaded first and added to, so several captures of one Mac share placeholders (`user1` is the same person in each). Without `-k` the key is named after the output file, and it must not exist yet: running again with the same `-o` fails until you pass `-k` or choose another `-o`. With `-o -` the default key is `stdout.key.tsv`. The key can never be the output or the input file, however the path is written.
 - `-t SECONDS` (`record` only) stops the recording after that long. Ctrl-C (or `Ctrl-\`) stops it too.
 
-`clean -i` reads a JSONL capture, a pretty-printed export or a JSON array, and always writes JSONL. `-i -` reads standard input. It never changes or deletes the raw file. Delete that yourself when you are happy with the result.
+`clean -i` reads a JSONL capture, a pretty-printed export or a JSON array, and always writes JSONL. `-i -` reads standard input. From standard input (and in `record`) there is no prescan of the programs the capture runs, so a file created before its program runs keeps a placeholder name there. A finding that joins a file write to a later run (`dropped-then-executed`) can then be missing from the cleaned copy: use `clean -i FILE` when the findings must match. It never changes or deletes the raw file. Delete that yourself when you are happy with the result.
 
 **What is replaced.**
 
