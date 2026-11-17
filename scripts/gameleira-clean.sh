@@ -385,6 +385,38 @@ print_summary() {
 }
 
 # ---- command line -------------------------------------------------------------------------------------------
+# canonical PATH: PATH as one spelling of the file it names, whether or not it exists yet: absolute, a symlink at its end
+# followed, its folder's symlinks resolved (pwd -P) as far as the folder exists, `.` and `..` in the rest taken out, and
+# lower-cased, since macOS volumes ignore case by default (on one that does not, two names that differ only in case are
+# refused too).
+canonical() {
+  local p=$1 t n=0 dir rest= part out=
+  case $p in /*) ;; *) p=$PWD/$p ;; esac
+  while [ -L "$p" ] && [ "$n" -lt 16 ]; do
+    t=$(readlink "$p") || break
+    case $t in /*) p=$t ;; *) p=${p%/*}/$t ;; esac
+    n=$((n + 1))
+  done
+  dir=${p%/*}; rest=${p##*/}
+  while [ -n "$dir" ] && [ ! -d "$dir" ]; do rest=${dir##*/}/$rest; dir=${dir%/*}; done
+  dir=$(cd "${dir:-/}" 2>/dev/null && pwd -P) || dir=${dir:-/}
+  dir=${dir%/}
+  while [ -n "$rest" ]; do
+    case $rest in */*) part=${rest%%/*}; rest=${rest#*/} ;; *) part=$rest; rest= ;; esac
+    case $part in
+      ''|.) ;;
+      ..) if [ -n "$out" ]; then out=${out%/*}; else dir=${dir%/*}; fi ;;
+      *) out=$out/$part ;;
+    esac
+  done
+  printf '%s%s\n' "$dir" "$out" | tr '[:upper:]' '[:lower:]'
+}
+
+# same_file A B: true when A and B are one file, or would be once written.
+same_file() {
+  [ "$1" -ef "$2" ] || [ "$(canonical "$1")" = "$(canonical "$2")" ]
+}
+
 need_value() {
   [ "$1" -ge 2 ] || usage_error "$2 needs a value"
 }
@@ -438,7 +470,7 @@ main() {
   esac
   [ "$mode" = record ] || [ "$in" = - ] || { [ -f "$in" ] && [ -r "$in" ]; } || die "cannot read $in"
   [ -z "$SEED_FILE" ] || { [ -f "$SEED_FILE" ] && [ -r "$SEED_FILE" ]; } || die "cannot read the seed file $SEED_FILE"
-  if [ "$mode" = clean ] && [ "$in" != - ] && [ "$out" != - ] && [ "$out" -ef "$in" ]; then die "-o and -i are the same file; the capture would be erased"; fi
+  if [ "$mode" = clean ] && [ "$in" != - ] && [ "$out" != - ] && same_file "$out" "$in"; then die "-o and -i are the same file; the capture would be erased"; fi
 
   # The key: found, or refused, before anything is created.
   local key=$keyarg
@@ -450,6 +482,9 @@ main() {
     key=$keydir/$name.key.tsv
     [ ! -e "$key" ] || die "a key already exists at $key; pass -k to reuse it (the same placeholders), or choose another -o"
   fi
+  # The key in the capture would put real values in the file that leaves the Mac; the key over the capture would erase it.
+  [ "$out" = - ] || ! same_file "$out" "$key" || die "-o and -k are the same file; the key would be written into the capture"
+  [ "$mode" = record ] || [ "$in" = - ] || ! same_file "$in" "$key" || die "-k and -i are the same file; the capture would be written over"
   if [ -s "$key" ]; then
     [ "$(head -n 1 < "$key")" = "$KEY_HEADER" ] || die "$key is not a Gameleira key file"
     LOADED_KEY=$key

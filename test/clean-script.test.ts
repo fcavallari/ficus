@@ -354,6 +354,45 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(fs.readFileSync(raw, 'utf8')).toBe(fs.readFileSync(SYNTHETIC, 'utf8'));
   });
 
+  // The key in the capture would put real values in the file that leaves the Mac, and lose the key.
+  test('-o, -k and -i are three different files, however they are written and before any of them exists', () => {
+    const dir = tmpDir();
+    const raw = path.join(dir, 'raw.jsonl');
+    fs.copyFileSync(SYNTHETIC, raw);
+    const out = path.join(dir, 'out.jsonl');
+    fs.symlinkSync(out, path.join(dir, 'link.jsonl'));   // a link to a capture not yet written
+    const same: string[][] = [
+      ['-o', out, '-k', out],
+      ['-o', out, '-k', `${dir}//./out.jsonl`],
+      ['-o', out, '-k', `${dir}/new/../out.jsonl`],
+      ['-o', `${dir}/sub/x.jsonl`, '-k', `${dir}/sub/./y/../x.jsonl`],
+      // macOS volumes ignore case by default: OUT.jsonl is out.jsonl there.
+      ['-o', out, '-k', path.join(dir, 'OUT.jsonl')],
+      ['-o', out, '-k', path.join(dir, 'link.jsonl')],
+    ];
+    for (const args of same) {
+      const r = runClean(['clean', '-i', raw, ...args]);
+      expect(r.status, args.join(' ')).toBe(1);
+      expect(r.stderr, args.join(' ')).toMatch(/-o and -k are the same file/);
+      expect(fs.existsSync(out), args.join(' ')).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'sub')), args.join(' ')).toBe(false);
+    }
+    // An empty capture named as the key would be written over with the key's header.
+    const empty = path.join(dir, 'empty.jsonl');
+    fs.writeFileSync(empty, '');
+    const e = runClean(['clean', '-i', empty, '-o', out, '-k', empty]);
+    expect(e.status).toBe(1);
+    expect(e.stderr).toMatch(/-k and -i are the same file/);
+    expect(fs.readFileSync(empty, 'utf8')).toBe('');
+    // record checks it too, before recording.
+    const rec = runClean(['record', '-t', '1', '-o', out, '-k', out], { env: { GAMELEIRA_CLEAN_RECORDER: 'exit 0' } });
+    expect(rec.status).toBe(1);
+    expect(rec.stderr).toMatch(/-o and -k are the same file/);
+    expect(fs.existsSync(out)).toBe(false);
+    // Different files are fine.
+    expect(runClean(['clean', '-i', raw, '-o', out, '-k', path.join(dir, 'out.key.tsv')]).status).toBe(0);
+  });
+
   test('findingSignature of raw and cleaned synthetic-lab captures match', () => {
     const r = runClean(['clean', '-i', SYNTHETIC, '-o', '-']);
     const raw = findingSignature(buildModel(synthLines()));
