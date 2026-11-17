@@ -1750,9 +1750,15 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
         expect(r.status, r.stderr).toBe(0);
         const ev = events(r.out);
         const what = `${seeds.map(s => s[1]).join('+')} stdin=${stdin}`;
-        expect(ev.filter(e => e.event.fork).map(e => e.process.executable.path), what).toEqual([plugin, vsc, helper2]);
+        // Bundles named like the apps shell-under-app lists (Visual Studio Code.app) and program names stay whole; in
+        // another bundle name only a weak account word (code) stays.
+        const helper2Out = seeds[0]![1] === 'code' ? helper2
+          : seeds[0]![1] === 'studio' ? helper2.replace('Visual Studio Code 2.app', 'Visual user1 Code 2.app')
+          : helper2.replace('Visual Studio Code 2.app', 'user1 Studio Code 2.app').replace('Code Helper.app', 'Code user2.app');
+        const pluginOut = seeds[0]![1] === 'visual' ? plugin.replace('Code Helper (Plugin).app', 'Code user2 (Plugin).app') : plugin;
+        expect(ev.filter(e => e.event.fork).map(e => e.process.executable.path), what).toEqual([pluginOut, vsc, helper2Out]);
         // In text, only a weak word (short, common or a rule word: code) is kept inside a bundle name; studio, visual
-        // and helper are replaced there like anywhere in text. Paths keep every bundle name whole.
+        // and helper are replaced there like anywhere in text.
         const quoted = seeds[0]![1] === 'code' ? 'open -a "Code Tools.app" && open -a "Visual Studio Code.app"'
           : seeds[0]![1] === 'studio' ? 'open -a "Code Tools.app" && open -a "Visual user1 Code.app"'
           : 'open -a "Code Tools.app" && open -a "user1 Studio Code.app"';
@@ -1796,6 +1802,8 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
       esCreate(zsh, { path: '/Applications/Janes-MacBook-Pro.app/Contents/Info.plist' }, 5),
       esCreate(zsh, { path: '/Applications/Janes-MacBook-Pro Tools.app/Contents/Info.plist' }, 6),
       esCreate(zsh, { path: '/Applications/jdoe.app/Contents/Info.plist' }, 7),
+      esCreate(zsh, { path: '/Applications/jdoe-tools.app/Contents/Info.plist' }, 10),
+      esCreate(zsh, { path: '/Applications/Jdoe Sync.app/Contents/Info.plist' }, 11),
       ...fromApp(1003, helper, ['/bin/zsh', '-c', 'echo hi'], 8),
     ].join('\n') + '\n';
     for (const stdin of [false, true]) {
@@ -1809,11 +1817,12 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
       expect(ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path)).toEqual([
         '/Applications/Person 1.app/Contents/MacOS/x', '/Applications/host1.internal.invalid.app/Contents/Info.plist',
         '/Applications/host1.internal.invalid Tools.app/Contents/Info.plist',
-        // An account name in a path component of a bundle stays: the rules read app names.
-        '/Applications/jdoe.app/Contents/Info.plist',
+        // Only a weak account word (short, common or a rule word: code) stays in a bundle name; jdoe does not.
+        '/Applications/user1.app/Contents/Info.plist', '/Applications/user1-tools.app/Contents/Info.plist',
+        '/Applications/user1 Sync.app/Contents/Info.plist',
       ]);
       expect(ev.find(e => e.event.fork)!.process.executable.path).toBe('/Applications/Person 1.app/Contents/MacOS/Helper');
-      expect(r.out.replace(/\/Applications\/jdoe\.app\//g, '')).not.toMatch(/Jane|Doe|Janes|MacBook|C02XK1ABJGH5|jdoe/i);
+      expect(r.out).not.toMatch(/Jane|Doe|Janes|MacBook|C02XK1ABJGH5|jdoe/i);
       sameFindings(input, r.out);
     }
   });

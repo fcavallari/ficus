@@ -287,26 +287,36 @@ def kept_name($n; $ids):
 # the ends, however many parts they span: jdoe -> user1, com.jdoe.agent.plist -> com.user1.agent.plist,
 # com.Janes-MacBook-Pro.tool -> com.host1.internal.invalid.tool, a platform UUID that is the whole value -> seed2.
 # Longest first. Only names that already have a placeholder are replaced, so the state does not change. Input: the state.
-# $users false: account names stay, only full names, hosts and other seeds are replaced.
-def replace_parts_opts($n; $users):
+# Account names that are short or common words: the summary lists them, since they are replaced only where they
+# cannot be another word (see replace_seeds).
+def COMMON_ACCOUNT_WORDS: {
+  "admin": true, "user": true, "test": true, "dev": true, "code": true, "mac": true, "guest": true, "home": true, "work": true
+};
+# A weak account word: shorter than 4 characters, a common word or one the rules look for (code, test).
+def weak_account($k): ($k | length) < 4 or COMMON_ACCOUNT_WORDS[$k | ascii_downcase] == true or protected_word($k);
+# $mode "all": every account name and seed; "bundle": not the weak account words (code in Code.app); "program": no
+# account names, only full names, hosts and other seeds.
+def replace_parts_opts($n; $mode):
   if .acctn == 0 then $n
   else .acctany as $re
     | if ($n | test($re; "i") | not) then $n
       else .acct as $a
-        | reduce (.acctl[] | select(. as $k | ($users or ($a[$k] | startswith("user") | not)) and ($n | test($k | regex_escape; "i")))) as $k ($n;
+        | reduce (.acctl[] | select(. as $k
+                                     | ($mode == "all" or ($a[$k] | startswith("user") | not) or ($mode == "bundle" and (weak_account($k) | not)))
+                                       and ($n | test($k | regex_escape; "i")))) as $k ($n;
             # A host followed by .local is that host (Janes-MacBook-Pro.local).
             gsub("(?<![^.\\-])" + ($k | regex_escape) + (if $a[$k] | endswith(".internal.invalid") then "(?:\\.local)?" else "" end)
                  + "(?![^.\\-])"; $a[$k]; "i"))
       end
   end;
-def replace_parts($n): replace_parts_opts($n; true);
+def replace_parts($n): replace_parts_opts($n; "all");
 
 # Account names and seeds in a path's name (replace_parts). In a bundle with a plain name (Code.app, Visual Studio
-# Code.app), whose name the rules read, an account name is a path component and stays; full names, hosts and other
-# seeds are replaced (Jane Doe.app becomes Person 1.app). A bundle named like an app the rules list (RULE_APPS) is
-# kept whole. Input: the state.
+# Code.app), whose name the rules read, only a weak account word stays (code in Code.app); other account names, full
+# names, hosts and other seeds are replaced (jdoe-tools.app becomes user1-tools.app, Jane Doe.app Person 1.app). A
+# bundle named like an app the rules list (RULE_APPS) is kept whole. Input: the state.
 def replace_accounts($n):
-  if ($n | plain_bundle_name) then (if ($n | rule_app_bundle) then $n else replace_parts_opts($n; false) end)
+  if ($n | plain_bundle_name) then (if ($n | rule_app_bundle) then $n else replace_parts_opts($n; "bundle") end)
   else replace_parts($n) end;
 
 # The file names of the programs and scripts an event runs: the last component of every process's executable.path,
@@ -475,11 +485,6 @@ def replace_mapped($str):
   end;
 
 # ---- account names and seeds ----------------------------------------------------------------------------------
-# Account names that are short or common words: the summary lists them, since they are replaced only where they
-# cannot be another word (see replace_seeds).
-def COMMON_ACCOUNT_WORDS: {
-  "admin": true, "user": true, "test": true, "dev": true, "code": true, "mac": true, "guest": true, "home": true, "work": true
-};
 # What ends a word around an account name. A token stops at whitespace too. A part (a path component, a quoted name,
 # a whole argument: Code Helper (Plugin).app, "Code Tools.app") only at a /, a quote, a line break or a shell operator.
 def SEED_TOKEN: "[^\\s\"'`=:;|&<>(),/\\\\\\[\\]{}]*";
@@ -489,11 +494,11 @@ def SEED_PART: "[^/\"'`\\n\\r:=;|&<>]*";
 # a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name that is the whole token, a bundle named
 # like an app the rules list (Claude.app, RULE_APPS), or a placeholder already written (Person 2,
 # person1@example.invalid).
-# An account name (never a host, full name or other seed) is also kept inside a plain bundle that is the whole token
-# (Code.app), and inside a kept program name or plain bundle of several words, tested on the whole part it is in (Code
-# Helper (Plugin).app, Visual Studio Code.app, "Code Helper"): in a path component always, elsewhere only when it is a
-# weak word (shorter than 4 characters, common or a rule word: code), since text such as "jdoe has Zoom.app" or
-# "echo jdoe.app" is not an app's name. In shell code ($code) a part that runs from the start of the code and has a
+# A weak account word (shorter than 4 characters, common or a rule word: code; never a strong account name, host,
+# full name or other seed) is also kept inside a plain bundle that is the whole token (Code.app) or the whole part it
+# is in (Visual Studio Code.app), since the rules read app names; jdoe.app and "jdoe has Zoom.app" lose jdoe. An
+# account name is kept inside a kept program name of several words (Code Helper (Plugin), "Code Helper"): in a path
+# component always, elsewhere only when it is a weak word. In shell code ($code) a part that runs from the start of the code and has a
 # space is a command, not a name (ls jdoe Code.app), so it does not count.
 # Input: the state.
 def seed_kept($t; $m; $code):
@@ -507,20 +512,23 @@ def seed_kept($t; $m; $code):
     or ($before | test("[$]\\{?[A-Za-z0-9_]*$"))
     or (($l | test("^[A-Za-z0-9_]*$")) and ($after | test("^[A-Za-z0-9_]*=")))
     or .keep[$tok] == true or ($tok | rule_app_bundle)
+    # A path component named like an app shell-under-app lists (/Applications/Visual Studio Code.app/): its parent test.
+    or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
+        | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
+        | ($pl + $m.string + $pr | rule_app_bundle) and $after[($pr | length):($pr | length) + 1] == "/")
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
     or ((.acct[$m.string | gsub("\\\\(?= )"; "") | ascii_downcase] // "" | test("^user[0-9]+$"))
-        and (($m.string | length) < 4 or COMMON_ACCOUNT_WORDS[$m.string | ascii_downcase] == true or protected_word($m.string)) as $weak
-        | ((($tok | plain_bundle_name)
-            and ($weak or (($before | length) > ($l | length) and $before[($before | length) - ($l | length) - 1:($before | length) - ($l | length)] == "/")
-                 or $after[($r | length):($r | length) + 1] == "/"))
+        and weak_account($m.string) as $weak
+        | ((($tok | plain_bundle_name) and $weak)
            or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
                | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
                | ($pl + $m.string + $pr) as $part
                | (($before | length) - ($pl | length)) as $i
-               | ((if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/" or $weak)
-                 and (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
-                 and (($part | plain_bundle_name) or .keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true))));
+               | (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
+                 and ((($part | plain_bundle_name) and $weak)
+                      or (.keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true
+                          and ($weak or (if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/"))))));
 
 # $str with account names and seeds replaced, case-insensitively, as whole words (General string cleaning, step 7; a
 # word ends at anything but a letter or digit, so jdoe_backup is user1_backup):
