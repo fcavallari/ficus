@@ -50,9 +50,9 @@ sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add
 
 ### Cleaning a capture before it leaves the Mac
 
-A raw capture holds the account's names, file and folder names, hosts, command lines, environment variables and sometimes secrets. If the Mac belongs to someone else, such as an executive, the capture should not leave it as it is. `scripts/gameleira-clean.sh` replaces the identifying values with placeholders and keeps what the rules and the investigator need. It needs only what macOS has (bash and `/usr/bin/jq`). The findings stay the same: a test runs the rule engine on a capture and on its cleaned copy and compares them.
+A raw capture holds the account's names, file and folder names, hosts, command lines, environment variables and sometimes secrets. If the Mac belongs to someone else, such as an executive, the capture should not leave it as it is. `scripts/gameleira-clean.sh` replaces the identifying values with placeholders and keeps what the rules and the investigator need. It needs only what macOS 15 and later has (bash and `/usr/bin/jq`). The findings stay the same: a test runs the rule engine on a capture and on its cleaned copy and compares them.
 
-Two commands. `record` runs `sudo eslogger` and cleans the stream as it comes, so the raw capture is never written to disk. `clean` cleans a capture you already have.
+Two commands. `record` runs `sudo eslogger` and cleans the stream as it comes, so the raw capture is never written to disk. Run it as yourself, not under `sudo`: the script refuses to run as root and asks for your password once, for its own `sudo`. `clean` cleans a capture you already have.
 
 ```bash
 scripts/gameleira-clean.sh record -o capture.cleaned.jsonl -t 600 -D example.com
@@ -62,7 +62,7 @@ scripts/gameleira-clean.sh clean -i capture.jsonl -o capture.cleaned.jsonl -D ex
 - `-o FILE` is the cleaned capture (`-` for standard output; the default is `capture.cleaned.jsonl` in the current folder).
 - `-D DOMAIN` is the company's own domain. Hosts under it are treated as internal. Repeat it for more domains.
 - `-S SEEDFILE` lists more values to clean, one per line: a kind, a tab, then the value. The kinds are `user`, `realname`, `name`, `volume`, `host`, `email`, `seed` and `data`.
-- `-k KEYFILE` names an existing key. It is loaded first and added to, so several captures of one Mac share placeholders (`user1` is the same person in each).
+- `-k KEYFILE` is where the real values are kept (see "The key" below). An existing key is loaded first and added to, so several captures of one Mac share placeholders (`user1` is the same person in each). Without `-k` the key is named after the output file, and it must not exist yet: running again with the same `-o` fails until you pass `-k` or choose another `-o`. With `-o -` the default key is `stdout.key.tsv`.
 - `-t SECONDS` (`record` only) stops the recording after that long. Ctrl-C stops it too.
 
 `clean -i` reads a JSONL capture, a pretty-printed export or a JSON array, and always writes JSONL. `-i -` reads standard input. It never changes or deletes the raw file. Delete that yourself when you are happy with the result.
