@@ -2863,6 +2863,72 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 2, N1: a random base64 payload with a / in it is data; a path with words between its slashes is not.
+  // The payloads come from a seeded generator, so the test is the same on every run.
+  test('base64 payloads with a / are data, macOS paths with hashes are paths', () => {
+    let seed = 0x6a09e667;
+    const rand = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const payloads: string[] = [];
+    while (payloads.length < 60) {
+      const b = Buffer.from(Array.from({ length: 36 + Math.floor(rand() * 40) }, () => Math.floor(rand() * 256))).toString('base64');
+      if (b.includes('/')) payloads.push(b);
+    }
+    const HEX32 = HEX40.slice(0, 32);
+    const HEX16 = HEX40.slice(0, 16);
+    const UU = '3F2504E0-4F89-11D3-9A0C-0305E82C3301';
+    const UL = UU.toLowerCase();
+    const L = '/Users/jdoe/Library';
+    const absolute = [
+      `${L}/Application Support/Code/User/workspaceStorage/${HEX32}`,
+      `${L}/Application Support/Code/User/workspaceStorage/${HEX32}/state.vscdb`,
+      `${L}/Application Support/Google/Chrome/Default/Service Worker/CacheStorage/${HEX40}/${UL}/index`,
+      `${L}/Application Support/Slack/Service Worker/CacheStorage/${HEX40}`,
+      `${L}/Application Support/Microsoft/Teams/Partitions/${UL}/Cache`,
+      `/var/folders/k7/9zq1x2n4h5g7b8c0000gn/T/${UU}/Payload`,
+      `${L}/Caches/com.apple.Safari/fsCachedData/${UU}`,
+      `${L}/Containers/com.example.app/Data/Library/Application Support/${HEX40}/blob`,
+      `${L}/Caches/Google/Chrome/Default/Cache/Cache_Data/${HEX16}_0`,
+      `${L}/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/Data/${UU}.olk15Message`,
+      `${L}/Saved Application State/com.example.app.savedState/${HEX40}`,
+    ];
+    const relative: [string, string][] = [
+      ['workspaceStorage/' + HEX32 + '/state.vscdb', `${L}/Application Support/Code/User`],
+      ['Projects/Acme2Merger/BoardDeck3Final/Draft7', '/Users/jdoe'],
+      ['Acme2Merger/BoardDeck3Final/Draft7Version2', '/Users/jdoe'],
+      [`Cache/Cache_Data/${HEX16}_0`, `${L}/Caches/Google/Chrome/Default`],
+      [`Downloads/${HEX40}`, '/Users/jdoe'],
+    ];
+    const input = [
+      ...payloads.map((b, i) => run(1900 + i, '/bin/sh', ['sh', '-c', `echo ${b} | base64 -d | sh`], '/', i + 1)),
+      ...absolute.map((a, i) => run(2000 + i, '/bin/rm', ['rm', '-rf', a], '/', 100 + i, [...JDOE_ENV, `PWD=${a}`])),
+      ...absolute.map((a, i) => run(2050 + i, '/bin/sh', ['sh', '-c', `rm -rf "${a}"`], '/', 200 + i)),
+      ...relative.map(([a, cwd], i) => run(2100 + i, '/bin/cp', ['cp', 'x', a], cwd, 300 + i)),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const d = keyed(r.key, 'data');
+      // Every payload is data, and nothing else is.
+      expect(payloads.filter(b => !d.has(b))).toEqual([]);
+      expect(d.size).toBe(payloads.length);
+      payloads.forEach((b, i) => expect(ev[i]!.event.exec.args[2]).toBe(`echo ${d.get(b)} | base64 -d | sh`));
+      const rest = ev.slice(payloads.length);
+      for (const e of rest) expect(JSON.stringify(e.event.exec.args) + JSON.stringify(e.event.exec.env)).not.toMatch(/\bdata\d+/);
+      // The same path cleans the same in an argument, PWD and shell code.
+      absolute.forEach((_, i) => {
+        const cleaned = rest[i]!.event.exec.args[2] as string;
+        expect(rest[i]!.event.exec.env).toContain(`PWD=${cleaned}`);
+        expect(rest[absolute.length + i]!.event.exec.args[2]).toBe(`rm -rf "${cleaned}"`);
+      });
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
