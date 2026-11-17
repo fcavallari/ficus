@@ -35,7 +35,7 @@ const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|ph
 
 const MAX_EVIDENCE = 300;
 
-function cmdline(img: Image): string {
+export function cmdline(img: Image): string {
   const s = img.args && img.args.length > 0 ? img.args.join(' ') : (img.path ?? '');
   return s.length > MAX_EVIDENCE ? `${s.slice(0, MAX_EVIDENCE)}…` : s;
 }
@@ -44,9 +44,9 @@ function rest(img: Image): string[] {
   return img.args?.slice(1) ?? [];
 }
 
-const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
+export const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
 /** No signature at all; an empty signing ID counts as none. */
-const isUnsigned = (img: Image): boolean => !img.isPlatform && !img.signingId;
+export const isUnsigned = (img: Image): boolean => !img.isPlatform && !img.signingId;
 
 /** The original parent's image when this process was born (the parent may exec something else later). */
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {

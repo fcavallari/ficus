@@ -1,4 +1,4 @@
-import type { CaptureModel, ProcId, Process, TokenKey } from './types';
+import type { CaptureModel, PersistenceItem, ProcId, Process, TokenKey } from './types';
 import { basename, latestImage, normPath } from './util';
 
 export type ParentMode = 'original' | 'current' | 'responsible';
@@ -218,4 +218,13 @@ export function displayName(m: CaptureModel, id: ProcId): string {
   const path = latestImage(p)?.path ?? null;
   if (path) return basename(path);
   return p.ghost ? `pid ${p.pid} · started before capture` : `pid ${p.pid}`;
+}
+
+/** Who registered a launch item: the app, else the XPC caller that asked for it, else whoever wrote the plist; the first that is a captured process. */
+export function registrant(m: CaptureModel, item: PersistenceItem): { id: ProcId; via: 'app' | 'instigator' | 'creator' } | null {
+  for (const via of ['app', 'instigator', 'creator'] as const) {
+    const id = item[via];
+    if (id !== null && m.processes.has(id)) return { id, via };
+  }
+  return null;
 }

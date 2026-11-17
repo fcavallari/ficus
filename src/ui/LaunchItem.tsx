@@ -1,18 +1,15 @@
 import type { ReactNode } from 'react';
 import type { LoadedCapture } from '../ingest/load';
-import { displayName } from '../model/relations';
+import { displayName, registrant as registrantOf } from '../model/relations';
 import type { PersistenceItem, ProcId } from '../model/types';
-import { imageAt, itemPathKind } from '../model/util';
+import { imageAt, itemPathKind, itemTypeName } from '../model/util';
 import { launchTarget, persistenceOwner, SYSTEM_DIRS } from '../rules/rules';
 import { fmtTime } from './triage-model';
 
-/** es_btm_item_type_t, in words. */
-const ITEM_TYPES = ['User item', 'App', 'Login item', 'Launch agent', 'Launch daemon'];
-export const itemTypeName = (t: number | null): string => (t !== null ? ITEM_TYPES[t] : undefined) ?? 'Unknown';
+export { itemTypeName };
 
-/** Who registered the item, in order: the app, the XPC caller that asked for it, then whoever wrote the plist. */
+/** How the registrant is labelled: the app, the XPC caller that asked for it, or whoever wrote the plist. */
 const LABEL = { app: 'app', instigator: 'instigator', creator: 'plist writer' } as const;
-const REGISTRANTS = ['app', 'instigator', 'creator'] as const;
 
 const Code = ({ children }: { children: ReactNode }) => <code className="mono wrap">{children}</code>;
 
@@ -30,7 +27,8 @@ export function LaunchItem({ cap, item, current, onSelect }: {
   cap: LoadedCapture; item: PersistenceItem; current: ProcId | null; onSelect(id: ProcId): void;
 }) {
   const m = cap.model;
-  const registrant = REGISTRANTS.map(field => ({ id: item[field], label: LABEL[field] })).find(r => r.id !== null && m.processes.has(r.id));
+  const found = registrantOf(m, item);
+  const registrant = found ? { id: found.id, label: LABEL[found.via] } : undefined;
   // Only the XPC caller can be a messenger passing a request on. The test is persistenceOwner's: an Apple binary in a
   // system folder, as it was when the item was registered. A plist writer (sh, cp, launchctl…) is never excused.
   const registrantProc = registrant ? m.processes.get(registrant.id!) : undefined;
