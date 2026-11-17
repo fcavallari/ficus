@@ -1542,7 +1542,7 @@ def code_secrets($str):
             $c[$i] as $m | $m.string as $raw
             | if $r.v[$i] != $u[$i] then
                 .ed += [{at: $m.offset, len: $m.length,
-                         text: (if $raw != $u[$i] then $raw[:1] + $r.v[$i] + $raw[-1:] else $r.v[$i] end)}]
+                         text: (if $u[$i] != null and $raw != $u[$i] then $raw[:1] + $r.v[$i] + $raw[-1:] else $r.v[$i] end)}]
               else
                 # Quoted code in the code: "…" (only \" escaped inside) or '…'.
                 ($u[$i] // (if $raw | test("^\"(?:[^\"\\\\]|\\\\\")*\"$") then $raw[1:-1] | gsub("\\\\\""; "\"") else null end)) as $in
