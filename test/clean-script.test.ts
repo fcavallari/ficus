@@ -2179,4 +2179,27 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(ev[1]!.event.exec.args).toEqual(['echo', h.get('NAS.Home.Arpa'), h.get('printer.LoCaL')]);
     expect(r.out).not.toMatch(/acme|build01|nas\.|printer/i);
   });
+
+  test('a host that has a placeholder is replaced wherever it stands as a word', () => {
+    const input = [
+      run(1190, '/usr/bin/ssh', ['ssh', 'buildbox'], '/', 1),
+      run(1191, '/sbin/ping', ['ping', 'buildbox'], '/', 2),
+      run(1192, '/bin/echo', ['echo', 'buildbox', 'deploy to buildbox now'], '/', 3),
+      run(1193, '/usr/bin/scp', ['scp', 'f', 'buildbox:/srv/'], '/', 4),
+      run(1194, '/bin/sh', ['sh', '-c', 'ping -c1 buildbox && rsync -a x buildbox:/srv/'], '/Users/jdoe/Documents', 5),
+      // A short or common word is not replaced outside a host position.
+      run(1195, '/usr/bin/ssh', ['ssh', 'work'], '/', 6),
+      run(1196, '/bin/echo', ['echo', 'work'], '/', 7),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    const h = keyed(r.key, 'host');
+    const b = h.get('buildbox');
+    expect(b).toMatch(/^host\d+\.internal\.invalid$/);
+    expect(args.slice(0, 5)).toEqual([['ssh', b], ['ping', b], ['echo', b, `deploy to ${b} now`], ['scp', 'f', `${b}:/srv/`],
+      ['sh', '-c', `ping -c1 ${b} && rsync -a x ${b}:/srv/`]]);
+    expect(args.slice(5)).toEqual([['ssh', h.get('work')], ['echo', 'work']]);
+    sameFindings(input, r.out);
+  });
 });

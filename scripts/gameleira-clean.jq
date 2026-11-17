@@ -178,15 +178,24 @@ def KEYCHAIN_WORDS: {
 };
 def keychain_free($n): all($n | scan("[^" + WORD_SEP + "]+"); KEYCHAIN_WORDS[ascii_downcase] != true);
 
+# Account names that are short or common words: the summary lists them, since they are replaced only where they
+# cannot be another word (see replace_seeds).
+def COMMON_ACCOUNT_WORDS: {
+  "admin": true, "user": true, "test": true, "dev": true, "code": true, "mac": true, "guest": true, "home": true, "work": true
+};
+# A weak account word: shorter than 4 characters, a common word or one the rules look for (code, test).
+def weak_account($k): ($k | length) < 4 or COMMON_ACCOUNT_WORDS[$k | ascii_downcase] == true or protected_word($k);
+
 # A new placeholder's real value, made findable in free text (General string cleaning, step 4): names of 4 or more
-# characters that are not protected, of the kinds that are names (not hosts, emails or data, which have their own
-# steps). For a name of several words (Q3 Financials, M&A Plan: words and separators as WORD_TOKENS splits them),
+# characters that are not protected, of the kinds that are names, and hosts and emails that are not a weak word
+# (ping buildbox, after ssh buildbox mapped it; data has no words). For a name of several words (Q3 Financials, M&A Plan: words and separators as WORD_TOKENS splits them),
 # `multi` notes under its first word how many it has, so replace_mapped can join that many from the text and look the
 # result up in `words`: one lookup per distinct count, however many names share the first word (Screenshot …).
 # Input: the state.
 def index_word($kind; $real; $ph):
-  if ({"user": true, "realname": true, "name": true, "volume": true, "seed": true}[$kind] | not)
-     or ($real | length) < 4 or .words[$real] != null or protected_name($real) then .
+  if ({"user": true, "realname": true, "name": true, "volume": true, "seed": true, "host": true, "email": true}[$kind] | not)
+     or ($real | length) < 4 or .words[$real] != null or protected_name($real)
+     or (($kind == "host" or $kind == "email") and weak_account($real)) then .
   else .words[$real] = $ph | .nwords += 1
     | [$real | scan(WORD_TOKENS)] as $t
     | if ($t | length) > 1 then .multi[$t[0]][$t | length | tostring] = true else . end
@@ -287,13 +296,6 @@ def kept_name($n; $ids):
 # the ends, however many parts they span: jdoe -> user1, com.jdoe.agent.plist -> com.user1.agent.plist,
 # com.Janes-MacBook-Pro.tool -> com.host1.internal.invalid.tool, a platform UUID that is the whole value -> seed2.
 # Longest first. Only names that already have a placeholder are replaced, so the state does not change. Input: the state.
-# Account names that are short or common words: the summary lists them, since they are replaced only where they
-# cannot be another word (see replace_seeds).
-def COMMON_ACCOUNT_WORDS: {
-  "admin": true, "user": true, "test": true, "dev": true, "code": true, "mac": true, "guest": true, "home": true, "work": true
-};
-# A weak account word: shorter than 4 characters, a common word or one the rules look for (code, test).
-def weak_account($k): ($k | length) < 4 or COMMON_ACCOUNT_WORDS[$k | ascii_downcase] == true or protected_word($k);
 # $mode "all": every account name and seed; "bundle": not the weak account words (code in Code.app); "program": no
 # account names, only full names, hosts and other seeds.
 def replace_parts_opts($n; $mode):
