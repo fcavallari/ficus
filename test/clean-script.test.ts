@@ -2929,6 +2929,24 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 2, I7: an account first met later in the same event (HOME= last, or only in the program's path) is
+  // still replaced in the names before it. No seed file here.
+  test('an account met later in the same event is replaced in environment names', () => {
+    const inputs = [
+      run(2200, '/usr/bin/true', ['true'], '/', 1, ['JDOE=1', 'jdoe_cache=2', 'LC_JDOE=en_US', 'HOME=/Users/jdoe']),
+      esExec(child(2201), userProc(2201, '/Users/jdoe/bin/tool'), { args: ['tool'], cwd: '/', env: ['JDOE=1', 'LC_JDOE=en_US'], seq: 1 }),
+    ];
+    for (const input of inputs.map(l => l + '\n')) for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-'] : ['clean', '-o', '-'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const env = events(r.out)[0]!.event.exec.env as string[];
+      expect(env).toContain('user1=<redacted>');
+      expect(env).toContain('LC_user1=en_US');
+      expect(r.out).not.toMatch(/jdoe/i);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',

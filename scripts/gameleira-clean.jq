@@ -1804,6 +1804,20 @@ def clean_event($state):
               end
             end
         end)
+  # An account met in this event after the environment was cleaned (HOME= last, or only in the program's path): the
+  # environment names are cleaned again with it (clean_env runs before the walk).
+  | (if $envk == null or .s.acctn == $pre.s.acctn then .
+     else ($e0.event.exec.env) as $raw
+       | reduce range(0; $raw | length) as $i (.;
+           ($raw[$i] | if type == "string" then index("=") else null end) as $q
+           | (.e.event.exec.env[$i]) as $f
+           | if $q == null or ($f | type) != "string" or ($f | index("=")) == null then .
+             else $raw[$i][:$q] as $n
+               | (if SAFE_ENV[$n] or $n == "USER" or $n == "LOGNAME" then $n else .s | replace_seeds($n) end) as $cn
+               | ($f | index("=")) as $fq
+               | if $f[:$fq] == $cn then . else .e.event.exec.env[$i] = $cn + $f[$fq:] end
+             end)
+     end)
   | {event: .e, state: (.s | .netp = false), new: .s.new};
 
 # One raw line against the state: {s: new state, emit: [event to write], new: [key entries]}.
