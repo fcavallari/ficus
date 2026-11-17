@@ -2843,6 +2843,26 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, m4: curl's long options and option clusters.
+  test('curl --user, --cookie, --header and option clusters are redacted', () => {
+    const E = 'https://evil.example.net';
+    const input = [
+      run(1890, '/usr/bin/curl', ['curl', '--user', 'bob:pwFF', '--cookie', 'a=ckGG', '--cookie', 'jar.txt', '--header', 'Cookie: s=ckHH', '--header', 'Accept: */*', E], '/', 1),
+      run(1891, '/usr/bin/curl', ['curl', '-su', 'bob:pwKK', E], '/', 2),
+      run(1892, '/usr/bin/curl', ['curl', '-ubob:pwLL', '-sH', 'Proxy-Authorization: Basic cHdNTQ==', E], '/', 3),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const R = '<redacted>';
+      expect(args[0]).toEqual(['curl', '--user', R, '--cookie', R, '--cookie', 'jar.txt', '--header', `Cookie: ${R}`, '--header', 'Accept: */*', E]);
+      expect(args[1]).toEqual(['curl', '-su', R, E]);
+      expect(args[2]).toEqual(['curl', `-u${R}`, '-sH', `Proxy-Authorization: ${R}`, E]);
+      expect(r.out).not.toMatch(/pwFF|ckGG|ckHH|pwKK|pwLL|cHdNTQ/);
+      expect(r.summary['redacted']).toBe('6');
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
