@@ -19,7 +19,13 @@ export function siblings(m: CaptureModel, p: Process): Process[] {
 /** The shell-snapshot folders of the AI coding agents (Claude Code, Codex, Cursor). */
 const AGENT_SNAPSHOTS = /\.(?:claude\/shell-snapshots|codex\/shell_snapshots|cursor\/shell-snapshots)\//;
 
+/** True when this image's own arguments source an AI coding agent's snapshot: the shell an agent starts for each command. */
+export function sourcesAgentSnapshot(img: Image): boolean {
+  return img.args?.some(a => AGENT_SNAPSHOTS.test(a)) ?? false;
+}
+
 /** True when the shell that started this process sourced an AI coding agent's snapshot: agents run `base64 -d` and `curl` through such shells. */
 export function underAgentShell(m: CaptureModel, p: Process): boolean {
-  return originalParentImage(m, p)?.args?.some(a => AGENT_SNAPSHOTS.test(a)) ?? false;
+  const parent = originalParentImage(m, p);
+  return parent !== undefined && sourcesAgentSnapshot(parent);
 }

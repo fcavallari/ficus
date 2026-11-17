@@ -348,6 +348,7 @@ run() {
 #   80  zsh: cp of the login keychain into /tmp/lab
 #   85  zsh: an unsigned program from /Users/Shared writes a launch agent plist named com.apple.…
 #   90  a second shell: base64 -d, and a bash reading from a pipe a second later: a pasted command
+#   95  launchd starts Script Editor, which runs a shell
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -509,6 +510,13 @@ synthetic_story() {
   ev_exec 91.1 "$bash" /bin/bash platform com.apple.bash '' "$CWD" pipe bash -l -s
   ev_exit 91.4 "$bash"
   answer paste clickfix-paste-chain high queued 'bash -l -s' 'A decoder and a bash reading from a pipe, a second apart under one shell: the line a ClickFix page tells the user to paste.'
+
+  # 12. launchd starts Script Editor, which runs a shell: an app that has no business running commands.
+  ev_fork 95.0 "$LAUNCHD" 7640 9640; c=$LAST
+  ev_exec 95.1 "$c" '/System/Applications/Utilities/Script Editor.app/Contents/MacOS/Script Editor' platform com.apple.ScriptEditor2 '' / tty 'Script Editor'
+  run 95.5 "$c" 7641 9641 /bin/sh sh -c 'echo lab-script-editor'
+  ev_exit 96.0 "$c"
+  answer script-editor risky-parent-spawn high queued 'lab-script-editor' 'Script Editor runs a shell: an app that should not run commands. The same shell also shows shell-under-app.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -533,6 +541,7 @@ live_answers() {
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
+    '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'
@@ -548,6 +557,7 @@ live_answers() {
   answer odd-binary odd-location-exec high queued '/agent --lab' 'An ad-hoc signed copy of /usr/bin/true running from /tmp.'
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
   answer app-shell shell-under-app med queued 'echo ficus-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
+  answer app-shell risky-parent-spawn high queued 'echo ficus-lab-applet' 'The same applet shell, seen as an app that should not run commands.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
   answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'

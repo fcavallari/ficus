@@ -4,7 +4,7 @@ import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { PASTE_WINDOW_MS, originalParentImage, siblings, underAgentShell } from './context';
+import { PASTE_WINDOW_MS, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore } from './credentials';
 import { HOME, LOCATION_WORDS, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
@@ -560,6 +560,76 @@ function pasteHelper(img: Image): 'decode' | 'fetch' | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Parents that should not run commands
+
+const RISKY_PARENT_EXPLANATION = 'An app that has no business running commands ran one: Script Editor, an AppleScript applet or an Automator application stub; Word, Excel or PowerPoint (a macro or a booby-trapped document); or a developer tool (VS Code, Cursor, Windsurf, Xcode, dotnet, node, bun) running a download-and-run or an osascript. Droppers disguised as documents, scripts and project folders use these as the first step. Microsoft AutoUpdate and AI coding agents are ignored.';
+
+type RiskyParent = 'script' | 'office' | 'developer';
+const RISKY_PARENT_LABEL: Record<RiskyParent, string> = { script: 'Script Editor or an AppleScript applet', office: 'Office app', developer: 'developer tool' };
+
+const SCRIPT_APP_SIGNING_ID = 'com.apple.ScriptEditor2';
+const OFFICE_APP = /\/Microsoft (?:Word|Excel|PowerPoint)\.app\//;
+const OFFICE_UPDATER = '/Microsoft AutoUpdate.app/';
+const DEVELOPER_APP = /\/(?:Visual Studio Code|Cursor|Windsurf|Xcode)\.app\//;
+const DEVELOPER_PROGRAMS = new Set(['xcodebuild', 'XCBBuildService', 'dotnet', 'node', 'bun']);
+const SCRIPT_APP_CHILDREN = new Set(['curl', 'nscurl', 'osascript', 'codesign', 'xattr', 'chmod', 'launchctl']);
+const OFFICE_CHILDREN = new Set(['osascript', 'curl', 'chmod']);
+
+/** Which kind of risky parent this path or signing ID is, or null. A path inside Microsoft AutoUpdate is never one. */
+function riskyParentClass(img: Image | undefined): RiskyParent | null {
+  if (img === undefined) return null;
+  const path = img.path ?? '';
+  if (path.includes(OFFICE_UPDATER)) return null;
+  if (img.signingId === SCRIPT_APP_SIGNING_ID || path.endsWith('/Contents/MacOS/applet') || path.includes('Automator Application Stub')) return 'script';
+  if (OFFICE_APP.test(path)) return 'office';
+  const name = basename(path);
+  return DEVELOPER_APP.test(path) || DEVELOPER_PROGRAMS.has(name) || name.startsWith('Code Helper') ? 'developer' : null;
+}
+
+/** The text a shell is told to run with -c, or null when it has no -c. */
+function shellCommand(img: Image): string | null {
+  const a = rest(img);
+  const i = a.findIndex(x => /^-[A-Za-z]*c[A-Za-z]*$/.test(x));
+  return i < 0 ? null : a.slice(i + 1).join(' ');
+}
+
+/** A shell command that fetches and then hides or runs it: nohup, a pipe into an interpreter, or a fetch with certificate checks turned off. */
+function downloadAndRun(command: string): boolean {
+  if (!/\b(?:curl|wget)\b/.test(command)) return false;
+  if (/\bnohup\b/.test(command) || /(?<!\|)\|(?!\|)\s*(?:sudo\s+)?(?:\S*\/)?(?:sh|bash|zsh|node|python[0-9.]*)(?![\w./-])/.test(command)) return true;
+  // -k belongs to the fetch itself: `curl … && tar -xkf` or `du -sk` are not it.
+  return command.split(/&&|\|\||[;|&\n]/).some(part => /\b(?:curl|wget)\b/.test(part) && /(?:^|\s)-[A-Za-z]*k[A-Za-z]*(?=\s|$)|--insecure/.test(part));
+}
+
+/** Does this program, run by a parent of this class, count? A developer parent only counts for a download-and-run or osascript. */
+function riskyChild(cls: RiskyParent, img: Image): boolean {
+  const n = basename(img.path);
+  const shell = img.path !== null && SHELLS.has(img.path);
+  if (cls === 'developer') {
+    if (n === 'osascript') return true;
+    const command = shell ? shellCommand(img) : null;
+    return command !== null && downloadAndRun(command);
+  }
+  if (shell || n === 'osascript' || n === 'curl') return true;
+  return cls === 'script'
+    ? SCRIPT_APP_CHILDREN.has(n) || /^python[0-9.]*$/.test(n)
+    : OFFICE_CHILDREN.has(n) || /^(?:python|perl|ruby)[0-9.]*$/.test(n);
+}
+
+/** The parent that makes this process risky: its class and path, looking at the original parent and (for Office) the responsible process. */
+function riskyParent(m: CaptureModel, p: Process): { cls: RiskyParent; path: string; how: string } | null {
+  const parent = originalParentImage(m, p);
+  const cls = riskyParentClass(parent);
+  if (cls !== null) return { cls, path: parent?.path ?? '', how: '' };
+  const resp = p.responsible !== null ? m.processes.get(p.responsible) : undefined;
+  const respImage = resp ? imageAt(resp, p.firstSeq) : undefined;
+  // Office's own children are often launched through a plain shell: the responsible process is still the document's app.
+  // Microsoft AutoUpdate anywhere in the chain is the updater, not a document.
+  if (riskyParentClass(respImage) === 'office' && !parent?.path?.includes(OFFICE_UPDATER)) return { cls: 'office', path: respImage?.path ?? '', how: ' (responsible process)' };
+  return null;
+}
+
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
@@ -1023,6 +1093,27 @@ export const RULES: Rule[] = [
       for (const f of found) mitre.add(f.how === 'decode' ? 'T1140' : 'T1105');
       return {
         evidence: `${cmdline(img)} reads a pipe within ${PASTE_WINDOW_MS / 1000} s of ${found.map(f => f.line).join(' and ')}`,
+        mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'risky-parent-spawn', title: 'App that should not run commands ran one', severity: 'high',
+    explanation: RISKY_PARENT_EXPLANATION,
+    mitre: ['T1059.002', 'T1059.004', 'T1204.002'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      // Only the first program the process ran: /bin/sh re-execs /bin/bash, and a child may run on to something else.
+      if (imgIndex !== p.images.findIndex(i => !i.inherited)) return null;
+      const found = riskyParent(m, p);
+      if (found === null || !riskyChild(found.cls, img)) return null;
+      if (found.cls === 'developer' && (underAgentShell(m, p) || sourcesAgentSnapshot(img))) return null;
+      const mitre = new Set<string>();
+      if (found.cls === 'script') mitre.add('T1059.002');
+      if (found.cls === 'office') mitre.add('T1204.002');
+      if (img.path !== null && SHELLS.has(img.path)) mitre.add('T1059.004');
+      if (basename(img.path) === 'osascript') mitre.add('T1059.002');
+      return {
+        evidence: `${RISKY_PARENT_LABEL[found.cls]} ${found.path}${found.how} ran ${cmdline(img)}`,
         mitre: [...mitre].sort(),
       };
     },
