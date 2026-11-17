@@ -1,5 +1,5 @@
 import type { LoadedCapture } from '../ingest/load';
-import type { CaptureModel, FileOp, ProcId, Process } from '../model/types';
+import type { CaptureModel, FileOp, PersistenceItem, ProcId, Process } from '../model/types';
 import type { Finding } from '../rules/engine';
 import { forestOf } from './tree-model';
 
@@ -64,6 +64,25 @@ function forkChildren(m: CaptureModel): Map<ProcId, ProcId[]> {
   return idx;
 }
 
+const itemsOf = new WeakMap<CaptureModel, Map<ProcId, PersistenceItem[]>>();
+
+/** Launch items per process that emitted, asked for or registered them, in capture order; built once per capture. */
+function launchItemsOf(m: CaptureModel): Map<ProcId, PersistenceItem[]> {
+  let idx = itemsOf.get(m);
+  if (idx) return idx;
+  idx = new Map();
+  for (const item of m.persistence) {
+    for (const id of new Set([item.emitter, item.instigator, item.app])) {
+      if (id === null) continue;
+      const list = idx.get(id);
+      if (list) list.push(item);
+      else idx.set(id, [item]);
+    }
+  }
+  itemsOf.set(m, idx);
+  return idx;
+}
+
 const byItem = new WeakMap<LoadedCapture['analysis'], Map<string, Finding[]>>();
 
 /** Findings per launch item id, wherever they were attached (the owning process, or the item's own queue row). */
@@ -115,8 +134,7 @@ function eventsOf(cap: LoadedCapture, p: Process, out: TimelineEvent[]): void {
   }
   // Launch items the process emitted, asked for, or registered. Findings about an item may sit on another process (its
   // owner) or on the persistence-only queue row: they are matched by the item's id.
-  for (const item of m.persistence) {
-    if (item.emitter !== p.id && item.instigator !== p.id && item.app !== p.id) continue;
+  for (const item of launchItemsOf(m).get(p.id) ?? []) {
     const role = item.app === p.id ? 'app' : item.instigator === p.id ? 'instigator' : 'emitter';
     out.push({ role,
       key: `${p.id}:btm:${item.id}`, seq: item.seq, time: item.time, kind: item.kind === 'add' ? 'btm_add' : 'btm_remove', proc: p.id,

@@ -211,7 +211,7 @@ test('redaction reaches captures that are not loaded', () => {
   expect(holds(build(over, false), 'labpass-not-real')).toBe(true);
 });
 
-/** Every value the capture records in a field of its own, which redaction keeps; joined for substring search. */
+/** Every value the capture records in a field of its own, joined: `holds` matches by substring, so an argument that sits inside one of them cannot be told from the field. */
 function keptText(model: CaptureModel): string {
   const out: string[] = [];
   for (const p of model.processes.values()) {
@@ -231,6 +231,19 @@ test('no argument survives redaction outside kept fields', () => {
   const r = build({}, true);
   const leaked = [...args].filter(x => holds(r, x, ['ruleId', 'title', 'explanation', 'note']));
   expect(leaked).toEqual([]);
+});
+
+test('an argument that is only part of some path is still redacted', () => {
+  const fresh = buildModel(readLines('synthetic-lab.jsonl'));
+  const p = procByPid(fresh, 7016);
+  const img = p.images.find(i => i.args?.[0] === 'dscl')!;
+  // `tmp` occurs inside paths of the capture; typed as a password it is a secret, not repeated evidence.
+  img.args = ['dscl', '.', '-authonly', 'labuser', 'tmp'];
+  const cap = lab('fp', fresh);
+  const q = cap.analysis.queue.find(x => x.procId === p.id)!;
+  q.findings[0]!.evidence = 'checked the password tmp';
+  const evidence = rowOf(build({ loaded: new Map([['fp', cap]]) }, true), 7016).findings[0]!.evidence;
+  expect(evidence).toBe('checked the password [redacted]');
 });
 
 test('redacts a secret that the evidence limit cuts in half', () => {

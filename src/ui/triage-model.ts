@@ -1,7 +1,7 @@
 import type { LoadedCapture } from '../ingest/load';
 import { displayName } from '../model/relations';
 import type { CaptureModel, CaptureStats, Process } from '../model/types';
-import { basename } from '../model/util';
+import { basename, persistenceItem } from '../model/util';
 import type { QueueItem } from '../rules/engine';
 import { RULES, SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { Status, Verdict } from '../session/store';
@@ -47,7 +47,7 @@ export const triageAction = (key: string): TriageAction | undefined => TRIAGE_KE
 /** Name shown for a queue item: the process name, or `persistence: <plist>` for a persistence-only item. */
 export function itemName(cap: LoadedCapture, q: QueueItem): string {
   if (q.procId !== null) return displayName(cap.model, q.procId);
-  const item = cap.model.persistence.find(i => i.id === q.persistenceId);
+  const item = persistenceItem(cap.model, q.persistenceId);
   return `persistence: ${basename(item?.plistPath ?? null) || q.persistenceId || 'launch item'}`;
 }
 
@@ -73,7 +73,7 @@ export function itemArgs(cap: LoadedCapture, q: QueueItem): string {
     const args = p ? rowArgs(p) : '';
     return args || (q.findings[0]?.title ?? '');
   }
-  const item = cap.model.persistence.find(i => i.id === q.persistenceId);
+  const item = persistenceItem(cap.model, q.persistenceId);
   return item?.executablePath ?? item?.appPath ?? '';
 }
 
@@ -84,7 +84,7 @@ export function haystack(cap: LoadedCapture, q: QueueItem): string {
     const p = cap.model.processes.get(q.procId);
     for (const i of p?.images ?? []) parts.push(i.path, i.signingId, i.teamId, i.script, ...(i.args ?? []));
   } else {
-    const item = cap.model.persistence.find(i => i.id === q.persistenceId);
+    const item = persistenceItem(cap.model, q.persistenceId);
     parts.push(item?.plistPath ?? null, item?.executablePath ?? null, item?.appPath ?? null);
   }
   return parts.filter(Boolean).join('\n').toLowerCase();
@@ -207,11 +207,14 @@ export function coverage(m: CaptureModel): { versions: number[]; notes: Coverage
   let ghosts = 0;
   for (const p of m.processes.values()) {
     if (p.ghost) ghosts++;
-    for (const img of p.images) {
-      if (img.inherited) continue;
-      if (img.args === null) missedExec++;
+    p.images.forEach((img, i) => {
+      if (img.inherited) return;
+      // A process's first image with no args is a program that was already running when the capture began (or the
+      // emitter's pre-exec image): nothing changed, so nothing is missing. Only a later image without args is a change
+      // whose exec was not captured.
+      if (img.args === null) { if (i > 0) missedExec++; }
       else { execs++; if (img.stdinIsPipe === null) noFds++; }
-    }
+    });
   }
   if (noFds > 0) {
     const all = noFds === execs;

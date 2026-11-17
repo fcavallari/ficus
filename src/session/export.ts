@@ -25,7 +25,7 @@ const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** What replaces each argument after argv[0] when the export is asked to redact command lines. */
 export const REDACTED = '[redacted]';
-const redactArgv = (args: string[] | null): string[] | null => (args === null ? null : args.map((a, i) => (i === 0 ? a : REDACTED)));
+export const redactArgv = (args: string[] | null): string[] | null => (args === null ? null : args.map((a, i) => (i === 0 ? a : REDACTED)));
 
 /**
  * `includeEnv`: environment variables of each image. `redactArgs`: every argument after argv[0] becomes "[redacted]" in

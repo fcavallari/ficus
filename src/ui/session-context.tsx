@@ -3,10 +3,10 @@ import { runLoad } from '../ingest/run';
 import type { LoadedCapture } from '../ingest/load';
 import { displayName } from '../model/relations';
 import type { Image, ProcId } from '../model/types';
-import { basename, latestImage } from '../model/util';
+import { basename, latestImage, persistenceItem } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
-import { importSession, reimportSession, type SessionExport } from '../session/export';
+import { importSession, parseExport, reimportSession, type SessionExport } from '../session/export';
 import { forgetCaptureFiles, handlesSupported, rememberCaptureFile, rememberedCaptureFiles, reopenCaptureFile, type CaptureFileHandle } from '../session/capture-files';
 import { folderSupported, pickFolder, rememberedFolder, rememberFolder, type DirHandle } from '../session/folder';
 import { evictLru, MAX_LOADED_BYTES, touch } from '../session/lru';
@@ -290,9 +290,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   }, [store, closeSession, refreshSessions, report]);
 
   const importSessionFile = useCallback(async (file: File) => {
-    let data: unknown;
-    try { data = JSON.parse(await file.text()); } catch { throw new Error('Not a JSON file'); }
-    const s = await importSession(store, data as Parameters<typeof importSession>[1]);
+    const s = await importSession(store, parseExport(await file.text()));
     await refreshSessions();
     return s;
   }, [store, refreshSessions]);
@@ -449,7 +447,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     const cap = fp ? caps.get(fp) : undefined;
     const p = cap?.model.processes.get(procId);
     const queued = cap?.analysis.queue.find(q => q.key === procId);
-    const item = !p && queued?.persistenceId != null ? cap?.model.persistence.find(i => i.id === queued.persistenceId) : undefined;
+    const item = !p && cap ? persistenceItem(cap.model, queued?.persistenceId ?? null) : undefined;
     const same = (x: Verdict) => x.fingerprint === fp && x.procKey === procId;
     const prev = verdictRef.current.find(same);
     if (!s || !fp) return;

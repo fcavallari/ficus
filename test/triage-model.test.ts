@@ -3,7 +3,7 @@ import type { LoadedCapture } from '../src/ingest/load';
 import type { Image, Process } from '../src/model/types';
 import type { CaptureStats } from '../src/model/types';
 import { itemPathKind } from '../src/model/util';
-import { captureInfo, itemArgs, rowArgs, triageAction, TRIAGE_KEYS } from '../src/ui/triage-model';
+import { captureInfo, coverage, itemArgs, rowArgs, triageAction, TRIAGE_KEYS } from '../src/ui/triage-model';
 import { procByPid, queued } from './helpers';
 import { realTest } from './real';
 
@@ -82,4 +82,12 @@ test('every Triage shortcut in the table resolves to its action, arrows included
   expect(triageAction('ArrowDown')).toBe('next');
   expect(triageAction('ArrowUp')).toBe('prev');
   expect(triageAction('x')).toBeUndefined();
+});
+
+test('coverage counts a program change without an exec, not a process that predates the capture', () => {
+  const { m } = queued('synthetic-lab.jsonl');
+  const changes = [...m.processes.values()].reduce((n, p) => n + p.images.filter((i, k) => !i.inherited && i.args === null && k > 0).length, 0);
+  const note = coverage(m).notes.find(n => n.id === 'missed-exec');
+  expect(changes).toBeGreaterThan(0);
+  expect(note?.title.startsWith(`${changes} program change`)).toBe(true);
 });
