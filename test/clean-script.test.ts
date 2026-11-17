@@ -1827,6 +1827,37 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     }
   });
 
+  // Controller ruling I4: a full-name, host or other seed is replaced even in a program's name, with the placeholder it
+  // has everywhere, so the exec path and every other mention stay linked. An account name in a program name stays.
+  test('full-name and host seeds are replaced in program names too; account names in them stay', () => {
+    const app = '/Applications/Jane Doe.app/Contents/MacOS/Jane Doe';
+    const host = '/Applications/Janes-MacBook-Pro.app/Contents/MacOS/Janes-MacBook-Pro';
+    const input = [
+      ...fromApp(1020, app, ['/bin/zsh', '-c', 'echo Jane Doe'], 1),
+      esExec(child(1022), esProc({ pid: 1022, pidversion: 3022, path: host, signingId: 'com.example.sync', ppid: 300 }),
+        { args: [host, '--sync', 'Janes-MacBook-Pro'], cwd: '/', env: JDOE_ENV, seq: 3 }),
+      esExec(child(1023), esProc({ pid: 1023, path: '/Users/Shared/jdoe-agent', signingId: null, ppid: 300 }),
+        { args: ['jdoe-agent', '--user', 'jdoe-agent'], cwd: '/', env: JDOE_ENV, seq: 4 }),
+      run(1024, '/bin/echo', ['echo', 'Jane Doe', 'Janes-MacBook-Pro'], '/', 5),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-S', seedFile(SEEDS)] : ['clean', '-o', '-', '-S', seedFile(SEEDS)], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const ev = events(r.out);
+      expect(ev.find(e => e.event.fork)!.process.executable.path).toBe('/Applications/Person 1.app/Contents/MacOS/Person 1');
+      const execs = ev.filter(e => e.event.exec);
+      expect(execs[0]!.event.exec.args).toEqual(['/bin/zsh', '-c', 'echo Person 1']);
+      const hostOut = '/Applications/host1.internal.invalid.app/Contents/MacOS/host1.internal.invalid';
+      expect(execs[1]!.event.exec.target.executable.path).toBe(hostOut);
+      expect(execs[1]!.event.exec.args).toEqual([hostOut, '--sync', 'host1.internal.invalid']);
+      expect(execs[2]!.event.exec.target.executable.path).toBe('/Users/Shared/jdoe-agent');
+      expect(execs[2]!.event.exec.args).toEqual(['jdoe-agent', '--user', 'jdoe-agent']);
+      expect(execs[3]!.event.exec.args).toEqual(['echo', 'Person 1', 'host1.internal.invalid']);
+      expect(r.out).not.toMatch(/Jane|Janes|MacBook/i);
+      sameFindings(input, r.out);
+    }
+  });
+
   // shell-under-app skips shells under the apps it lists (Code.app, Claude.app …): a seed that is one of those names
   // stays in a bundle name of exactly that name, so the finding does not appear.
   test('a seed that is the name of an app shell-under-app lists stays in that bundle name', () => {

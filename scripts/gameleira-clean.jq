@@ -423,15 +423,17 @@ def clean_path_opts($text; $esc):
               elif $i == $pl.vol then (.s | placeholder("volume"; $n)) as $r | .s = $r.state | .out += [$r.ph]
               elif $pl.from != null and $i >= $pl.from then
                 # Kept names win over an account or volume of the same name (a NAS share called Downloads).
-                if .s.keep[$n] == true then .out += [$raw[$i]]
+                if .s.keep[$n] == true then
+                  (.s | replace_parts_opts($n; "program")) as $k | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
                 elif kept_by_place($pl; $lc; $i; $n) or (.s.map.name[$n] == null and (.s | kept_name($n; $i == $pl.top))) then
                   (.s | replace_accounts($n)) as $k | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
                 elif .s.map.name[$n] != null then .out += [.s.map.name[$n] | url_part($url)]
                 elif (.s.map.user[$n] // .s.map.volume[$n]) != null then .out += [.s.map.user[$n] // .s.map.volume[$n]]
                 else (.s | placeholder("name"; $n)) as $r | .s = $r.state | .out += [$r.ph | url_part($url)]
                 end
-              elif $pl.from == null and (.s.keep[$n] | not) then
-                (.s | replace_accounts($n)) as $k | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
+              elif $pl.from == null then
+                (.s | if .keep[$n] then replace_parts_opts($n; "program") else replace_accounts($n) end) as $k
+                | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
               else .out += [$raw[$i]] end)
           | {v: ($pre + (.out | join("/"))), s: .s}
         end
@@ -513,7 +515,9 @@ def seed_kept($t; $m; $code):
   | ($l | test("^-+[A-Za-z0-9_-]*$"))
     or ($before | test("[$]\\{?[A-Za-z0-9_]*$"))
     or (($l | test("^[A-Za-z0-9_]*$")) and ($after | test("^[A-Za-z0-9_]*=")))
-    or .keep[$tok] == true or ($tok | rule_app_bundle)
+    # A program's name keeps an account name in it (jdoe-agent), never a full name, host or other seed (ruling I4).
+    or (.keep[$tok] == true and (.acct[$m.string | gsub("\\\\(?= )"; "") | ascii_downcase] // "" | startswith("user")))
+    or ($tok | rule_app_bundle)
     # A path component named like an app shell-under-app lists (/Applications/Visual Studio Code.app/): its parent test.
     or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
         | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
