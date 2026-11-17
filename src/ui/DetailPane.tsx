@@ -18,6 +18,7 @@ import { processTimeline, recordedCounts, recordedSpan, type TimelineEvent, type
 import {
   coverage, fmtArgs, fmtClock, fmtTime, overview, SEVERITY_LABEL, TRIAGE_KEYS, VERDICT_LABEL, verdictKey,
 } from './triage-model';
+import { ReportOffer } from './ReportButton';
 
 const SHOW_FIRST = 40;
 const TIMELINE_FIRST = 60;
@@ -441,6 +442,8 @@ function NothingSelected() {
       <p className="lead-figure"><span className="num">{open}</span> of {queue.length} flagged {queue.length === 1 ? 'row is' : 'rows are'} unreviewed</p>
       {open > 0 && <SeverityBar counts={SEVERITIES.map(s => [s, o.bySeverity[s].open] as const)} />}
       <p className="muted">Select a flagged process on the left to see why it was flagged, where it came from and what it did. Rows run high first, then by time.</p>
+
+      <ReportOffer />
 
       {queue.length > 0 && (
         <div className="ov-grid">

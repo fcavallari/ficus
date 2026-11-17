@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { exportSession, saveFileName } from '../session/export';
 import { folderSupported, permitted, writeFile } from '../session/folder';
+import { downloadText } from './download';
 import { useSession } from './session-context';
 
 /** File input that imports a session export as a new session. */
@@ -65,14 +66,7 @@ export function useSaveSession(): SaveSession {
         return;
       }
       const data = await exportSession(c.store, session.id, c.exportOpts, c.captures);
-      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => { URL.revokeObjectURL(url); }, 1000);
+      downloadText(name, JSON.stringify(data, null, 2), 'application/json');
     } catch (e) { fail(e); }
   };
 

@@ -73,3 +73,7 @@ export function resolvePath(path: string, base: string | null): string {
 export function resolveAgainstApp(path: string | null, app: string | null): string | null {
   return path === null ? null : resolvePath(path, app);
 }
+
+/** es_btm_item_type_t, in words. */
+const ITEM_TYPES = ['User item', 'App', 'Login item', 'Launch agent', 'Launch daemon'];
+export const itemTypeName = (t: number | null): string => (t !== null ? ITEM_TYPES[t] : undefined) ?? 'Unknown';

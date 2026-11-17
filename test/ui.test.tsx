@@ -882,6 +882,9 @@ function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = 
     const toggleVerdict = (id: string, pressed: 'confirmed' | 'benign') =>
       (mocks.setVerdict as (...a: unknown[]) => unknown)(id, toggleStatus(verdicts.get(id)?.status ?? 'unreviewed', pressed), undefined);
     const value = { capture: cap, active: cap.fingerprint, captures: new Map([[cap.fingerprint, cap]]), triage, verdicts,
+      // What the report button on the overview reads.
+      session: { id: 's', name: 'lab', created: 't', updated: 't' }, capRecs: [], allVerdicts: [],
+      exportOpts: { includeEnv: false, redactArgs: false }, setExportOpts: vi.fn(),
       routineKeys, selected, selectedItem, toggleVerdict,
       selectProc: (id: string | null) => { setSelected(id); setSelectedItem(null); },
       selectItem: (key: string) => { setSelected(null); setSelectedItem(key); }, triageFilters,
@@ -2377,4 +2380,73 @@ test('nearby: a picked anchor can be reset to the default event, and the button 
   // Picking the default row itself is no change, so there is nothing to reset.
   await user.click(marks[0]!);
   expect(reset()).not.toBeInTheDocument();
+});
+
+// --- Report for security ------------------------------------------------------------------------------------------
+
+/** Clicks `name` and returns the downloads it started: file name and content, in order. */
+async function downloads(name: string | RegExp, count: number): Promise<{ name: string; text: string }[]> {
+  const clicked: string[] = [];
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
+  const before = vi.mocked(URL.createObjectURL).mock.calls.length;
+  await user.click(screen.getByRole('button', { name }));
+  await waitFor(() => { expect(clicked).toHaveLength(count); });
+  const blobs = vi.mocked(URL.createObjectURL).mock.calls.slice(before).map(c => c[0] as Blob);
+  return Promise.all(clicked.map(async (n, i) => ({ name: n, text: await readBlob(blobs[i]!) })));
+}
+
+test('Report for security downloads a Markdown and a JSON report', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  const got = await downloads('Report for security', 2);
+  expect(got[0]!.name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.md$/);
+  expect(got[1]!.name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.json$/);
+  expect(got[0]!.text.startsWith('# Gameleira report: lab')).toBe(true);
+  expect((JSON.parse(got[1]!.text) as { format: string }).format).toBe('gameleira-report');
+  expect(await screen.findByText(/^Downloaded lab\..*\.gameleira-report\.md and /)).toBeInTheDocument();
+});
+
+test('the overview offers the report with the redaction choice', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  expect(screen.getByRole('button', { name: 'Report flagged processes for security' })).toBeInTheDocument();
+  expect(screen.getByText('Writes a Markdown file to read and a JSON file for security tools, with every flagged row, reviewed or not.')).toBeInTheDocument();
+  expect(screen.getByText(/Your notes are included as written\./)).toBeInTheDocument();
+  expect(screen.getByText(/Command lines can hold secrets such as passwords\./)).toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: 'Redact command-line arguments' }));
+  expect(screen.queryByText(/Command lines can hold secrets such as passwords\./)).not.toBeInTheDocument();
+  expect(screen.getByText('Save session redacts command-line arguments.')).toBeInTheDocument();
+});
+
+test('the overview warns about a capture that is not loaded', async () => {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'other-fp', fileName: 'gone.jsonl', size: 1,
+    events: 5, processes: 2, flagged: 0, added: 't' });
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  expect(screen.getByText("gone.jsonl isn't loaded, so its flagged rows can't be included. Re-add it first, or export without it.")).toBeInTheDocument();
+});
+
+test('header button works when the active capture is not loaded', async () => {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'other-fp', fileName: 'gone.jsonl', size: 1,
+    events: 5, processes: 2, flagged: 0, added: 't' });
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  await user.selectOptions(screen.getByLabelText(/capture/i, { selector: 'select' }), 'other-fp');
+  const got = await downloads('Report for security', 2);
+  const json = JSON.parse(got[1]!.text) as { summary: { capturesNotLoaded: number; rows: number } };
+  expect(json.summary.capturesNotLoaded).toBe(1);
+  expect(json.summary.rows).toBeGreaterThan(0);
+  expect(await screen.findByText(/Left out, not loaded: gone\.jsonl\./)).toBeInTheDocument();
 });
