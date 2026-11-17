@@ -2626,6 +2626,36 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // mount_smbfs and the like take //[DOMAIN;]user:password@host/share, a URL without its scheme.
+  test('user info in a //user:password@host/share authority is redacted, in argv and in shell code', () => {
+    const input = [
+      run(1360, '/sbin/mount_smbfs', ['mount_smbfs', '//ACME;jane:Pa$$w0rd@fs01.acme.corp/Board', '/Volumes/x'], '/', 1),
+      run(1361, '/sbin/mount_smbfs', ['mount_smbfs', '//jane:pw7@fs01/Board', '/Volumes/x'], '/', 2),
+      run(1362, '/sbin/mount_smbfs', ['mount_smbfs', '//jane:Summer2026@fs01.acme.com/Board', '/Volumes/x'], '/', 3),
+      run(1363, '/sbin/mount_smbfs', ['mount_smbfs', '//jane:p#s!s@fs01:445/Board', '/Volumes/x'], '/', 4),
+      run(1364, '/bin/sh', ['sh', '-c', "mount_smbfs '//ACME;jane:Pa$$w0rd@fs01.acme.corp/Board' /Volumes/x"], '/', 5),
+      run(1365, '/bin/sh', ['sh', '-c', 'mount_smbfs //jane:Summer2026@fs01.acme.com/Board /Volumes/x'], '/', 6),
+      // Unquoted, the ; splits the command, but the authority is one string all the same.
+      run(1366, '/bin/sh', ['sh', '-c', 'mount_smbfs //ACME;jane:pw8@fs01/Board /Volumes/x'], '/', 7),
+    ].join('\n') + '\n';
+    for (const r of both(input, ['-D', 'acme.com'])) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const share = '//<redacted>@host\\d+\\.internal\\.invalid(?::445)?/[a-z]+\\d+';
+      for (const i of [0, 1, 2, 3]) expect(args[i]![1], String(i)).toMatch(new RegExp(`^${share}$`));
+      expect(args[3]![1]).toContain(':445/');
+      expect(args[4]![2]).toMatch(new RegExp(`^mount_smbfs '${share}' /Volumes/vol\\d+$`));
+      for (const i of [5, 6]) expect(args[i]![2], String(i)).toMatch(new RegExp(`^mount_smbfs ${share} /Volumes/vol\\d+$`));
+      for (const v of ['jane', 'ACME', 'Pa$$', 'w0rd', 'pw7', 'pw8', 'Summer2026', 'p#s', 'fs01', 'acme']) {
+        expect(r.out, v).not.toContain(v);
+        expect(parseKey(r.key).filter(k => k.kind !== 'host').map(k => k.real).join('\n'), v).not.toContain(v);
+      }
+      expect(keyed(r.key, 'email').size).toBe(0);
+      cleanKey(r.key);
+      expect(r.summary['redacted']).toBe('7');
+      sameFindings(input, r.out);
+    }
+  });
+
   test('the rules\' flags survive', () => {
     const input = [
       run(1400, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w'], '/', 1),

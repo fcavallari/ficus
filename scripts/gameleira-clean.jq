@@ -1680,10 +1680,24 @@ def pre_exec($e):
          envk: $n.keep, s: $n.s}
     end;
 
-# The steps of clean_net_m, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; then
-# net_shapes. Input: the state. Output: {v, s, prot} (prot: see code_urls).
+# A URL's authority without its scheme, as mount_smbfs and the like take it: //[DOMAIN;]user:password@host[:port]/share.
+# The user info runs to the last @ before the host and may hold ; $ # !; it is never part of a path (not after a / or a
+# letter) or of a scheme URL (not after a :).
+def AUTHORITY_RE:
+  "(?<![A-Za-z0-9+.:/\\\\-])//(?<ui>[^/\\s\"'`]+)@(?<h>\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9._-]+)(?<rest>(?::[0-9]+)?(?:/[^\\s\"'`<>|;(){}\\\\]*)?)";
+# Such an authority cleaned: the user info redacted (a credential, counted, never in the key) with its @ kept, the host
+# and the rest read as clean_url reads a URL's. Input: the state. Output: {v, s}.
+def clean_authority($m):
+  ($m.captures | map({key: .name, value: .string}) | from_entries) as $c
+  | (if $c.ui == REDACTED then . else .stats.redacted += 1 end)
+  | clean_url("x://" + $c.h + $c.rest) | .v = "//" + REDACTED + "@" + .v[4:];
+
+# The steps of clean_net_m, in this order: scheme URLs; authorities without a scheme; in shell code ($code), curl and
+# wget's URL arguments; then net_shapes. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
+  | .v as $s0 | .s
+  | (if $s0 | contains("//") and contains("@") then net_sub($s0; AUTHORITY_RE; .m as $m | .s | clean_authority($m)) else {v: $s0, s: .} end)
   | .v as $s1 | .s
   | (if $code and ($s1 | contains("curl") or contains("wget")) then code_urls($s1) else {v: $s1, s: ., prot: []} end)
   | .v as $s2 | .prot as $prot | .s
