@@ -1286,7 +1286,8 @@ def shape_res:
          (if contains("xox") then "(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}" else empty end),
          (if contains("sk-") or contains("sk_") then "(?<![A-Za-z0-9_-])(?:sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,})" else empty end),
          (if contains("eyJ") then "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*" else empty end),
-         (if contains("uthorization") then "(?<p>(?i:authorization)\\s*:\\s*(?:(?i:bearer|basic|token)\\s+)?)[A-Za-z0-9._~+/-]{8,}=*" else empty end),
+         # A header has a colon; its name may be written in any case (AUTHORIZATION:).
+         (if contains(":") and (ascii_downcase | contains("authorization")) then "(?<p>(?i:authorization)\\s*:\\s*(?:(?i:bearer|basic|token)\\s+)?)[A-Za-z0-9._~+/-]{8,}=*" else empty end),
          (if contains("PRIVATE KEY") then
             "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:[\\s\\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|[\\s\\S]*$)" else empty end) ]
   end;

