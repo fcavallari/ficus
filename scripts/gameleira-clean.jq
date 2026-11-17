@@ -416,7 +416,11 @@ def WRAPPER_OPTIONS: {
   "exec": {short: "a", long: {}},
   "nice": {short: "n", long: {"--adjustment": true}},
   "timeout": {short: "sk", long: {"--signal": true, "--kill-after": true}},
-  "xargs": {short: "EIJLnPRSs", long: {}}
+  "xargs": {short: "EIJLnPRSs", long: {}},
+  # caffeinate -t secs -w pid; arch -arch name -e VAR=value -d VAR (-arm64, -x86_64, -i386 are flags); builtin.
+  "caffeinate": {short: "tw", long: {}},
+  "arch": {short: "de", long: {"-arch": true}},
+  "builtin": {short: "", long: {}}
 };
 # True when $o, an option of the wrapper $wrap, takes the next word as its value.
 def wrapper_value_option($wrap; $o):

