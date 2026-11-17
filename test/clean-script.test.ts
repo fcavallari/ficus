@@ -2344,4 +2344,13 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       sameFindings(input, r.out);
     }
   });
+
+  test('user info is the part before the first @ when the authority already has one', () => {
+    const input = run(1260, '/usr/bin/curl', ['curl', '-o', '/dev/null', 'https://bob:pw@evil.example.net/a/b@c.com'], '/', 1) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    expect(events(r.out)[0]!.event.exec.args).toEqual(['curl', '-o', '/dev/null', `https://evil.example.net/${n.get('a')}/${n.get('b@c.com')}`]);
+    expect(r.summary['redacted']).toBe('1');
+  });
 });

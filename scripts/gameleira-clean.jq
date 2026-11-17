@@ -1133,8 +1133,10 @@ def clean_url($u0):
   # last @ before any ? or #, when it starts user:password and the password does not start like a port.
   ([$u0 | capture("^(?<sch>[A-Za-z][A-Za-z0-9+.-]*://)(?<ui>[^/?#@:]+:(?![0-9]*(?:/|$))[^?#]*)@(?<rest>[^@?#]*(?:[?#][\\s\\S]*)?)$")]
    | .[0]) as $odd
-  | (if $odd != null and ($odd.ui | contains("/")) then .stats.redacted += 1 else . end)
-  | (if $odd != null and ($odd.ui | contains("/")) then $odd.sch + $odd.rest else $u0 end) as $u
+  # Not when the authority already holds an @ before its first / (bob:pw@host/a/b@c.com: the user info ends there).
+  | ($odd != null and ($odd.ui | contains("/")) and ($odd.ui | split("/")[0] | contains("@") | not)) as $isodd
+  | (if $isodd then .stats.redacted += 1 else . end)
+  | (if $isodd then $odd.sch + $odd.rest else $u0 end) as $u
   | ($u | capture("^(?<sch>[A-Za-z][A-Za-z0-9+.-]*://)?(?<auth>[^/?#]*)(?<path>/[^?#]*)?(?<q>\\?[^#]*)?(?<f>#[\\s\\S]*)?$")) as $c
   | ($c.auth | capture("^(?<ui>[\\s\\S]*)@(?<hp>[^@]*)$") // {ui: null, hp: .}) as $a
   | ($a.hp | capture("^(?<h>\\[[^\\]]*\\])(?<p>[\\s\\S]*)$") // capture("^(?<h>[^:]*)(?<p>[\\s\\S]*)$")) as $hp
