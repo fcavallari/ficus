@@ -23,9 +23,10 @@ CLEAN_PROGRAM=$HERE/gameleira-clean.jq
 JQ=${GAMELEIRA_CLEAN_JQ:-/usr/bin/jq}
 KINDS="user realname name volume host email seed data"
 KEY_HEADER=$'kind\tplaceholder\treal'
-# The recorder, with the event list from the README's Capturing section, and how it is stopped (it runs as root).
-RECORDER=(sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove)
-SUDO_CMD=sudo    # plain sudo, which asks for the password again if the ticket ran out
+# The recorder, with the event list from the README's Capturing section. It runs as root under STOP_WRAPPER, through
+# SUDO_CMD (empty: as you, for the tests).
+RECORDER=(eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove)
+SUDO_CMD=sudo
 ES_PID=
 CLEANER_PID=
 RAW_DIR=
@@ -256,23 +257,53 @@ warn_if_other_mac() {
 }
 
 # ---- recording ----------------------------------------------------------------------------------------------
+# How the recorder is stopped without a second sudo: one `sudo -n /bin/sh -c "$STOP_WRAPPER" sh CTL RECORDER...` runs
+# this as root. It opens the stop channel CTL (a FIFO this script holds open, so the open does not block), starts a
+# watcher, and becomes the recorder (exec, so the recorder's pid is $$). The watcher waits for a line or end-of-file on
+# CTL: a line when this script stops the recording, end-of-file when this script is gone however it ended (its end of
+# the FIFO closes with it). Then it sends SIGINT, so eslogger flushes, then SIGTERM, then SIGKILL, 5 s apart, so a root
+# eslogger is never left recording. SIGHUP is ignored, by eslogger too: a closed terminal stops the recording through
+# this script or the channel, not by killing eslogger mid-write. The watcher's sleeps run only while it stops.
+STOP_WRAPPER='ctl=$1; shift
+exec 3< "$ctl" || exit 1
+trap "" HUP
+me=$$
+(
+  read -r line <&3
+  for sig in INT TERM KILL; do
+    kill -s "$sig" "$me" 2>/dev/null || exit 0
+    i=0
+    while [ "$i" -lt 10 ]; do kill -0 "$me" 2>/dev/null || exit 0; /bin/sleep 0.5; i=$((i + 1)); done
+  done
+) </dev/null >/dev/null 2>&1 &
+exec 3<&-
+exec "$@"'
+
 # start_recording CONFIG KEYFILE STATSFILE OUT: the recorder writes into a pipe (a FIFO in a private folder, so the raw
 # stream is never on disk) and the cleaner reads it into OUT (- for standard output). ES_PID is the recorder (the sudo
-# running eslogger), CLEANER_PID the cleaner. jq and awk start with SIGINT and SIGHUP ignored (ignored signals survive
-# exec): a terminal's Ctrl-C reaches the whole foreground group, and they must read to the end of the pipe once the
-# recorder has stopped, so the last events are written rather than lost.
+# running STOP_WRAPPER), CLEANER_PID the cleaner, and fd 4 this script's end of the stop channel, which no child keeps.
+# jq and awk start with SIGINT and SIGHUP ignored (ignored signals survive exec): a terminal's Ctrl-C reaches the whole
+# foreground group, and they must read to the end of the pipe once the recorder has stopped, so the last events are
+# written rather than lost.
 start_recording() {
-  local fifo
+  local fifo ctl
   RAW_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/gameleira-clean.XXXXXX") || die "cannot make a temporary folder"
   fifo=$RAW_DIR/raw
-  mkfifo -m 600 "$fifo" || die "cannot make a pipe in $RAW_DIR"
+  ctl=$RAW_DIR/stop
+  mkfifo -m 600 "$fifo" "$ctl" || die "cannot make a pipe in $RAW_DIR"
+  # Read and write: a FIFO opened only for writing would wait for the reader, sudo, which may never come.
+  exec 4<>"$ctl" || die "cannot open $ctl"
   if [ "$4" = - ]; then
-    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" ) &
+    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" ) 4>&- &
   else
-    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" > "$4" ) &
+    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" > "$4" ) 4>&- &
   fi
   CLEANER_PID=$!
-  "${RECORDER[@]}" > "$fifo" &
+  if [ -n "$SUDO_CMD" ]; then
+    "$SUDO_CMD" -n /bin/sh -c "$STOP_WRAPPER" sh "$ctl" "${RECORDER[@]}" > "$fifo" 4>&- &
+  else
+    /bin/sh -c "$STOP_WRAPPER" sh "$ctl" "${RECORDER[@]}" > "$fifo" 4>&- &
+  fi
   ES_PID=$!
 }
 
@@ -281,7 +312,8 @@ start_recording() {
 #   every program this script runs, and ps is a recon tool the rules flag. A timer child signals USR1 when time is up;
 #   on TERM it kills its own sleep, so none is left behind: `stop` covers a TERM that comes before `s` is set (a trap
 #   runs between commands), one before the trap is set ends the timer before its sleep starts, and SIGKILL reaches a
-#   sleep that has not yet exec'd (a forked bash, which would take a TERM as its own trap's and then lose it).
+#   sleep that has not yet exec'd (a forked bash, which would take a TERM as its own trap's and then lose it). The
+#   timer does not keep the stop channel (fd 4) open.
 SIGNALS=0
 wait_for() {
   local timer= before=$SIGNALS result=0
@@ -293,7 +325,7 @@ wait_for() {
       sleep "$2" & s=$!
       [ -z "$stop" ] || kill -KILL "$s" 2>/dev/null
       [ -n "$stop" ] || wait "$s" 2>/dev/null
-      [ -n "$stop" ] || kill -USR1 $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+      [ -n "$stop" ] || kill -USR1 $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 4>&- &
     timer=$!
   fi
   [ -n "$TIMED_OUT" ] || [ "$SIGNALS" != "$before" ] || wait "$1" 2>/dev/null
@@ -302,21 +334,16 @@ wait_for() {
   return "$result"
 }
 
-# stop_capture: stop the recorder (ES_PID is the sudo running eslogger): SIGINT so eslogger flushes, then SIGTERM, to
-#   the recorder only, as gameleira-lab.sh does; the cleaner ends when the pipe closes. Waits 5 s for each (another
-#   Ctrl-C skips to SIGTERM); never blocks for good.
+# stop_capture: asks the recorder to stop (a line on the stop channel) and waits for it: STOP_WRAPPER sends SIGINT, so
+#   eslogger flushes, then SIGTERM and SIGKILL, 5 s apart. No sudo, so no password prompt. More Ctrl-C (or TERM, HUP)
+#   is ignored from here on: the stop is under way, and is bounded.
 stop_capture() {
   [ -n "$ES_PID" ] || return 0
-  local sig
-  for sig in INT TERM; do
-    $SUDO_CMD kill "-$sig" "$ES_PID" 2>/dev/null
-    if wait_for "$ES_PID" 5; then
-      ES_PID=''
-      return 0
-    fi
-  done
-  printf 'gameleira-clean: eslogger is still recording. Stop it with: sudo kill %s\n' "$ES_PID" >&2
-  return 1
+  trap '' INT TERM HUP
+  printf 'stop\n' >&4 2>/dev/null
+  wait "$ES_PID" 2>/dev/null
+  ES_PID=''
+  exec 4>&-
 }
 
 # record_until_stopped SECONDS: waits for Ctrl-C (or TERM, HUP), SECONDS (empty: no limit) or the recorder ending by
@@ -326,9 +353,9 @@ record_until_stopped() {
   if [ -z "$STOP" ] && wait_for "$ES_PID" "$1"; then
     by_itself=1
     ES_PID=''
-  elif ! stop_capture; then
-    ES_PID=''
-    die "the capture may still be growing"
+    exec 4>&-   # the watcher, still waiting, reads end-of-file and finds nothing to stop
+  else
+    stop_capture
   fi
   # A trapped signal ends `wait` early: wait until the cleaner is really gone (kill -0 is a builtin, it runs nothing).
   while kill -0 "$CLEANER_PID" 2>/dev/null; do wait "$CLEANER_PID"; done

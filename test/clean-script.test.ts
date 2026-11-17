@@ -3076,6 +3076,79 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(inGroup(pgid)).toBe(0);
   }, 30000);
 
+  /** `record -o OUT` with a stand-in recorder, in a process group of its own; resolves its status and stderr on close. */
+  const startRecord = (dir: string, out: string, recorderCmd: string): { pid: number; closed: Promise<{ status: number | null; stderr: string }> } => {
+    const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out], {
+      cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorderCmd },
+    });
+    groups.push(child.pid!);
+    let stderr = '';
+    child.stderr!.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+    return { pid: child.pid!, closed: new Promise(res => child.on('close', status => res({ status, stderr }))) };
+  };
+  const linesIn = async (out: string, n: number): Promise<void> => {
+    for (let i = 0; i < 100 && !(fs.existsSync(out) && lines(fs.readFileSync(out, 'utf8')).length >= n); i++) await sleep(100);
+  };
+
+  // A shell cannot catch a signal it was started with ignored (a `&` job starts with SIGINT ignored), but perl can: a
+  // stand-in for an eslogger that honours SIGINT whatever it inherited.
+  test.runIf(fs.existsSync('/usr/bin/perl'))('stopping a recorder that honours SIGINT takes well under 5 s', async () => {
+    const dir = tmpDir();
+    const perl = `$SIG{INT} = sub { exit 0 }; $| = 1; while (1) { open(my $f, '<', '${lineFile(dir)}') or die; print while <$f>; close $f; select(undef, undef, undef, 0.05) }`;
+    const res = await detached(['-c', [
+      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `SUDO_CMD=''`,
+      `RECORDER=(/usr/bin/perl -e "${perl.replace(/\$/g, '\\$')}")`,
+      'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
+      `write_config "${dir}/cfg"`,
+      `printf '%s\\n' "$KEY_HEADER" > "${dir}/key"`,
+      `start_recording "${dir}/cfg" "${dir}/key" "${dir}/stats" "${dir}/out"`,
+      'sleep 1',
+      't0=$(/usr/bin/perl -MTime::HiRes=time -e "print time")',
+      'stop_capture',
+      '/usr/bin/perl -MTime::HiRes=time -e "printf qq(%.2f\\n), time - $t0"',
+      'wait "$CLEANER_PID"',
+      'cleanup',
+    ].join('\n')]);
+    const took = Number(res.stdout.trim().split('\n').at(-1));
+    expect(took, res.stderr).toBeLessThan(3);
+    for (let i = 0; i < 20 && inGroup(res.pid) > 0; i++) await sleep(100);
+    expect(inGroup(res.pid)).toBe(0);
+    complete(fs.readFileSync(path.join(dir, 'out'), 'utf8'), fs.readFileSync(path.join(dir, 'key'), 'utf8'));
+  }, 25000);
+
+  // The stop channel: when the script dies, however it dies, the recorder is stopped (as root, with no second sudo).
+  test.runIf(darwin)('killing the script stops the recorder', async () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const run = startRecord(dir, out, recorder(lineFile(dir)));
+    await linesIn(out, 3);
+    process.kill(run.pid, 'SIGKILL');
+    await run.closed;
+    // The stand-in ignores SIGINT: it ends on the SIGTERM 5 s later.
+    for (let i = 0; i < 120 && inGroup(run.pid) > 0; i++) await sleep(100);
+    expect(inGroup(run.pid)).toBe(0);
+    for (const l of lines(fs.readFileSync(out, 'utf8'))) expect(() => JSON.parse(l)).not.toThrow();
+  }, 30000);
+
+  // Once the stop is under way, more Ctrl-C changes nothing: the recorder still gets SIGINT, SIGTERM and at last SIGKILL,
+  // and the cleaner is waited for. The stand-in ignores SIGINT and SIGTERM.
+  test.runIf(darwin)('more Ctrl-C during the stop still ends with every event and the summary', async () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const run = startRecord(dir, out, `trap '' INT TERM; while :; do cat '${lineFile(dir)}'; /bin/sleep 0.05; done`);
+    await linesIn(out, 3);
+    for (const wait of [0, 700, 6000]) { await sleep(wait); process.kill(-run.pid, 'SIGINT'); }
+    const { status, stderr } = await run.closed;
+    expect(status, stderr).toBe(0);
+    const text = fs.readFileSync(out, 'utf8');
+    expect(stderr).toMatch(new RegExp(`^events out: ${lines(text).length}$`, 'm'));
+    for (const l of lines(text)) expect(() => JSON.parse(l)).not.toThrow();
+    for (let i = 0; i < 20 && inGroup(run.pid) > 0; i++) await sleep(100);
+    expect(inGroup(run.pid)).toBe(0);
+  }, 40000);
+
   // eslogger records every program the script runs, so waiting must not poll: `ps` is a recon tool the rules flag.
   test.runIf(darwin)('record -t stops by itself and prints the summary, without polling', () => {
     const dir = tmpDir();
@@ -3090,8 +3163,8 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(Date.now() - t0).toBeLessThan(15000);
     const runs = fs.existsSync(log) ? lines(fs.readFileSync(log, 'utf8')) : [];
     expect(runs.filter(x => x === 'ps')).toHaveLength(0);
-    // One timer for -t, one for each signal stop_capture sends (the stand-in ignores SIGINT).
-    expect(runs.filter(x => x === 'sleep').length).toBeLessThanOrEqual(3);
+    // The script's one timer, for -t. (The root side's sleeps, while it stops eslogger, are /bin/sleep.)
+    expect(runs.filter(x => x === 'sleep').length).toBeLessThanOrEqual(1);
     expect(lines(r.out).length).toBeGreaterThan(0);
     expect(r.summary['events out']).toBe(String(lines(r.out).length));
     expect(r.summary['events the cleaner could not clean']).toBe('0');
