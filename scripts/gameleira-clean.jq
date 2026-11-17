@@ -389,8 +389,8 @@ def clean_query($q):
   reduce ($q | split("&"))[] as $kv ({s: ., out: []};
     ($kv | index("=")) as $i
     | (if $i == null then {k: "", v: $kv} else {k: $kv[:$i + 1], v: $kv[$i + 1:]} end) as $c
-    # A redacted credential shape stays; so does a data placeholder an encoded run already became.
-    | if $c.v == "" or ($c.v | contains("\u0002")) or ($c.v | test("^data[0-9]+$")) then .out += [$kv]
+    # A redacted credential shape stays.
+    | if $c.v == "" or ($c.v | contains("\u0002")) then .out += [$kv]
       else (.s | placeholder("data"; $c.v)) as $r | .s = $r.state | .out += [$c.k + $r.ph] end)
   | {v: (.out | join("&")), s: .s};
 
@@ -1270,8 +1270,8 @@ def REDACTED: "\u0002";
 def unmark: if contains("\u0002") then split("\u0002") | join("<redacted>") else . end;
 
 # Credential shapes, recognised anywhere: AWS access keys, GitHub tokens, Slack tokens, sk- API keys, JWTs, PEM
-# private key blocks, and the token after Bearer (an Authorization header outside curl's -H: git -c
-# http.extraHeader=…). One regex of the kinds a cheap test finds (each regex is compiled on every call); no shape is
+# private key blocks, and the token of an Authorization header outside curl's -H (git -c http.extraHeader=…), whose
+# name and scheme stay (the part a regex captures as p). One regex of the kinds a cheap test finds (each regex is compiled on every call); no shape is
 # shorter than 15 characters. Input: the string.
 def shape_res:
   if length < 15 then []
@@ -1281,7 +1281,7 @@ def shape_res:
          (if contains("xox") then "(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}" else empty end),
          (if contains("sk-") or contains("sk_") then "(?<![A-Za-z0-9_-])(?:sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,})" else empty end),
          (if contains("eyJ") then "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*" else empty end),
-         (if contains("earer") then "(?<=[Bb]earer\\s)[A-Za-z0-9._~+/-]{8,}=*" else empty end),
+         (if contains("uthorization") then "(?<p>(?i:authorization)\\s*:\\s*(?:(?i:bearer|basic|token)\\s+)?)[A-Za-z0-9._~+/-]{8,}=*" else empty end),
          (if contains("PRIVATE KEY") then
             "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:[\\s\\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|[\\s\\S]*$)" else empty end) ]
   end;
@@ -1291,7 +1291,7 @@ def redact_shapes($str):
   ($str | shape_res | join("|")) as $re
   | if $re == "" then {v: $str, s: .}
     else ([$str | match($re; "g")] | length) as $k
-      | if $k == 0 then {v: $str, s: .} else {v: ($str | gsub($re; "\u0002")), s: (.stats.redacted += $k)} end
+      | if $k == 0 then {v: $str, s: .} else {v: ($str | gsub($re; "\(.p // "")\u0002")), s: (.stats.redacted += $k)} end
     end;
 
 # A run of 32 or more base64, base64url or hex characters (a payload, a key) that is not part of a path, a file name,
@@ -1330,10 +1330,6 @@ def pre_test($str; $ent):
              else (if .nfn >= 8192 then .nf = {} | .nfn = 0 else . end)
                | (if .nf[$str] == null then .nfn += 1 else . end) | .nf[$str] = (if $ent then 2 else 1 end) end)}
     end;
-# The shapes and runs pre_test found, replaced. Input: the state. Output: {v, s}.
-def secret_steps($str; $t):
-  (if $t.sh then redact_shapes($str) else {v: $str, s: .} end)
-  | if $t.en then .v as $v | .s | map_entropy($v) else . end;
 
 # Names that look secret, in NAME=value arguments, assignments, environment entries and headers.
 def SECRET_NAME: "(?i)password|passwd|token|secret|api_?key|auth|credential";
@@ -1350,7 +1346,7 @@ def secret_assignment: test("^[A-Za-z_][A-Za-z0-9_]*=.") and (.[:index("=")] | t
 # alone asks for it) and NAME=value with a secret-looking name.
 def generic_edits($a; $from; $nonext):
   if ([$a[$from:][] | strings] | join(" ") | test(SECRET_WORDS) | not) then []
-  else [ range($from; $a | length) as $i | $a[$i] as $x | select($x | type == "string")
+  else [ range($from; $a | length) as $i | $a[$i] as $x | select($x | type == "string" and (contains("\u0002") | not))
          | if ($x | startswith("--")) then
              ($x | index("=")) as $q
              | if $q != null then (if $q < ($x | length) - 1 and ($x[:$q] | test(SECRET_LONG; "i")) then {i: $i, v: ($x[:$q + 1] + REDACTED)} else empty end)
@@ -1420,18 +1416,28 @@ def curl_edits($a):
         | if $h != null and ($h.n | test(SECRET_HEADER)) then {i: $c.i, v: ($c.pre + $h.n + REDACTED)} else empty end
       else empty end ];
 
-# Other programs' password options: a value after the option (next) or attached to it (attached: -pSECRET).
+# Other programs' password options: a value after the option (next) or attached to it (attached: -pSECRET). sshpass
+# runs a command after its own options (until: the options that take a value): that command's -p is its own (ssh -p
+# 2222), and it is read as a command too (command_secrets).
 def MYSQL_FAMILY: {"mysql": true, "mysqldump": true, "mysqladmin": true, "mysqlimport": true, "mysqlshow": true, "mysqlcheck": true,
                    "mysqlpump": true, "mysqlsh": true, "mariadb": true, "mariadb-dump": true, "mariadb-admin": true};
 def SECRET_OPTIONS($prog):
   if MYSQL_FAMILY[$prog] or $prog == "7z" or $prog == "7za" or $prog == "7zz" then {attached: "-p", next: {}}
-  elif $prog == "sshpass" then {attached: "-p", next: {"-p": true}}
+  elif $prog == "sshpass" then {attached: "-p", next: {"-p": true}, until: {"-p": true, "-f": true, "-d": true, "-P": true}}
   elif $prog == "zip" or $prog == "unzip" then {attached: "-P", next: {"-P": true}}
   elif $prog == "openssl" then {attached: null, next: {"-pass": true, "-passin": true, "-passout": true, "-k": true}}
   else null end;
+# The index of the command a program like sshpass runs: the first word after its options and their values.
+def wrapped_at($a; $values):
+  first(foreach range(1; $a | length) as $i ({skip: false, at: null};
+          if .skip then .skip = false
+          elif ($a[$i] | type) != "string" or ($a[$i] | startswith("-") | not) then .at = $i
+          else .skip = ($values[$a[$i]] == true) end;
+          .at | select(. != null))) // null;
 def option_edits($a; $spec):
-  [ range(1; $a | length) as $j | $a[$j] as $x | select($x | type == "string")
-    | if $spec.next[$x] and $j + 1 < ($a | length) then {i: ($j + 1), v: REDACTED}
+  (if $spec.until == null then ($a | length) else wrapped_at($a; $spec.until) // ($a | length) end) as $end
+  | [ range(1; $end) as $j | $a[$j] as $x | select($x | type == "string")
+    | if $spec.next[$x] and $j + 1 < $end then {i: ($j + 1), v: REDACTED}
       elif $spec.attached != null and ($x | startswith($spec.attached)) and ($x | length) > 2 then {i: $j, v: ($spec.attached + REDACTED)}
       else empty end ];
 
@@ -1493,7 +1499,11 @@ def command_secrets($w):
       | if $ed == [] then {v: $x, s: .} else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $d ($x; .[$d.i] = $d.v)), s: .} end
     else
       (($w[$k] // "") | split("/") | last // "") as $prog
-      | redact_args($w[$k:]; $prog) as $r
+      | redact_args($w[$k:]; $prog) as $r0
+      # The command sshpass runs.
+      | (SECRET_OPTIONS($prog).until // null) as $u
+      | ($r0 | if $u == null then . else wrapped_at($r0.v; $u) as $c
+           | if $c == null then . else .v as $v | .s | command_secrets($v[$c:]) | .v = $v[:$c] + .v end end) as $r
       | ($r.s | map_data($r.v; $prog)) as $d
       | (if $k == 0 then {v: [], s: $d.s}
          else ($w[:$k]) as $pre | $d.s | generic_edits($pre; 0; false) as $ed
@@ -1575,13 +1585,14 @@ def code_secrets($str0):
 
 # The environment (exec.env), in place: names kept; a value redacted, except those of the useful variables (PATH,
 # SHELL, TMPDIR, HOME, PWD, OLDPWD, LANG, LC_*, TERM*, __CF*, DYLD_*: injection evidence), which are cleaned like any
-# other value; a secret-looking name (SECRET_NAME) always redacted. An entry without = is redacted whole; an empty
-# value stays empty. Only secret-looking names count as redacted credentials; the other values are redacted by policy.
-# Names come back in every exec, so each name's class is remembered (state.envk: "k" keep, "r" redact, "s" secret; at
+# other value; a secret-looking name (SECRET_NAME) always redacted. An entry without =, or whose name is not a
+# variable's (/Users/jdoe/Board minutes=1), is redacted whole; an empty value stays empty. Only secret-looking names count as redacted credentials; the other values are redacted by policy.
+# Names come back in every exec, so each name's class is remembered (state.envk: "k" keep, "r" redact, "s" secret, "x" not a name; at
 # most 4096). Input: the state. Output: {v: the environment, keep: [true at the indices still to clean], s}.
 def SAFE_ENV: {"PATH": true, "SHELL": true, "TMPDIR": true, "HOME": true, "PWD": true, "OLDPWD": true, "LANG": true};
 def env_class:
-  if test(SECRET_NAME) then "s"
+  if test("^[A-Za-z_][A-Za-z0-9_]*$") | not then "x"
+  elif test(SECRET_NAME) then "s"
   elif SAFE_ENV[.] or startswith("LC_") or startswith("TERM") or startswith("__CF") or startswith("DYLD_") then "k"
   else "r" end;
 def clean_env($env):
@@ -1590,11 +1601,12 @@ def clean_env($env):
     | if ($x | type) != "string" then .
       else ($x | index("=")) as $q
         | if $q == null then .v[$i] = "<redacted>"
-          elif $q == ($x | length) - 1 then .
           else $x[:$q] as $n
             | (.s.envk[$n] // ($n | env_class)) as $c
             | (if .s.envk[$n] == null then .s |= ((if .envkn >= 4096 then .envk = {} | .envkn = 0 else . end) | .envk[$n] = $c | .envkn += 1) else . end)
-            | if $c == "k" then .keep[$i] = true
+            | if $c == "x" then .v[$i] = "<redacted>"
+              elif $q == ($x | length) - 1 then .
+              elif $c == "k" then .keep[$i] = true
               else .v[$i] = $n + "=<redacted>" | if $c == "s" then .s.stats.redacted += 1 else . end end
           end
       end)
@@ -1682,7 +1694,7 @@ def clean_event($state):
             else $v[$k.dir].path as $dir | $v[$k.name] as $name
               | if ($dir | startswith("/")) and $name != "" then
                   (.s | pre_test($name; false)) as $t
-                  | ($t.s | secret_steps($name; $t)) as $x
+                  | ($t.s | if $t.sh then redact_shapes($name) else {v: $name, s: .} end) as $x
                   | ($x.s | clean_net_m($x.v; false; ""; $t.m)) as $nn
                   | (.s = $nn.s | .s.netp = (if $t.m then .s | net_flags($x.v) else false end) | .s | clean_relative($dir; $nn.v)) as $r
                   | .s = ($r.s | .netp = false) | .e |= setpath($p + [$k.name]; $r.s | replace_seeds($r.v) | unmark)
@@ -1709,7 +1721,7 @@ def clean_event($state):
           # URL or host word, whose runs are names: pre_test's $ent).
           | (if $code then .s | code_secrets($v) else {v: $v, s: .s} end) as $c
           | ($c.s | pre_test($c.v; $np == null and (path_field($p) | not))) as $t
-          | ($t.s | secret_steps($c.v; $t)) as $x
+          | ($t.s | if $t.sh then redact_shapes($c.v) else {v: $c.v, s: .} end) as $x
           | .s = $x.s | $x.v as $v1
           | if $np != null then
               (.s | clean_net_word($np; $v1)) as $r
@@ -1722,7 +1734,10 @@ def clean_event($state):
             # Path fields too: the host step works the same in a path field and in an argument (ph_name).
             (.s | clean_net_m($v1; $code; if ($arg | not) or $code then "" elif SSH_FAMILY[$prog] == true then "all"
                                               elif $prog == "git" then "colon" else "" end; $t.m)) as $n
-            | .s = (if $t.m then $n.s | .netp = net_flags($v1) else $n.s end) | $n.v as $u | $n.prot as $prot
+            | .s = (if $t.m then $n.s | .netp = net_flags($v1) else $n.s end)
+            # Encoded runs after the host step, so a URL's query value is keyed once, whole, as in a curl argument.
+            | (if $t.en then .s | map_entropy($n.v) else {v: $n.v, s: .s} end) as $en
+            | .s = $en.s | $en.v as $u | $n.prot as $prot
             # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
             | if $relc and $arg and ($kc | not)
                  and (if $p[3] == 0 then ($u | index("/")) != null
