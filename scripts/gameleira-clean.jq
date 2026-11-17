@@ -1470,7 +1470,7 @@ def map_data($a; $prog):
 def command_at($w; $from):
   reduce range($from; $w | length) as $i ({at: null, wrap: null, skipv: false, dur: false};
     if .at != null then .
-    else ($w[$i] // "") as $x | ($x | split("/") | last) as $b
+    else ($w[$i] // "") as $x | ($x | split("/") | last // "") as $b
       | if .skipv then .skipv = false
         elif ($x | test("^[A-Za-z_][A-Za-z0-9_]*=")) then .
         elif WRAPPER_OPTIONS[$b] != null then .wrap = $b | .dur = ($b == "timeout")
@@ -1484,12 +1484,12 @@ def command_at($w; $from):
 # keyed, behind wrappers too (sudo -u root curl -u bob:pw …: the wrapper's own option values are not the command's).
 # Input: the state. Output: {v, s}.
 def command_secrets($w):
-  (($w[0] // "") | split("/") | last) as $p0
+  (($w[0] // "") | split("/") | last // "") as $p0
   | (if WRAPPER_OPTIONS[$p0] != null or ($p0 | test("^[A-Za-z_][A-Za-z0-9_]*=")) then command_at($w; 0) else 0 end) as $k
   | if $k == null then {v: $w, s: .} | .v as $x | .s | generic_edits($x; 0; false) as $ed
       | if $ed == [] then {v: $x, s: .} else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $d ($x; .[$d.i] = $d.v)), s: .} end
     else
-      ($w[$k] | split("/") | last) as $prog
+      (($w[$k] // "") | split("/") | last // "") as $prog
       | redact_args($w[$k:]; $prog) as $r
       | ($r.s | map_data($r.v; $prog)) as $d
       | (if $k == 0 then {v: [], s: $d.s}
@@ -1506,9 +1506,9 @@ def command_secrets($w):
 def argv_secrets($args):
   if ($args | length) < 2 then {v: $args, s: .}
   else command_secrets([$args[] | if type == "string" then . else null end]) as $r
-    | ($args[0] | if type == "string" then split("/") | last else "" end) as $prog
+    | ($args[0] | if type == "string" then split("/") | last // "" else "" end) as $prog
     | [range(1; $args | length) as $i
-       | select($r.v[$i] != $args[$i] and ($args[$i] | test("\\s")))
+       | select(($args[$i] | type) == "string" and $r.v[$i] != $args[$i] and ($args[$i] | test("\\s")))
        | select(code_arg($prog; $args; $i; shell_text($args; $i; if $prog == "ssh" then ssh_command_index($args) else null end)))
        | $i] as $code
     | {v: [range(0; $args | length) as $i
@@ -1659,7 +1659,7 @@ def clean_event($state):
   | $pre.e as $e | $pre.envk as $envk
   | (try $e.event.exec.args catch null) as $args
   | (($cwd | type) == "string" and ($args | type) == "array" and ($cwd | in_cleaned_place)) as $relc
-  | (if ($args | type) == "array" then ($args[0] | if type == "string" then split("/") | last else "" end) else "" end) as $prog
+  | (if ($args | type) == "array" then ($args[0] | if type == "string" then split("/") | last // "" else "" end) else "" end) as $prog
   | (if $prog == "ssh" then ssh_command_index($args) else null end) as $cmd
   | (if $prog == "ssh" then ssh_host_index($args) else null end) as $sshhost
   | reduce $ps[] as $p ({e: $e, s: $pre.s};
