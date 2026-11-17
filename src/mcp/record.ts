@@ -20,8 +20,9 @@ const MAX_SECONDS = 1800;
 
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 
-// Characters that would end the double quotes the paths are wrapped in, or expand inside them.
-const UNSAFE_IN_QUOTES = /["$`\\\n\r\0]/;
+// Characters that would end the double quotes the paths are wrapped in, or expand inside them (! is history
+// expansion in an interactive shell).
+const UNSAFE_IN_QUOTES = /["$`\\!\n\r\0]/;
 
 function checkedSeconds(seconds: number | undefined): number {
   const s = seconds ?? DEFAULT_SECONDS;
@@ -84,7 +85,10 @@ export function recordCommand(
 ): RecordCommand {
   const seconds = checkedSeconds(opts.seconds);
   const domains = checkedDomains(opts.domains);
-  for (const dir of [p.bin, p.captures]) {
+  // The cleaner writes its key under $HOME unless told otherwise, while the guard looks in p.keys. When those differ
+  // (FICUS_HOME), the command says where. Not -k: that would skip the cleaner's check that no key exists yet.
+  const keyDirDiffers = p.keys !== p.defaultKeys;
+  for (const dir of keyDirDiffers ? [p.bin, p.captures, p.keys] : [p.bin, p.captures]) {
     if (UNSAFE_IN_QUOTES.test(dir)) {
       throw new RangeError(`the Ficus folder path ${JSON.stringify(dir)} has a character that cannot be put safely in a Terminal command.`);
     }
@@ -95,17 +99,20 @@ export function recordCommand(
 
   const capture = captureName(now);
   const command = [
+    ...(keyDirDiffers ? [`FICUS_CLEAN_KEY_DIR="${p.keys}"`] : []),
     `"${path.join(p.bin, 'ficus-clean.sh')}" record -o "${path.join(p.captures, capture)}" -t ${seconds}`,
     ...domains.map((d) => `-D ${d}`),
   ].join(' ');
 
   const instructions = [
+    'This needs macOS 15 or later: the cleaner uses the jq that ships with it.',
     'Open Terminal (Applications > Utilities > Terminal, or press Command-Space and type Terminal).',
     'Paste the command and press Return.',
     'When Terminal asks for a password, type your Mac password. The Mac asks for it (for sudo), not the agent, and nothing shows as you type.',
     'If it stops at once saying eslogger stopped before recording anything, give Terminal Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then run the command again.',
     `Keep using the Mac normally until it stops by itself after ${duration(seconds)}.`,
     'Tell the agent when Terminal shows the summary.',
+    'If the recording is stopped early or fails, ask for a new command: the same command will refuse to run again, because the key already exists for that capture name.',
   ];
   return { command, capture, instructions };
 }

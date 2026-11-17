@@ -62,7 +62,11 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
         domains: z
           .array(z.string())
           .optional()
-          .describe('Optional domain names to look for in the capture, such as example.com.'),
+          .describe(
+            "Optional. The person's own company domains, such as example.com: the cleaner replaces every host under them " +
+              'with a placeholder (host1.internal.invalid) so they are hidden from the report. Leave this empty unless the ' +
+              "person names their company's domain. Never pass a domain you want to find in the capture: it would be hidden.",
+          ),
       },
     },
     ({ seconds, domains }) => run(() => recordCommand(paths, scriptsDir, { seconds, domains }, now())),

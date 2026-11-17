@@ -8,6 +8,8 @@ export interface FicusPaths {
   home: string;
   captures: string;
   keys: string;
+  /** Where the cleaner puts its keys when it is told nothing: under the user's home, whatever FICUS_HOME says. */
+  defaultKeys: string;
   bin: string;
   exportRoot: string;
 }
@@ -19,6 +21,7 @@ export function ficusPaths(env: NodeJS.ProcessEnv = process.env): FicusPaths {
     home,
     captures: path.join(home, 'captures'),
     keys: path.join(home, 'keys'),
+    defaultKeys: path.join(user, 'Library', 'Application Support', 'Ficus', 'keys'),
     bin: path.join(home, 'bin'),
     exportRoot: env.FICUS_EXPORT_DIR || path.join(user, 'Desktop'),
   };

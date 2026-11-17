@@ -86,6 +86,14 @@ test('ficus_record_command says it never runs anything', async () => {
   expect((await tool('ficus_record_command')).description).toMatch(/never runs/i);
 });
 
+test('ficus_record_command describes domains as the own-company domains that get hidden, never ones to find', async () => {
+  const d: string = (await tool('ficus_record_command')).inputSchema.properties.domains.description;
+  expect(d).toMatch(/replaced|placeholder/i);
+  expect(d).toMatch(/company/i);
+  expect(d).toMatch(/never pass a domain you want to find/i);
+  expect(d).not.toMatch(/look for/i);
+});
+
 test('ficus_analyze exposes capture and offset only, and says the evidence is redacted', async () => {
   const t = await tool('ficus_analyze');
   expect(Object.keys(t.inputSchema.properties).sort()).toEqual(['capture', 'offset']);
