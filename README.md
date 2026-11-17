@@ -48,6 +48,46 @@ sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add
 - `write` is left out on purpose because it is very noisy; the tool still handles it if it is present.
 - Needs `eslogger` schema version 11 for the checks that read a process's stdin, such as `shell-from-pipe`. Older captures load, and the header says which checks may not apply.
 
+### Cleaning a capture before it leaves the Mac
+
+A raw capture holds the account's names, file and folder names, hosts, command lines, environment variables and sometimes secrets. If the Mac belongs to someone else, such as an executive, the capture should not leave it as it is. `scripts/gameleira-clean.sh` replaces the identifying values with placeholders and keeps what the rules and the investigator need. It needs only what macOS has (bash and `/usr/bin/jq`). The findings stay the same: a test runs the rule engine on a capture and on its cleaned copy and compares them.
+
+Two commands. `record` runs `sudo eslogger` and cleans the stream as it comes, so the raw capture is never written to disk. `clean` cleans a capture you already have.
+
+```bash
+scripts/gameleira-clean.sh record -o capture.cleaned.jsonl -t 600 -D example.com
+scripts/gameleira-clean.sh clean -i capture.jsonl -o capture.cleaned.jsonl -D example.com
+```
+
+- `-o FILE` is the cleaned capture (`-` for standard output; the default is `capture.cleaned.jsonl` in the current folder).
+- `-D DOMAIN` is the company's own domain. Hosts under it are treated as internal. Repeat it for more domains.
+- `-S SEEDFILE` lists more values to clean, one per line: a kind, a tab, then the value. The kinds are `user`, `realname`, `name`, `volume`, `host`, `email`, `seed` and `data`.
+- `-k KEYFILE` names an existing key. It is loaded first and added to, so several captures of one Mac share placeholders (`user1` is the same person in each).
+- `-t SECONDS` (`record` only) stops the recording after that long. Ctrl-C stops it too.
+
+`clean -i` reads a JSONL capture, a pretty-printed export or a JSON array, and always writes JSONL. `-i -` reads standard input. It never changes or deletes the raw file. Delete that yourself when you are happy with the result.
+
+**What is replaced.**
+
+- Account short names (`user1`), full names (`Person 1`), and the names of files, folders and volumes under home folders, `/Users/Shared`, `/Volumes` and the temporary folders (`name1`, `vol1`; a leading dot and a short extension stay). The path segments of a URL are cleaned the same way, and user info in a URL is removed. The same name gets the same placeholder in every path, argument and text.
+- Email addresses (`person1@example.invalid`), and internal hosts (`host1.internal.invalid`): private and link-local addresses, `.local`, `.internal`, `.corp`, `.lan` and `.home.arpa` names, hosts under a `-D` domain, and this Mac's own host names. Public hosts are kept as evidence.
+- Recognised credentials become `<redacted>` and are never written to the key: passwords after `dscl -authonly`, `security -w`, `curl -u` and `Authorization` or `Cookie` headers, `--password`-style options, secret-looking `NAME=value` entries, and AWS, GitHub, Slack, `sk-` and JWT shapes. Environment values are `<redacted>` too, except a few such as `PATH`, `HOME` and `DYLD_*`.
+- Data the cleaner cannot judge becomes `data1`, `data2` and so on, with the real value in the key: `curl -d` request bodies, URL query values (`?id=data1`) and long encoded runs (32 or more characters of base64 or hex). So you can still recover a payload by looking it up on the Mac.
+- This Mac's accounts (uid 500 and up), their full names, its computer, local host and host names, serial number and hardware UUID are read as seeds and cleaned wherever they appear, unless `GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1` is set. Cleaning a capture from another Mac warns that names outside paths are only caught with `-S`.
+
+**What is kept.** The rules decide by program name, so the file name of every program and script that ran stays (`python3`, `curl`, a dropper's name), and so do the standard home folders (`Desktop`, `Documents`, `Downloads`, `Library`), the structure folders under `~/Library`, tooling folders such as `node_modules`, `.app` and other bundle names, `com.apple.*` and other bundle IDs, and system paths like `/usr` and `/System`. Words the rules look for, such as `display dialog`, `Chrome Safe Storage`, `launchctl load` and `-authonly`, stay too. In those places a name is kept even when it is the same word as an account name. The summary lists any account name that is short or a common word.
+
+**The key.** The key file holds the real values: names, request bodies, payloads, anything that became `dataN`. It is as sensitive as the raw capture. By default it is `~/Library/Application Support/Gameleira/keys/<name of the output>.key.tsv`, readable by you only, and deliberately not next to the capture, so copying the capture's folder does not take it along. Keep it on the Mac. Do not send it with the capture. If you delete it, the cleaning cannot be undone, which is a choice you can make once the investigation is over.
+
+A cleaned capture is pseudonymized, not anonymous. A hand-picked name or a public host can still point to one person or one company, and a value the cleaner does not recognise stays as it was. Read the cleaned file before it goes anywhere.
+
+**Things to know about `record`.**
+
+- It needs ordinary admin `sudo` rights. It runs one `sudo /bin/sh -c '<wrapper>'` that starts `eslogger` and stops it through a private pipe. So a sudoers rule that allows only `eslogger` will refuse it, and an endpoint tool may flag a root inline shell. Stopping never asks for a password, and a closed terminal or a killed script also stops `eslogger`. Like `eslogger` itself it needs Full Disk Access for the terminal.
+- Ctrl-C may take up to about 5 seconds to stop `eslogger`. If `eslogger` ended on SIGTERM, a cut last line can be counted under `unreadable lines dropped` in the summary.
+- If the script is force-killed (`kill -9`), its temporary folder in `$TMPDIR` can keep the seed and config files. They are mode 0600 and hold the names being hidden. Delete `$TMPDIR/gameleira-clean.*` after a force-kill.
+- At the end a summary is printed on standard error: events in and out, lines dropped as unreadable, events Endpoint Security dropped (gaps in `global_seq_num`), placeholders per kind, credentials replaced, and where the capture and the key are.
+
 ### Learning lab
 
 `scripts/gameleira-lab.sh` writes a capture for learning what Gameleira flags, with an answer key beside it.
