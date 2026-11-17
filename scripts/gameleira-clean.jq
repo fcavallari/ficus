@@ -1312,7 +1312,7 @@ def clean_event($state):
   | [$e | paths(worth_cleaning(true))] as $ps
   | (reduce ($e | exec_names($ps)[]) as $n ($state; if .keep[$n] then . else .keep[$n] = true end)) as $s0
   | reduce $ps[] as $p ({e: $e, s: ($s0 | .new = [])};
-      .s.netp = false
+      (if .s.netp != false then .s.netp = false else . end)
       | ($e | getpath($p)) as $v
       | if ($v | type) == "object" then
           ($v | named_in_dir($p)) as $k
@@ -1350,7 +1350,7 @@ def clean_event($state):
             | (if path_field($p) and ($v | startswith("/") or startswith("~") or startswith("file:")) then {v: $v, s: $t.s, prot: []}
                else $t.s | clean_net_m($v; $code; if ($arg | not) or $code then "" elif SSH_FAMILY[$prog] == true then "all"
                                                  elif $prog == "git" then "colon" else "" end; $t.m) end) as $n
-            | .s = ($n.s | .netp = (if $t.m then net_flags($v) else false end)) | $n.v as $u | $n.prot as $prot
+            | .s = (if $t.m then $n.s | .netp = net_flags($v) else $n.s end) | $n.v as $u | $n.prot as $prot
             # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
             | if $relc and $arg and ($kc | not)
                  and (if $p[3] == 0 then ($u | index("/")) != null
