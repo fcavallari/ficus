@@ -1,0 +1,45 @@
+{
+  "manifest_version": "0.3",
+  "name": "ficus",
+  "display_name": "Ficus",
+  "version": "1.0.0",
+  "description": "Records what ran on this Mac and shows the findings, so an agent can check behaviour as well as state.",
+  "long_description": "Ficus gives an AI agent the evidence of what ran on a Mac, which a snapshot of what is installed cannot show. It hands out a Terminal command that records a cleaned eslogger capture (account and folder names replaced with placeholders), reads Ficus's findings on it with every command line redacted, shows one row in full only after the person agrees, and exports the report to a Desktop folder for Security Ops. It never runs sudo, never makes a network connection and never opens the cleaner's key file.",
+  "author": { "name": "Ficus" },
+  "license": "MIT",
+  "keywords": ["macos", "security", "eslogger", "triage"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/ficus-mcp.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/ficus-mcp.mjs"]
+    }
+  },
+  "tools": [
+    {
+      "name": "ficus_record_command",
+      "description": "Get the Terminal command that records a cleaned capture; it is never run for you."
+    },
+    {
+      "name": "ficus_list_captures",
+      "description": "List the cleaned captures in the Ficus folder, newest first."
+    },
+    {
+      "name": "ficus_analyze",
+      "description": "Summarize one cleaned capture and list its flagged rows, with command lines redacted."
+    },
+    {
+      "name": "ficus_row",
+      "description": "Show one flagged row in full; command lines stay redacted unless the person says yes."
+    },
+    {
+      "name": "ficus_export",
+      "description": "Write the verdict and the Ficus report (or the full session) to a new folder on the Desktop."
+    }
+  ],
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": { "node": ">=20.0.0" }
+  }
+}
