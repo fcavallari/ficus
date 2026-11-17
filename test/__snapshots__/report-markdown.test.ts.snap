@@ -1,0 +1,339 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshot of the lab report 1`] = `
+"# Gameleira report: lab
+
+Generated 2026-11-16T12:00:00.000Z. 17 flagged rows in 1 loaded capture: 8 high, 4 medium, 5 low.
+User's verdicts: 1 suspicious, 1 benign, 15 not reviewed. (Verdicts were set by the person who ran the capture, not by security staff.)
+Command lines are complete and may contain secrets.
+
+## Captures
+
+- \`synthetic-lab.jsonl\`: 111 events, 46 processes, 2026-03-14T10:00:01.000100000Z to 2026-03-14T10:05:00.300210770Z, eslogger schema v11.
+  - No unlink events. This capture has none, so it cannot show files deleted. Either none happened while it ran, or eslogger was not subscribed to unlink; the file cannot say which.
+  - No setextattr events. This capture has none, so it cannot show extended attributes set on files. Either none happened while it ran, or eslogger was not subscribed to setextattr; the file cannot say which.
+  - No btm\\_launch\\_item\\_remove events. This capture has none, so it cannot show launch items removed. Either none happened while it ran, or eslogger was not subscribed to btm\\_launch\\_item\\_remove; the file cannot say which.
+  - 11 program changes without an exec event. A process was seen running a new program, but the exec that started it is not in the capture (it happened before the capture began, or was dropped). Its arguments and working directory are unknown, and the checks that read a command line skip it.
+  - 4 processes known only by pid. They started before the capture and emitted nothing themselves; they appear as parents of processes that did. Their program, arguments and signature were never logged.
+  - 1 event type the viewer does not model. open ×3. They are counted but not read: they appear in no timeline and no check looks at them. Each still places its process in the tree.
+  - Low-signal findings kept out of the queue: recon ×7, odd-location-exec ×1.
+
+## High
+
+### 1. osascript (pid 7006): Dialog box from osascript
+
+- **User's verdict:** Suspicious, note: “asked for my password”
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`osascript -e "display dialog "LAB DEMO - not a real prompt" buttons {"OK"}"\`
+- **Program:** \`/usr/bin/osascript\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:08.999406Z to 2026-03-14T10:00:10.500127189Z
+
+**Findings**
+
+- **Dialog box from osascript** (high, T1056.002): Shows a dialog box from an osascript script (AppleScript \\\`display dialog\\\`, or JavaScript for Automation \\\`displayDialog\\\`). Info-stealers use this to fake a system password prompt, or a fake error message once they are done.
+  Evidence: \`osascript -e display dialog "LAB DEMO - not a real prompt" buttons {"OK"}\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 2. dscl (pid 7016): Password check with dscl
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`dscl . -authonly labuser labpass-not-real\`
+- **Program:** \`/usr/bin/dscl\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:10.999416Z to 2026-03-14T10:00:11.300130210Z
+
+**Findings**
+
+- **Password check with dscl** (high, T1056.002): Checks whether a password is correct for a local account. Stealers run it to verify a password the attacker just phished with a fake prompt.
+  Evidence: \`dscl . -authonly labuser labpass-not-real\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 3. ditto (pid 7009): Files packed into an archive
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`ditto -c -k /tmp/stage /tmp/stage.zip\`
+- **Program:** \`/usr/bin/ditto\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:12.799409Z to 2026-03-14T10:00:13.300142294Z
+
+**Findings**
+
+- **Files packed into an archive** (high, T1560.001): Packed files into an archive, in or from a temporary folder. Stealers stage collected data this way before sending it out.
+  Evidence: \`ditto -c -k /tmp/stage /tmp/stage.zip (staged in temporary folder)\`
+
+**What it did:** started 0 processes; 1 file event:
+
+- create \`/private/tmp/stage.zip\`
+
+### 4. cat (pid 7013): Launch agent registered
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`cat\`
+- **Program:** \`/bin/cat\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:19.999413Z to 2026-03-14T10:00:20.600156392Z
+- **Launch item:** Launch agent, \`/Users/alice/Library/LaunchAgents/com.test.labdemo.plist\`, runs \`/bin/sh\`, registered by smd (pid 560) (instigator), at 2026-03-14T10:00:20.800157399Z
+
+**Findings**
+
+- **Launch agent registered** (high, T1543.001): Registered a launch agent for this user: launchd loads it each time this user logs in and starts the program it names when the plist says: at load (RunAtLoad), to keep it running (KeepAlive), on a schedule (StartInterval, StartCalendarInterval) or when files change (WatchPaths), for example.
+  Evidence: \`plist /Users/alice/Library/LaunchAgents/com.test.labdemo.plist; runs /bin/sh; high: it runs a shell (sh)\`
+
+**What it did:** started 0 processes; 1 file event:
+
+- create \`/Users/alice/Library/LaunchAgents/com.test.labdemo.plist\`
+
+### 5. launchctl (pid 7014): launchctl loaded a job
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`launchctl bootstrap gui/501 /Users/alice/Library/LaunchAgents/com.test.labdemo.plist\`
+- **Program:** \`/bin/launchctl\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:21.999414Z to 2026-03-14T10:00:22.400160420Z
+
+**Findings**
+
+- **launchctl loaded a job** (high, T1569.001): Loads a launch agent/daemon immediately instead of waiting for login.
+  Evidence: \`launchctl bootstrap gui/501 /Users/alice/Library/LaunchAgents/com.test.labdemo.plist\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 6. zsh (pid 7015): Launch agent plist written
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Program:** \`/bin/zsh\`, Apple platform binary
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:23.999415Z to 2026-03-14T10:00:24.400164448Z
+
+**Findings**
+
+- **Launch agent plist written** (high, T1543.001): Wrote a launch agent plist for this user: launchd loads it each time this user logs in and starts the program it names when the plist says: at load (RunAtLoad), to keep it running (KeepAlive), on a schedule (StartInterval, StartCalendarInterval) or when files change (WatchPaths), for example. No registration event in the capture accounts for it.
+  Evidence: \`wrote /Users/alice/Library/LaunchAgents/com.test.labdemo.helper.plist\`
+
+**What it did:** started 0 processes; 2 file events:
+
+- create \`/Users/alice/Library/LaunchAgents/.com.test.labdemo.helper.plist.tmp\`
+- rename \`/Users/alice/Library/LaunchAgents/.com.test.labdemo.helper.plist.tmp\` → \`/Users/alice/Library/LaunchAgents/com.test.labdemo.helper.plist\`
+
+### 7. Installer (pid 7100): Ran from an unusual location
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`/Users/alice/Downloads/Installer.app/Contents/MacOS/Installer\`
+- **Program:** \`/Users/alice/Downloads/Installer.app/Contents/MacOS/Installer\`, ad-hoc signed
+- **Working directory:** \`/\`
+- **Started by:** launchd (pid 1) → this
+- **Ran:** 2026-03-14T10:00:26.999500Z to 2026-03-14T10:00:41.000184588Z
+- **Launch item:** Login item, \`/Users/alice/Downloads/Installer.app/\`, registered by Installer (pid 7100) (app), at 2026-03-14T10:00:29.000173511Z
+
+**Findings**
+
+- **Ran from an unusual location** (high, T1204.002): Ran a program from the Downloads folder, not from /Applications or a system folder. Malware is commonly run from places like this.
+  Evidence: \`/Users/alice/Downloads/Installer.app/Contents/MacOS/Installer (Downloads), ad-hoc signed (Installer)\`
+- **Login item registered** (high, T1547.015): Registered a login item: macOS opens it each time this user logs in.
+  Evidence: \`item /Users/alice/Downloads/Installer.app/; app /Users/alice/Downloads/Installer.app; high: the app is in the Downloads folder, which the user can write to\`
+- **Ad-hoc signed binary** (low, a trait of the binary, no technique): Ad-hoc signed: it carries a signature but no developer identity. Common for Homebrew and locally built tools, and for malware; a trait, not a technique by itself.
+  Evidence: \`/Users/alice/Downloads/Installer.app/Contents/MacOS/Installer is ad-hoc signed (Installer), with no developer identity\`
+
+**What it did:** started 1 process; 0 file events.
+
+### 8. xattr (pid 7101): Quarantine flag removed
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\` · in a flagged chain
+- **Command line:** \`xattr -cr /Users/alice/Downloads/Installer.app\`
+- **Program:** \`/usr/bin/xattr\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** launchd (pid 1) → Installer (pid 7100) → this
+- **Responsible:** Installer (pid 7100)
+- **Ran:** 2026-03-14T10:00:27.999501Z to 2026-03-14T10:00:28.300172504Z
+
+**Findings**
+
+- **Quarantine flag removed** (high, T1553.001): Removed the quarantine flag macOS puts on downloaded files, so Gatekeeper won't check it.
+  Evidence: \`xattr -cr /Users/alice/Downloads/Installer.app\`
+
+**What it did:** started 0 processes; 0 file events.
+
+## Medium
+
+### 9. curl (pid 7001): Download to disk
+
+- **User's verdict:** Benign
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`curl -s https://example.com -o /tmp/page.html\`
+- **Program:** \`/usr/bin/curl\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:00.999401Z to 2026-03-14T10:00:01.800103021Z
+
+**Findings**
+
+- **Download to disk** (medium, T1105): Fetched something from the network and wrote it to disk.
+  Evidence: \`curl -s https://example.com -o /tmp/page.html\`
+
+**What it did:** started 0 processes; 1 file event:
+
+- create \`/private/tmp/page.html\`
+
+### 10. bash (pid 7004): Shell or interpreter reading commands from a pipe
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`bash\`
+- **Program:** \`/bin/bash\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:04.999404Z to 2026-03-14T10:00:06.000117119Z
+
+**Findings**
+
+- **Shell or interpreter reading commands from a pipe** (medium, T1059.004): A shell ran commands piped into it (the \\\`curl … \\| bash\\\` pattern), so there's no script file on disk to inspect.
+  Evidence: \`bash with stdin from a pipe\`
+
+**What it did:** started 1 process; 0 file events.
+
+### 11. persistence: com.example.updater.wake.plist: Launch agent registered
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Launch item:** Launch agent, \`/Users/alice/Library/LaunchAgents/com.example.updater.wake.plist\`, runs \`/Users/alice/Library/Application Support/Example/Updater/Current/Updater.app/Contents/MacOS/Updater\`, app \`/Users/alice/Library/Application Support/Example/Updater/1.2.3/Updater.app/\`, registered by smd (pid 560) (instigator), at 2026-03-14T10:00:40.000183581Z
+
+**Findings**
+
+- **Launch agent registered** (medium, T1543.001): Registered a launch agent for this user: launchd loads it each time this user logs in and starts the program it names when the plist says: at load (RunAtLoad), to keep it running (KeepAlive), on a schedule (StartInterval, StartCalendarInterval) or when files change (WatchPaths), for example.
+  Evidence: \`plist /Users/alice/Library/LaunchAgents/com.example.updater.wake.plist; runs /Users/alice/Library/Application Support/Example/Updater/Current/Updater.app/Contents/MacOS/Updater; app /Users/alice/Library/Application Support/Example/Updater/1.2.3/Updater.app; med: an app bundle in a home folder; its signature was not seen in this capture\`
+
+### 12. curl (pid 7500): Download to disk
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Program:** \`/usr/bin/curl\`, Apple platform binary
+- **Also ran:** \`/bin/sh\`
+- **Started by:** pid 6390 · started before capture → zsh (pid 6400) → this
+- **Responsible:** pid 6101 · started before capture
+- **Ran:** 2026-03-14T09:59:50.000000Z to 2026-03-14T10:01:11.000205735Z
+
+**Findings**
+
+- **Download to disk** (medium, T1105): Fetched something from the network and wrote it to disk.
+  Evidence: \`/usr/bin/curl; created /private/tmp/payload.bin\`
+
+**What it did:** started 0 processes; 1 file event:
+
+- create \`/private/tmp/payload.bin\`
+
+## Low
+
+### 13. whoami (pid 7005): System or user discovery
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\` · in a flagged chain
+- **Command line:** \`whoami\`
+- **Program:** \`/usr/bin/whoami\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → bash (pid 7004) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:05.599405Z to 2026-03-14T10:00:05.800116112Z
+
+**Findings**
+
+- **System or user discovery** (low, T1033): Finds out which user it is running as. Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.
+  Evidence: \`whoami\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 14. sleep (pid 7011): Detached from its parent
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\`
+- **Command line:** \`sleep 90\`
+- **Program:** \`/bin/sleep\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6120 · started before capture → zsh (pid 6130) → zsh (pid 7010) → this
+- **Responsible:** pid 6100 · started before capture
+- **Ran:** 2026-03-14T10:00:16.099411Z to 2026-03-14T10:01:46.300206742Z
+
+**Findings**
+
+- **Detached from its parent** (low, T1036.009): Detached from the process that started it, so it keeps running after its parent exits and no longer shows up under it. Malware double-forks like this to break the link to whatever launched it.
+  Evidence: \`parent pid 7010 (zsh) gone; now under launchd\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 15. sw\\_vers (pid 7400): System or user discovery
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\` · recon burst
+- **Command line:** \`sw_vers\`
+- **Program:** \`/usr/bin/sw_vers\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6390 · started before capture → zsh (pid 6400) → this
+- **Responsible:** pid 6101 · started before capture
+- **Ran:** 2026-03-14T10:00:59.999800Z to 2026-03-14T10:01:00.300196672Z
+
+**Findings**
+
+- **System or user discovery** (low, T1082): Gathers information about the machine (hardware, macOS version, name). Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.
+  Evidence: \`sw_vers\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 16. uname (pid 7401): System or user discovery
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\` · recon burst
+- **Command line:** \`uname -a\`
+- **Program:** \`/usr/bin/uname\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6390 · started before capture → zsh (pid 6400) → this
+- **Responsible:** pid 6101 · started before capture
+- **Ran:** 2026-03-14T10:01:01.499801Z to 2026-03-14T10:01:01.800199693Z
+
+**Findings**
+
+- **System or user discovery** (low, T1082): Gathers information about the machine (hardware, macOS version, name). Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.
+  Evidence: \`uname -a\`
+
+**What it did:** started 0 processes; 0 file events.
+
+### 17. system\\_profiler (pid 7402): System or user discovery
+
+- **User's verdict:** Not reviewed
+- **Capture:** \`synthetic-lab.jsonl\` · recon burst
+- **Command line:** \`system_profiler SPHardwareDataType\`
+- **Program:** \`/usr/sbin/system_profiler\`, Apple platform binary
+- **Working directory:** \`/Users/alice/work\`
+- **Started by:** pid 6390 · started before capture → zsh (pid 6400) → this
+- **Responsible:** pid 6101 · started before capture
+- **Ran:** 2026-03-14T10:01:02.999802Z to 2026-03-14T10:01:03.300202714Z
+
+**Findings**
+
+- **System or user discovery** (low, T1082): Gathers information about the machine (hardware, macOS version, name). Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.
+  Evidence: \`system_profiler SPHardwareDataType\`
+
+**What it did:** started 0 processes; 0 file events.
+"
+`;
