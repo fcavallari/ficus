@@ -3384,6 +3384,64 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(inGroup(run.pid)).toBe(0);
   }, 40000);
 
+  /** Every entry under DIR, with whether it is a FIFO and its size; names are never printed, only counted. */
+  const entries = (dir: string): { fifo: boolean; file: boolean; size: number }[] =>
+    (fs.readdirSync(dir, { recursive: true }) as string[]).map(n => fs.lstatSync(path.join(dir, n)))
+      .map(st => ({ fifo: st.isFIFO(), file: st.isFile(), size: st.size }));
+
+  // Ctrl-\ (SIGQUIT) reaches the whole foreground group, as Ctrl-C does. It stops a recording the same way. A clean is
+  // aborted, with its temporary files removed. While recording, no file in the temporary folder holds seeds or the
+  // config (this Mac's names included): there are only the pipes and empty files.
+  test.runIf(darwin)('Ctrl-\\ stops a recording like Ctrl-C, aborts a clean, and no temporary file holds seeds', async () => {
+    const dir = tmpDir();
+    const tmp = path.join(dir, 'tmp');
+    fs.mkdirSync(tmp);
+    const out = path.join(dir, 'out.jsonl');
+    const seeds = path.join(dir, 'seeds.tsv');
+    fs.writeFileSync(seeds, 'user\tjdoe\n');
+    const env = { ...process.env, TMPDIR: `${tmp}/`, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' };
+    const rec = spawn('/bin/bash', [SCRIPT, 'record', '-o', out, '-S', seeds], {
+      cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...env, GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+    });
+    groups.push(rec.pid!);
+    let stderr = '';
+    rec.stderr!.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+    const closed = new Promise<number | null>(res => rec.on('close', code => res(code)));
+    await linesIn(out, 3);
+    const during = entries(tmp);
+    expect(during.filter(e => e.fifo).length, 'pipes while recording').toBeGreaterThanOrEqual(2);
+    expect(during.filter(e => e.file && e.size > 0).length, 'files with content while recording').toBe(0);
+    process.kill(-rec.pid!, 'SIGQUIT');
+    const status = await closed;
+    expect(status, failureMessage(stderr)).toBe(0);
+    const text = fs.readFileSync(out, 'utf8');
+    expect(text.endsWith('\n')).toBe(true);
+    for (const l of lines(text)) expect(() => JSON.parse(l)).not.toThrow();
+    expect(stderr).toMatch(new RegExp(`^events out: ${lines(text).length}$`, 'm'));
+    expect(stderr).toMatch(/^events in: \d+$/m);
+    expect(parseKey(fs.readFileSync(path.join(dir, 'keys', 'out.jsonl.key.tsv'), 'utf8')).length).toBeGreaterThan(0);
+    for (let i = 0; i < 20 && inGroup(rec.pid!) > 0; i++) await sleep(100);
+    expect(inGroup(rec.pid!)).toBe(0);
+    expect(entries(tmp).length, 'temporary entries left after the recording').toBe(0);
+
+    // A clean reading standard input, stopped half-way.
+    const cleanOut = path.join(dir, 'clean.jsonl');
+    const cl = spawn('/bin/bash', [SCRIPT, 'clean', '-i', '-', '-o', cleanOut, '-S', seeds], { cwd: dir, detached: true, stdio: ['pipe', 'ignore', 'pipe'], env });
+    groups.push(cl.pid!);
+    let clErr = '';
+    cl.stderr!.on('data', (d: Buffer) => { clErr += d.toString('utf8'); });
+    const clClosed = new Promise<number | null>(res => cl.on('close', code => res(code)));
+    cl.stdin!.write(fs.readFileSync(lineFile(dir), 'utf8'));
+    await linesIn(cleanOut, 1);
+    expect(entries(tmp).filter(e => e.file && e.size > 0).length, 'files with content while cleaning').toBe(0);
+    process.kill(-cl.pid!, 'SIGQUIT');
+    const clStatus = await clClosed;
+    expect(clStatus, failureMessage(clErr)).toBe(131);
+    for (let i = 0; i < 20 && inGroup(cl.pid!) > 0; i++) await sleep(100);
+    expect(inGroup(cl.pid!)).toBe(0);
+    expect(entries(tmp).length, 'temporary entries left after the clean').toBe(0);
+  }, 40000);
+
   // eslogger records every program the script runs, so waiting must not poll: `ps` is a recon tool the rules flag.
   test.runIf(darwin)('record -t stops by itself and prints the summary, without polling', () => {
     const dir = tmpDir();
