@@ -146,19 +146,21 @@ npm install
 npm run pack:mcp     # writes dist-mcp/ficus.mcpb
 ```
 
-Then open `dist-mcp/ficus.mcpb` in Claude Desktop and install it. The extension carries the cleaner (`scripts/ficus-clean.sh` and `.jq`).
+Then open `dist-mcp/ficus.mcpb` in Claude Desktop and install it. The extension carries the cleaner (`scripts/ficus-clean.sh` and `.jq`). `npm test` rebuilds `dist-mcp/` and empties it first, so it removes `ficus.mcpb`: run `npm run pack:mcp` again afterwards.
 
 For another host (Claude Code, Cursor and others), run `npm run build:mcp` and add `node <repo>/dist-mcp/ficus-mcp.mjs` as a stdio server in the host's settings. That needs Node 20 or later, and the `scripts/` folder must stay beside `dist-mcp/`, because the server looks for the cleaner at `../scripts/` from the bundle.
 
-Ficus keeps its files in `~/Library/Application Support/Ficus/`: `captures/` for recordings, `keys/` for the cleaner's keys, and `bin/` for a copy of the cleaner, so the command handed out has a stable path. `FICUS_HOME` sets another folder, and `FICUS_EXPORT_DIR` another place for exports (default `~/Desktop`).
+Ficus keeps its files in `~/Library/Application Support/Ficus/`: `captures/` for recordings, `keys/` for the cleaner's keys, and `bin/` for a copy of the cleaner, so the command handed out has a stable path. The server reads two environment variables when it starts. `FICUS_HOME` sets another Ficus folder: `captures/`, `keys/` and `bin/` all move there, and the recording command it hands out then starts with `FICUS_CLEAN_KEY_DIR="<FICUS_HOME>/keys"` so the cleaner writes its key where the server looks for it (without `FICUS_HOME` the command is unchanged). The list of rows shown with consent is kept in memory, so it covers only what happened since the server started. `FICUS_EXPORT_DIR` sets another place for exports instead of `~/Desktop`; the first write to the Desktop can make macOS ask for permission, and if it is refused the tool says so.
 
 ### The tools
 
-- `ficus_record_command`: returns the one line to paste into Terminal to record a cleaned capture (`seconds`, 60 to 1800, default 600; optional `domains`), with the steps to relay. It never runs the command.
+- `ficus_record_command`: returns the one line to paste into Terminal to record a cleaned capture (`seconds`, 60 to 1800, default 600; optional `domains`), with the steps to relay. It never runs the command. `domains` is for the person's *own* company domains: the cleaner replaces every host under them with a placeholder (`host1.internal.invalid`), so a domain the agent wants to find in the capture must never be passed, or it would be hidden. The recording needs macOS 15 or later, and a recording that is stopped early or fails needs a new command, since the same command refuses to run again once its key exists.
 - `ficus_list_captures`: lists the cleaned captures, newest first, with their size, time, whether the key exists and whether the file is still being written.
 - `ficus_analyze`: a compact view of one capture's redacted report: time span, counts, coverage notes, a summary by severity, and the flagged rows, 40 at a time (`offset` for the next page), with each rule's explanation once.
 - `ficus_row`: one row in full (images, ancestry, responsible process, file operations, launch items). Redacted unless `reveal` is true.
-- `ficus_export`: writes a verdict and the report to a new folder on the Desktop (see below) and returns its path and file list, never the contents.
+- `ficus_export`: writes a verdict and the report to a new folder on the Desktop (see below) and returns its path and file list, never the contents. The agent is told to offer the redacted version (`redact: true`) first.
+
+The descriptions of `ficus_analyze`, `ficus_row` and `ficus_export` also tell the agent not to open the capture or export files itself, since reading them directly would bypass the record of what it was shown.
 
 ### What the server will not do
 
@@ -172,7 +174,7 @@ Ficus keeps its files in `~/Library/Application Support/Ficus/`: `captures/` for
 
 `ficus_export` asks the agent to put the choice to the person, then writes `Ficus report <date> <time>/` on the Desktop. Both modes hold:
 
-- `agent-verdict.md`: the agent's verdict, then the rows shown to it with consent, or "none".
+- `agent-verdict.md`: first the rows shown to the agent with consent (or "none recorded since the Ficus server started"), written by the server, then the agent's verdict.
 - `<session>.<hash>.ficus-report.md` and `.json`: the same report as Report for security in the app. It has the cleaned command lines unless the person asked for `redact`, since the files go to the security team and not to the agent.
 - `README.txt`: what each file is, that the capture is pseudonymized and not anonymous, and to read the report before sending.
 
@@ -187,7 +189,8 @@ If the Ficus tools are available, use them for what ran, not just what is instal
 - Offer a 10-minute recording with ficus_record_command. Tell the person to keep working normally.
 - When they say it is done, run ficus_analyze and add Ficus's findings to the findings table, with the rule id as the evidence.
 - Ask the person before revealing any command line. Name the program. Use ficus_row with reveal only after a yes.
-- At the end, offer ficus_export and ask which mode they want, report or full.
+- Do not open the capture or export files yourself; use the Ficus tools.
+- At the end, offer ficus_export, offer the redacted version first, and ask which mode they want, report or full.
 ```
 
 ## Rules
