@@ -1691,7 +1691,7 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     expect(r.summary['short or common account names']).toBe('test');
   });
 
-  test('account names and seeds are whole words of letters and digits, never variable names', () => {
+  test('account names and seeds are whole words of letters and digits; references and options keep them, environment names do not', () => {
     const env = ['HOME=/Users/home', 'USER=home', 'HOME_DIR=/tmp', 'NOTE=jdoe_backup'];
     const input = [
       run(940, '/bin/echo', ['echo', 'JOSÉ NÚÑEZ', '$HOME', '${HOME}/x', 'home', 'HOME', 'homework', 'jdoe_backup', 'JDoe-laptop', 'JDOE2', '--home=/tmp', 'x=jdoe'], '/', 1, env),
