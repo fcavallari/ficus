@@ -10,7 +10,7 @@ import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
 /** Where the project lives, for the invitation to contribute. */
-const REPO_URL = 'https://github.com/fcavallari/ficus';
+export const REPO_URL = 'https://github.com/fcavallari/ficus';
 /** The tree the app is named after: the gameleira, a Brazilian fig. */
 const GAMELEIRA_URL = 'https://en.wikipedia.org/wiki/Ficus_gomelleira';
 

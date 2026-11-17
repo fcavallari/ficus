@@ -1,10 +1,13 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { MITRE_NAMES } from '../rules/mitre';
-import { RULES, type Rule } from '../rules/rules';
+import { RULES, ruleLevels, type Rule, type Severity } from '../rules/rules';
 import { RootSwatch, Wordmark } from './Brand';
+import { listRules, RULE_ORDERS, ruleCanReach, SEVERITIES, type RuleOrder } from './guide-rules';
 import { leaveGuide, markSection } from './route';
 import { CommandBlock } from './SessionScreen';
-import { TRIAGE_KEYS } from './triage-model';
+import { REPO_URL } from './StartScreen';
+import { SEVERITY_LABEL, TRIAGE_KEYS } from './triage-model';
 
 /*
  * The guide: how to capture macOS activity with eslogger, how to read what it records, what an intrusion looks like in
@@ -36,20 +39,20 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Delivery',
     what: <>A fake app in a disk image, a cracked download, or a “ClickFix” page that talks the user into pasting a command
       into Terminal. Files fetched with <C>curl</C> get no quarantine flag, so Gatekeeper never looks at them.</>,
-    rules: ['download', 'odd-location-exec', 'unsigned', 'adhoc'],
+    rules: ['download', 'dropped-then-executed', 'odd-location-exec', 'unsigned', 'adhoc'],
   },
   {
     name: 'Execution',
     what: <>The pasted command runs: <C>curl … | bash</C>, a base64 blob decoded on the fly, an AppleScript stager, an app
       that quietly opens a shell.</>,
-    rules: ['shell-from-pipe', 'payload-decode', 'osascript-script', 'shell-under-app'],
+    rules: ['shell-from-pipe', 'clickfix-paste-chain', 'payload-decode', 'osascript-script', 'shell-under-app', 'risky-parent-spawn'],
   },
   {
     name: 'Getting past the defences',
     what: <>Removing the quarantine flag from what it brought, turning Gatekeeper off, trusting a certificate, detaching
-      from the parent that started it so the tree looks innocent, and borrowing someone else’s privileges through a setuid
-      binary.</>,
-    rules: ['quarantine-strip', 'security-setting-change', 'orphaned', 'uid-mismatch'],
+      from the parent that started it so the tree looks innocent, borrowing someone else’s privileges through a setuid
+      binary, and taking an Apple name (a <C>com.apple.…</C> signing ID or launch plist) so it blends in.</>,
+    rules: ['quarantine-strip', 'security-setting-change', 'orphaned', 'uid-mismatch', 'apple-masquerade'],
   },
   {
     name: 'Credential theft',
@@ -61,7 +64,7 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Discovery and collection',
     what: <>A few quick questions about the machine (<C>whoami</C>, <C>sw_vers</C>, <C>system_profiler</C>), then browser
       profiles, keychains, wallets, Notes and documents copied into a temporary folder and packed into an archive.</>,
-    rules: ['recon', 'archive-staging'],
+    rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
     name: 'Persistence',
@@ -120,11 +123,87 @@ function Section({ id, n, title, children }: { id: SectionId; n: number; title: 
 
 const ruleById = (id: string): Rule | undefined => RULES.find(r => r.id === id);
 
+/** Scrolls to a rule in the list, first clearing a severity filter that hides it. */
+const RevealRule = createContext<(id: string) => void>(id => { goTo(`rule-${id}`); });
+
 function RuleChip({ id }: { id: string }) {
+  const reveal = useContext(RevealRule);
   const r = ruleById(id);
   if (!r) return null;
-  return <a className="rchip" href={`#guide/rule-${id}`} onClick={e => { e.preventDefault(); goTo(`rule-${id}`); }}
+  return <a className="rchip" href={`#guide/rule-${id}`} onClick={e => { e.preventDefault(); reveal(id); }}
     title={r.title}><C>{id}</C></a>;
+}
+
+const STAGE_ORDER = STAGES.flatMap(s => s.rules);
+/** "high", "high or med", "high, med or low". */
+const levelsText = (l: Severity[]): string => (l.length === 1 ? l[0]! : `${l.slice(0, -1).join(', ')} or ${l.at(-1)!}`);
+const stageName = (id: string): string | undefined => STAGES.find(s => s.rules.includes(id))?.name;
+
+/** Every rule, with its explanation and MITRE IDs, filtered by the severities it can reach and sorted in place. */
+function RuleList({ show, setShow, order, setOrder }: {
+  show: ReadonlySet<Severity>; setShow: (s: ReadonlySet<Severity>) => void; order: RuleOrder; setOrder: (o: RuleOrder) => void;
+}) {
+  const rules = listRules(RULES, show, order, STAGE_ORDER);
+  const toggle = (s: Severity) => {
+    const next = new Set(show);
+    if (next.has(s)) next.delete(s); else next.add(s);
+    setShow(next);
+  };
+  return (
+    <>
+      <div className="grules-tools">
+        <div className="filter-row">
+          <span className="filter-label" id="g-rules-sev">Severity</span>
+          <div className="row" role="group" aria-labelledby="g-rules-sev">
+            {SEVERITIES.map(s => (
+              <label key={s} className="inline">
+                <input type="checkbox" checked={show.has(s)} onChange={() => { toggle(s); }} />{SEVERITY_LABEL[s]}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="filter-row">
+          <span className="filter-label" id="g-rules-order">Sort by</span>
+          <div className="row" role="radiogroup" aria-labelledby="g-rules-order">
+            {RULE_ORDERS.map(o => (
+              <label key={o.id} className="inline">
+                <input type="radio" name="g-rules-order" checked={order === o.id} onChange={() => { setOrder(o.id); }} />{o.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <p className="grules-count" aria-live="polite">
+          <span>{rules.length === RULES.length ? `All ${RULES.length} rules` : `${rules.length} of ${RULES.length} rules`}</span>
+          {rules.length < RULES.length && <> · <button className="link" onClick={() => { setShow(new Set(SEVERITIES)); }}>show all</button></>}
+        </p>
+      </div>
+      {rules.length === 0 && <p className="muted">No rule matches: tick a severity.</p>}
+      <ul className="grules">
+        {rules.map((r, i) => {
+          const stage = order === 'stage' ? stageName(r.id) : undefined;
+          const newStage = stage !== undefined && (i === 0 || stageName(rules[i - 1]!.id) !== stage);
+          const levels = ruleLevels(r);
+          return (
+            <Fragment key={r.id}>
+              {newStage && <li className="grules-stage"><h4>{stage}</h4></li>}
+              <li id={`g-rule-${r.id}`}>
+                <div className="grule-h">
+                  <span className="grule-sev" role="img" aria-label={`Severity: ${levelsText(levels)}`}>
+                    {levels.map(l => <span key={l} className={`badge sev-${l}`} aria-hidden="true">{l}</span>)}
+                  </span>
+                  <strong>{r.title}</strong>
+                  <C>{r.id}</C>
+                </div>
+                <p><Ticks text={r.explanation} />{r.gated === 'always' && ' Context only, unless the process is in a flagged chain or a recon burst.'}
+                  {r.gated === 'when-low' && ' Its low findings are context only, unless the process is in a flagged chain.'}</p>
+                <p className="mitre"><MitreChips ids={r.mitre} /></p>
+              </li>
+            </Fragment>
+          );
+        })}
+      </ul>
+    </>
+  );
 }
 
 function MitreChips({ ids }: { ids: string[] }) {
@@ -170,6 +249,14 @@ function useCurrentSection(): SectionId {
 
 export function GuideScreen({ section }: { section: string }) {
   const current = useCurrentSection();
+  const [show, setShow] = useState<ReadonlySet<Severity>>(() => new Set(SEVERITIES));
+  const [order, setOrder] = useState<RuleOrder>('severity');
+  // A link to a rule the severity filter hides clears the filter first, so the link always lands on its rule.
+  const reveal = useCallback((id: string) => {
+    const r = ruleById(id);
+    if (r && !ruleCanReach(r, show)) flushSync(() => { setShow(new Set(SEVERITIES)); });
+    goTo(`rule-${id}`);
+  }, [show]);
   // Opening the guide (or following a link to one of its sections) lands on that place, not where the app was scrolled.
   useEffect(() => {
     if (section) document.getElementById(`g-${section}`)?.scrollIntoView?.({ block: 'start' });
@@ -187,6 +274,7 @@ export function GuideScreen({ section }: { section: string }) {
         <span className="spacer" />
         <button className="ghost" onClick={leaveGuide}>Back to the app</button>
       </header>
+      <RevealRule.Provider value={reveal}>
       <main className="sheet guide">
         <nav className="gtoc" aria-label="Guide contents">
           <p className="gtoc-h">Contents</p>
@@ -433,21 +521,11 @@ export function GuideScreen({ section }: { section: string }) {
 
             <h3>Every rule Ficus applies</h3>
             <p>Severity is how strongly a finding suggests something worth your time; a flag is a lead, never a verdict. The
-              full matching logic is in <C>src/rules/rules.ts</C>, and every finding in the app says which trigger it matched.</p>
-            <ul className="grules">
-              {RULES.map(r => (
-                <li key={r.id} id={`g-rule-${r.id}`}>
-                  <div className="grule-h">
-                    <span className={`badge sev-${r.severity}`}>{r.severity}</span>
-                    <strong>{r.title}</strong>
-                    <C>{r.id}</C>
-                  </div>
-                  <p><Ticks text={r.explanation} />{r.gated === 'always' && ' Context only, unless the process is in a flagged chain or a recon burst.'}
-                    {r.gated === 'when-low' && ' Its low findings are context only, unless the process is in a flagged chain.'}</p>
-                  <p className="mitre"><MitreChips ids={r.mitre} /></p>
-                </li>
-              ))}
-            </ul>
+              full matching logic is in <C>src/rules/rules.ts</C>, and every finding in the app says which trigger it matched.
+              Some rules weigh what they found, so one rule can raise a high finding for one process and a low one for
+              another: each rule shows every level it can reach, and the severity filter keeps a rule if it can reach any level
+              you tick.</p>
+            <RuleList show={show} setShow={setShow} order={order} setOrder={setOrder} />
           </Section>
 
           <Section id="ficus" n={7} title="Working a capture here">
@@ -515,6 +593,13 @@ export function GuideScreen({ section }: { section: string }) {
                 <tr><td>The dialog</td><td><RuleChip id="fake-prompt" /> with the full AppleScript in the evidence.</td></tr>
                 <tr><td><C>ditto -c -k … /tmp/stage.zip</C></td><td><RuleChip id="archive-staging" />, high, because it staged
                   in <C>/tmp</C>.</td></tr>
+                <tr><td><C>/tmp/stage/agent --practice</C></td><td><RuleChip id="dropped-then-executed" />, high: it ran a
+                  moment after <C>cp</C> wrote it, from <C>/tmp</C>, and it is ad-hoc signed. The same row carries{' '}
+                  <RuleChip id="odd-location-exec" /> and <RuleChip id="adhoc" />.</td></tr>
+                <tr><td>The applet</td><td>Its shell (<C>echo practice-applet</C>) shows <RuleChip id="risky-parent-spawn" />,
+                  an app that should not run commands, and <RuleChip id="shell-under-app" />. The applet itself shows{' '}
+                  <RuleChip id="dropped-then-executed" />: <C>osacompile</C> had just written it. An applet may wait for
+                  more to do once its script has run, so the step stops it after five seconds.</td></tr>
                 <tr><td><C>(sleep 90 &amp;)</C></td><td><RuleChip id="orphaned" />: its current parent is launchd, its original
                   parent the subshell. Switch the Tree between parent modes and watch it move.</td></tr>
                 <tr><td><C>open -a Calculator</C></td><td>Nothing flagged. Find it in the Tree: launchd started it (by way of{' '}
@@ -529,6 +614,16 @@ export function GuideScreen({ section }: { section: string }) {
               your launch agent, the same thing <C>btm_launch_item_add</C> recorded. When you are done, clean up:</p>
             <Snippet title="Terminal: remove what the practice left behind">{LAB_CLEANUP}</Snippet>
             <p>Keep the capture: it is a good file to try the next section’s commands on.</p>
+
+            <h3>The rules you cannot safely trigger by hand</h3>
+            <p>Some rules need a step no one should run on a Mac they use: <RuleChip id="credential-store-copy" /> needs a copy
+              of the login keychain or a browser’s password database, <RuleChip id="apple-masquerade" /> a launch agent named
+              like Apple’s, <RuleChip id="clickfix-paste-chain" /> a shell running what was just decoded, and{' '}
+              <RuleChip id="risky-parent-spawn" />’s Office and Script Editor forms need those apps to run commands. To see them
+              fire, run <C>scripts/ficus-lab.sh synthetic</C> from <Ext href={REPO_URL}>the Ficus repository</Ext>. It writes
+              a hand-built capture in which every rule fires, with an answer key beside it that names each finding’s rule,
+              severity and the process to look for, and it runs nothing on your Mac. <C>scripts/ficus-lab.sh live</C> records
+              the safe steps for real and says in its key which rules it leaves out, and why.</p>
           </Section>
 
           <Section id="jq" n={9} title="Beyond the app: jq">
@@ -607,6 +702,7 @@ export function GuideScreen({ section }: { section: string }) {
             runs entirely in your browser.</p>
         </article>
       </main>
+      </RevealRule.Provider>
     </div>
   );
 }
@@ -648,13 +744,21 @@ osascript -e 'display dialog "PRACTICE: not a real prompt" buttons {"OK"}'
 # 4. collection and staging
 mkdir -p /tmp/stage && cp /etc/hosts /tmp/stage/ && ditto -c -k /tmp/stage /tmp/stage.zip
 
-# 5. detach from the parent
+# 5. a program written and run at once, from /tmp (a harmless copy of true)
+cp /usr/bin/true /tmp/stage/agent && codesign -f -s - /tmp/stage/agent && /tmp/stage/agent --practice
+
+# 6. an app that runs a shell: an AppleScript applet
+echo 'do shell script "echo practice-applet"' > /tmp/stage/applet.applescript
+osacompile -o /tmp/stage/Practice.app /tmp/stage/applet.applescript
+/tmp/stage/Practice.app/Contents/MacOS/applet & sleep 5; kill $! 2>/dev/null
+
+# 7. detach from the parent
 (sleep 90 &)
 
-# 6. an app started by launchd on your behalf
+# 8. an app started by launchd on your behalf
 open -a Calculator
 
-# 7. persistence
+# 9. persistence
 cat > ~/Library/LaunchAgents/com.test.practice.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

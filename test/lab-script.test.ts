@@ -6,7 +6,7 @@ import { describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
 import type { CaptureModel, Process } from '../src/model/types';
 import { analyze } from '../src/rules/engine';
-import { RULES, type Severity } from '../src/rules/rules';
+import { RULES, ruleLevels, type Severity } from '../src/rules/rules';
 import { queueStatus } from './helpers';
 
 // scripts/ficus-lab.sh writes a teaching capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
@@ -83,6 +83,14 @@ describe('the synthetic story', () => {
     for (const list of [...a.findings.values(), ...a.contextOnly.values()]) for (const f of list) fired.add(f.ruleId);
     for (const q of a.queue) for (const f of q.findings) fired.add(f.ruleId);
     expect(RULES.map(r => r.id).filter(id => !fired.has(id))).toEqual([]);
+  });
+
+  test('every finding\'s severity is in its rule\'s stated range', () => {
+    const all = [...a.findings.values(), ...a.contextOnly.values(), ...a.queue.map(q => q.findings)].flat();
+    for (const f of all) {
+      const rule = RULES.find(r => r.id === f.ruleId)!;
+      expect(ruleLevels(rule), `${f.ruleId}: ${f.evidence}`).toContain(f.severity);
+    }
   });
 
   test('the key covers the queue concepts', () => {
