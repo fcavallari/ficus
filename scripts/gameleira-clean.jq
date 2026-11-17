@@ -994,6 +994,10 @@ def COMMAND_BEFORE($progs):
   "(?:^|[;&|(`\\n\"'])\\s*(?:(?:sudo|env|nohup|command|exec|time)\\s+(?:-\\S+\\s+)*)*(?:[^\\s;&|()`\"']*/)?(?:" + $progs
   + ")\\s[^;&|()`\\n]*$";
 def LOGIN_PROGRAMS: "ssh|scp|sftp|rsync|mosh|autossh|ssh-copy-id|sshpass";
+# Shell code that ends in ssh's host position: ssh (mosh …) and its options, each with a value or not.
+def SSH_HOST_BEFORE:
+  "(?:^|[;&|(`\\n\"'])\\s*(?:(?:sudo|env|nohup|command|exec|time)\\s+(?:-\\S+\\s+)*)*(?:[^\\s;&|()`\"']*/)?"
+  + "(?:ssh|mosh|autossh|ssh-copy-id)(?:\\s+-[A-Za-z]+(?:\\s+[^\\s-]\\S*)?)*\\s+$";
 
 # curl's long options that take the next argument (CURL_SPEC in src/rules/args.ts).
 def CURL_LONG_VALUES: {
@@ -1076,9 +1080,14 @@ def plain_word:
   if test("^\"[^\"\\\\]*\"$") or test("^'[^']*'$") then .[1:-1]
   elif test("^[^\"'\\\\]*$") then . else null end;
 # curl and wget's URL arguments in shell code (url_position, as for argv): each command's words are read after
-# assignments and wrappers (sudo, env …), and a word after a redirection is a file. Input: the state. Output: {v, s}.
-def code_urls($str):
-  reduce ($str | match(CODE_WORDS; "g")) as $m ({s: ., out: "", at: 0, cmd: null, prev: ""};
+# assignments and wrappers (sudo, env …), and a word after a redirection is a file. A cleaned URL is written as a
+# token (\u0001N\u0001, unrest_urls puts it back) that the later steps of the shell code leave alone: they would take
+# evil.sh for a relative file name, and /tmp/name3 in evil.com/tmp/name3 for a path to clean again. A quoted word that
+# runs curl or wget is read as shell code too (do shell script "curl …", sh -c 'wget …'). Input: the state.
+# Output: {v, s, prot: the cleaned URLs, by token number from $n0}.
+def code_urls_from($str; $n0):
+  ($str | contains("\u0001") | not) as $tok
+  | reduce ($str | match(CODE_WORDS; "g")) as $m ({s: ., out: "", at: 0, cmd: null, prev: "", prot: []};
     $m.string as $w
     | if ($w | test("^[;|&()`\n]")) then .cmd = null | .prev = ""
       elif ($w | test("^[<>]")) then .prev = $w
@@ -1091,43 +1100,59 @@ def code_urls($str):
         | if (.cmd == "curl" or .cmd == "wget") and $u != null and ($u | contains("://") | not) and (.prev | test("^[<>]") | not)
              and (.cmd as $c | .prev as $pv | $c | url_position($c; $pv; $u)) then
             (.s | clean_url($u)) as $r
-            | .out += $str[.at:$m.offset] + (if $u == $w then $r.v else $w[:1] + $r.v + $w[-1:] end)
-            | .at = $m.offset + $m.length | .s = $r.s
+            | (if $tok then "\u0001\($n0 + (.prot | length))\u0001" else $r.v end) as $put
+            | .out += $str[.at:$m.offset] + (if $u == $w then $put else $w[:1] + $put + $w[-1:] end)
+            | .at = $m.offset + $m.length | .s = $r.s | if $tok then .prot += [$r.v] else . end
+          elif $u != null and $u != $w and ($u | contains("curl") or contains("wget")) then
+            (.s | code_urls_from($u; $n0 + (.prot | length))) as $r
+            | if $r.v == $u then .s = $r.s
+              else .out += $str[.at:$m.offset] + $w[:1] + $r.v + $w[-1:] | .at = $m.offset + $m.length | .s = $r.s | .prot += $r.prot end
           else . end
         | .prev = ($u // $w)
       end)
-  | {v: (.out + $str[.at:]), s: .s};
+  | {v: (.out + $str[.at:]), s: .s, prot: .prot};
+def code_urls($str): code_urls_from($str; 0);
+# The URLs code_urls set aside, put back into the cleaned value.
+def unrest_urls($prot): if $prot == [] then . else gsub("\u0001(?<i>[0-9]+)\u0001"; $prot[.i | tonumber]) end;
 
 # The steps of clean_net, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; x@y as an
-# email, or as a login (followed by :path, or in an ssh-family command: $login for an argument of one, the command
-# before it in code), whose host is cleaned and user left to step 7; then internal host names and addresses anywhere
-# but inside a path (after a /), except /dev/tcp/ and /dev/udp/. Input: the state. Output: {v, s}.
+# email, or as a login, whose host is cleaned and user left to step 7; then internal host names and addresses anywhere
+# but inside a path (after a /), except /dev/tcp/ and /dev/udp/. x@y is a login in an argument of an ssh-family
+# program ($login "all"), in user@host:path form in one of git ($login "colon"), and in shell code as ssh's host or in
+# user@host:path form after an ssh-family or git command (LOGIN_BEFORE); anywhere else it is an email when its domain
+# ends in a top-level domain. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
   | .v as $s1 | .s
-  | (if $code and ($s1 | contains("curl") or contains("wget")) then code_urls($s1) else {v: $s1, s: .} end)
-  | .v as $s2 | .s
+  | (if $code and ($s1 | contains("curl") or contains("wget")) then code_urls($s1) else {v: $s1, s: ., prot: []} end)
+  | .v as $s2 | .prot as $prot | .s
   | (if $s2 | contains("@") then
        net_sub($s2; AT_RE;
          .m.string as $x | .t as $t | (.m.offset + .m.length) as $e
          | ($x | index("@")) as $at | $x[$at + 1:] as $dom
          | if ($x | test("^person[0-9]+@example\\.invalid$"; "i")) then {v: $x, s: .s}
-           elif ($t[$e:$e + 2] | test("^:[^\\s]")) or $login
-                or ($code and ($t[:.m.offset] | test(COMMAND_BEFORE(LOGIN_PROGRAMS)))) then
+           elif ($t[$e:$e + 2] | test("^:[^\\s]")) as $colon
+                | $login == "all" or ($colon and $login == "colon")
+                  or ($code and ($t[:.m.offset] as $b
+                                 | ($colon and ($b | test(COMMAND_BEFORE(LOGIN_PROGRAMS + "|git"))))
+                                   or ($b | test(SSH_HOST_BEFORE)))) then
              .s | clean_host($dom; true) | .v = $x[:$at + 1] + .v
            elif ($dom | test("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$"))
-                and FILE_EXTENSIONS[$dom | split(".") | last | ascii_downcase] != true then
+                and ($dom | split(".") | last | ascii_downcase) as $tld
+                | FILE_EXTENSIONS[$tld] != true or TLD_EXTENSIONS[$tld] == true then
              .s | placeholder("email"; $x) | {v: .ph, s: .state}
            else {v: $x, s: .s} end)
      else {v: $s2, s: .} end)
   | .v as $s3 | .s
   # One regex of the kinds the value may hold (each regex is compiled on every call).
-  | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9A-Za-z./:_-]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
+  # An address may follow a letter or a colon (-h10.0.0.5, TCP:10.0.0.5:4444, 8080:10.0.0.5:80), not a digit, a dot or
+  # a / (110.0.0.1, a path).
+  | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9./]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
       (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:./_-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
       (.domlit as $dl | if $s3 | maybe_names($dl) then
          "(?<![A-Za-z0-9._%+/-])(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])(?!\\.[A-Za-z0-9])" else empty end) ] as $res
-  | if $res == [] then {v: $s3, s: .}
-    else net_sub($s3; $res | join("|"); .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state}) end;
+  | if $res == [] then {v: $s3, s: ., prot: $prot}
+    else net_sub($s3; $res | join("|"); .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state}) | .prot = $prot end;
 
 # Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), after the cheap
 # test. What it made of a value outside code and logins is cached (state.netc, at most 4096 values of up to 1 KB,
@@ -1135,11 +1160,11 @@ def net_steps($str; $code; $login):
 # cached value gives the placeholders it would get again, and the user info it removed is counted again. Input: the
 # state. Output: {v, s}.
 def clean_net($str; $code; $login):
-  if (net_maybe($str) or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: .}
-  elif $code or $login then net_steps($str; $code; $login)
-  elif .netc[$str] != null then .netc[$str] as $c | {v: $c.v, s: (.stats.redacted += $c.r)}
+  if (net_maybe($str) or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
+  elif $code or $login != "" then net_steps($str; $code; $login)
+  elif .netc[$str] != null then .netc[$str] as $c | {v: $c.v, s: (.stats.redacted += $c.r), prot: []}
   else .stats.redacted as $r0
-    | net_steps($str; false; false)
+    | net_steps($str; false; "")
     | if ($str | utf8bytelength) > 1024 then .
       else .v as $v | .s |= ((if .netn >= 4096 then .netc = {} | .netn = 0 else . end)
                               | .netc[$str] = {v: $v, r: (.stats.redacted - $r0)} | .netn += 1) end
@@ -1204,9 +1229,10 @@ def clean_event($state):
             else
             # Emails, internal hosts and URLs first (steps 5 and 6), then the other steps on what they leave; a path
             # field that holds a path is a path, whose names are names.
-            (if path_field($p) and ($v | startswith("/") or startswith("~") or startswith("file:")) then {v: $v, s: .s}
-             else .s | clean_net($v; $code; $arg and ($code | not) and SSH_FAMILY[$prog] == true) end) as $n
-            | .s = $n.s | $n.v as $u
+            (if path_field($p) and ($v | startswith("/") or startswith("~") or startswith("file:")) then {v: $v, s: .s, prot: []}
+             else .s | clean_net($v; $code; if ($arg | not) or $code then "" elif SSH_FAMILY[$prog] == true then "all"
+                                            elif $prog == "git" then "colon" else "" end) end) as $n
+            | .s = $n.s | $n.v as $u | $n.prot as $prot
             # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
             | if $relc and $arg and ($kc | not)
                  and (if $p[3] == 0 then ($u | index("/")) != null
@@ -1217,12 +1243,12 @@ def clean_event($state):
                       | .s | relative_name($url_arg; $o.val)) then
                 arg_value($prog; $u) as $o
                 | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
-                | .s = $r.s | ($r.s | replace_seeds($o.pre + $r.v)) as $w | if $w != $v then .e |= setpath($p; $w) else . end
+                | .s = $r.s | ($r.s | replace_seeds($o.pre + $r.v | unrest_urls($prot))) as $w | if $w != $v then .e |= setpath($p; $w) else . end
               else
-                (if $kc then .s | .single = true | clean_string($u; false) | .s.single = false
+                ((if $kc then .s | .single = true | clean_string($u; false) | .s.single = false
                    elif $code then .s | .code = true | .rel = (if $relc and $sh then $cwd else null end)
                                    | clean_string($u; false) | .s.code = false | .s.rel = null
-                   else .s | clean_string($u; path_field($p)) end) as $r
+                   else .s | clean_string($u; path_field($p)) end) | .v |= unrest_urls($prot)) as $r
                 | ($r.s | seed_free($r.v)) as $free
                 | (if $free then $r.v else $r.s | replace_seeds_opts($r.v; $code) end) as $w
                 | .s = (if $free then $r.s | note_clear($r.v) else $r.s end)
