@@ -2318,4 +2318,30 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       sameFindings(input, r.out);
     }
   });
+
+  // Round 2, N2 and S3: emails and internal hosts in system-prefix paths (/usr, /System …), as fields, arguments and
+  // in shell code.
+  test('emails and internal hosts in system paths are cleaned in every field', () => {
+    const paths = ['/usr/local/var/log/nginx/wiki.acme.corp.log', '/System/Library/x/wiki.acme.corp', '/usr/local/etc/jane.doe@acme.com/x'];
+    const input = [
+      run(1240, '/bin/echo', ['echo', 'jane.doe@acme.com'], '/', 1),
+      ...paths.map((p, i) => esCreate(zsh, { path: p }, i + 2)),
+      ...paths.map((p, i) => run(1241 + i, '/usr/bin/tail', ['tail', p], '/', i + 10)),
+      run(1250, '/bin/sh', ['sh', '-c', `tail ${paths.join(' ')}`], '/', 20),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-D', 'acme.com'] : ['clean', '-o', '-', '-D', 'acme.com'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const ev = events(r.out);
+      const h = keyed(r.key, 'host');
+      const out = [`/usr/local/var/log/nginx/${h.get('wiki.acme.corp')}.log`, `/System/Library/x/${h.get('wiki.acme.corp')}`,
+        '/usr/local/etc/person1@example.invalid/x'];
+      expect(ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path)).toEqual(out);
+      const args = ev.filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+      expect(args.slice(1, 4)).toEqual(out.map(o => ['tail', o]));
+      expect(args[4]![2]).toBe(`tail ${out.join(' ')}`);
+      expect(r.out).not.toMatch(/acme|jane/);
+      sameFindings(input, r.out);
+    }
+  });
 });

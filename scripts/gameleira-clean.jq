@@ -472,12 +472,14 @@ def net_shapes($str; $code; $login):
      else {v: $str, s: .} end)
   | .v as $s3 | .s
   # One regex of the kinds the value may hold (each regex is compiled on every call).
-  # An address may follow a letter or a colon (-h10.0.0.5, TCP:10.0.0.5:4444, 8080:10.0.0.5:80), not a digit, a dot or
-  # a / (110.0.0.1, a path).
-  | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9./]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
-      (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:./_-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
+  # An address may follow a letter, a colon or a / (-h10.0.0.5, TCP:10.0.0.5:4444, /dev/tcp/10.0.0.5/4444,
+  # /Users/x/10.0.0.9/), not a digit or a dot (110.0.0.1, 1.10.0.0.5). A name may stand in a path, and before a final
+  # file extension (/usr/local/var/log/nginx/wiki.acme.corp.log), not before more labels (com.example.corp.agent).
+  | [ (if $s3 | maybe_ipv4 then "(?<![0-9.])(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
+      (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:._-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
       (.domlit as $dl | if $s3 | ascii_downcase | maybe_names($dl) then
-         "(?<![A-Za-z0-9._%+/-])(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])(?!\\.[A-Za-z0-9])" else empty end) ] as $res
+         "(?<![A-Za-z0-9._%+-])(?!host[0-9]+\\.internal\\.invalid)(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])"
+         + "(?:(?=\\.(?i:" + (FILE_EXTENSIONS | keys | join("|")) + ")(?![A-Za-z0-9.-]))|(?!\\.[A-Za-z0-9]))" else empty end) ] as $res
   | if $res == [] then {v: $s3, s: .}
     else net_sub($s3; $res | join("|"); .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state}) end;
 
