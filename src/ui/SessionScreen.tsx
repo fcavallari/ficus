@@ -8,6 +8,7 @@ import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
 import { captureInfo, checkTitles, coverage } from './triage-model';
+import { ReportButton } from './ReportButton';
 
 // The command the capture screen tells the user to run: the events the rules and the tree need.
 const CAPTURE_CMD =
@@ -342,6 +343,7 @@ export function SessionScreen() {
               <SaveInfo saver={saver} />
             </span>
           )}
+          {c.view !== 'confirmed' && <ReportButton place="header" />}
         </div>
         {c.view !== 'confirmed' && saver.done && <p role="status" className="save-note small">{saver.done}</p>}
         {saveError && <p role="alert" className="error">{saveError}</p>}
