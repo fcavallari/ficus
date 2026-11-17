@@ -389,8 +389,9 @@ def clean_query($q):
   reduce ($q | split("&"))[] as $kv ({s: ., out: []};
     ($kv | index("=")) as $i
     | (if $i == null then {k: "", v: $kv} else {k: $kv[:$i + 1], v: $kv[$i + 1:]} end) as $c
-    # A redacted credential shape stays.
-    | if $c.v == "" or ($c.v | contains("\u0002")) then .out += [$kv]
+    # A value with a redacted credential shape in it is redacted whole (the shape was counted when it was redacted).
+    | if $c.v == "" then .out += [$kv]
+      elif ($c.v | contains("\u0002")) then .out += [$c.k + "\u0002"]
       else (.s | placeholder("data"; $c.v)) as $r | .s = $r.state | .out += [$c.k + $r.ph] end)
   | {v: (.out | join("&")), s: .s};
 
