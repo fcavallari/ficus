@@ -1769,7 +1769,11 @@ def step($line):
   | if ($line | test("^[ \t\r]*$")) then {s: $s, emit: [], new: []}
     else
       ($s | .stats.eventsIn += 1) as $counted
-      | (try ($line | fromjson) catch null) as $e
+      | (try ($line | fromjson) catch null) as $e0
+      # The characters the cleaner uses as markers (U+0001: code_urls, U+0002: REDACTED) become U+FFFD in every string
+      # first, so none in the capture can hide a credential or a body. JSON writes them as \u0001 and \u0002.
+      | (if ($e0 | type) == "object" and ($line | contains("\\u0001") or contains("\\u0002") or contains("\u0001") or contains("\u0002"))
+         then $e0 | walk(if type == "string" then gsub("[\u0001\u0002]"; "\ufffd") else . end) else $e0 end) as $e
       | if ($e | type) != "object" then {s: ($counted | .stats.unreadable += 1), emit: [], new: []}
         else
           ($counted | track_seq($e)) as $seen

