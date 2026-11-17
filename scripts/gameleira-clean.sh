@@ -10,8 +10,9 @@
 # stream as it comes: the raw capture only ever exists in a pipe.
 #
 # Test hooks (environment): GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1 leaves this Mac's names out; GAMELEIRA_CLEAN_KEY_DIR is the
-# default key folder; GAMELEIRA_CLEAN_FAKE_UID stands in for `id -u`; GAMELEIRA_CLEAN_RECORDER is a bash command record
-# runs, as you and without sudo, instead of eslogger; GAMELEIRA_CLEAN_SOURCE_ONLY=1 defines the functions and runs nothing.
+# default key folder; GAMELEIRA_CLEAN_FAKE_UID stands in for `id -u`, GAMELEIRA_CLEAN_FAKE_OS for `uname -s`;
+# GAMELEIRA_CLEAN_RECORDER is a bash command record runs, as you and without sudo, instead of eslogger;
+# GAMELEIRA_CLEAN_SOURCE_ONLY=1 defines the functions and runs nothing.
 #
 # Needs only what macOS has: bash 3.2, /usr/bin/jq (macOS 15 and later; GAMELEIRA_CLEAN_JQ names another), awk.
 # The program that does the cleaning is gameleira-clean.jq, next to this file.
@@ -422,7 +423,7 @@ main() {
   if [ "$mode" = record ]; then
     [ "${GAMELEIRA_CLEAN_FAKE_UID:-$(id -u)}" != 0 ] ||
       die "run record as yourself, not as root (without sudo): it asks for your password for eslogger only"
-    [ "$(uname -s)" = Darwin ] || die "record runs only on macOS (eslogger is part of macOS); clean -i cleans a capture taken elsewhere"
+    [ "${GAMELEIRA_CLEAN_FAKE_OS:-$(uname -s)}" = Darwin ] || die "record runs only on macOS (eslogger is part of macOS); clean -i cleans a capture taken elsewhere"
     if [ -n "${GAMELEIRA_CLEAN_RECORDER:-}" ]; then
       RECORDER=(/bin/bash -c "$GAMELEIRA_CLEAN_RECORDER")
       SUDO_CMD=

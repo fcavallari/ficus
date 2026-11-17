@@ -3023,6 +3023,16 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     return new Promise(res => child.on('close', status => res({ status, stdout, stderr, pid: child.pid! })));
   };
 
+  // GAMELEIRA_CLEAN_FAKE_OS stands in for `uname -s`; the stand-in recorder and -t keep a failing run short and sudo-free.
+  test('record refuses to run off macOS', () => {
+    const dir = tmpDir();
+    const r = runClean(['record', '-t', '1', '-o', path.join(dir, 'out.jsonl')],
+      { env: { GAMELEIRA_CLEAN_FAKE_OS: 'Linux', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/only on macOS/);
+    expect(fs.existsSync(path.join(dir, 'out.jsonl'))).toBe(false);
+  });
+
   test('record refuses to run as root', () => {
     const r = runClean(['record', '-t', '5'], { env: { GAMELEIRA_CLEAN_FAKE_UID: '0' } });
     expect(r.status).toBe(1);
@@ -3234,9 +3244,15 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
   // This Mac's own names: computed here and never printed, so a failure names the check, not the value.
   test.runIf(darwin)('a capture of this Mac loses its local names, which reach jq through a private file only', () => {
     const me = os.userInfo().username;
-    const computer = execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName']).toString('utf8').trim();
-    const serial = /"IOPlatformSerialNumber" = "([^"]+)"/.exec(execFileSync('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']).toString('utf8'))?.[1] ?? '';
-    expect(serial.length).toBeGreaterThan(0);
+    const scutil = (k: string): string => { try { return execFileSync('/usr/sbin/scutil', ['--get', k], { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim(); } catch { return ''; } };
+    const computer = scutil('ComputerName');
+    const localHost = scutil('LocalHostName');
+    const io = execFileSync('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']).toString('utf8');
+    const serial = /"IOPlatformSerialNumber" = "([^"]+)"/.exec(io)?.[1] ?? '';
+    const uuid = /"IOPlatformUUID" = "([^"]+)"/.exec(io)?.[1] ?? '';
+    const realName = execFileSync('/usr/bin/dscl', ['.', '-list', '/Users', 'RealName']).toString('utf8').split('\n')
+      .map(l => /^(\S+)\s+(.*\S)\s*$/.exec(l)).find(m => m?.[1] === me)?.[2] ?? '';
+    expect(serial.length > 0 && uuid.length > 0 && localHost.length > 0, 'serial, UUID and local host name found').toBe(true);
     const dir = tmpDir();
     const argvLog = path.join(dir, 'jq-argv');
     const spyJq = path.join(dir, 'jq');
@@ -3245,25 +3261,27 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const echo = esProc({ pid: 900, pidversion: 2900, path: '/bin/echo', platform: true, signingId: 'com.apple.echo', ppid: 300 });
     const input = [
       esCreate(zsh, { path: `/Users/${me}/Documents/notes.txt` }, 1),
-      esExec(sh, echo, { args: ['echo', `owner ${me} on ${computer}`, serial], cwd: `/Users/${me}`, env: [`HOME=/Users/${me}`], seq: 2 }),
+      esExec(sh, echo, { args: ['echo', `owner ${me} on ${computer}`, serial, `hello ${realName}`, `ssh ${localHost}.local`, uuid],
+        cwd: `/Users/${me}`, env: [`HOME=/Users/${me}`], seq: 2 }),
     ].map(escapeSlashes).join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '', GAMELEIRA_CLEAN_JQ: spyJq } });
     expect(r.status).toBe(0);
     expect(r.stderr.includes(WARNING), 'warning on a capture of this Mac').toBe(false);
     const low = r.out.toLowerCase();
     expect(low.includes(`/users/${me.toLowerCase()}/`), 'account name in a path').toBe(false);
-    // A short or common account or computer name is replaced only where it cannot be another word (see the seeds tests).
-    if (me.length >= 4) expect(low.includes(me.toLowerCase()), 'account name').toBe(false);
-    if (computer.length >= 4) expect(low.includes(computer.toLowerCase()), 'computer name').toBe(false);
-    expect(low.includes(serial.toLowerCase()), 'serial number').toBe(false);
+    // A short or common name is replaced only where it cannot be another word (see the seeds tests), and a full name
+    // equal to the account name is not a seed of its own.
+    const values: [string, string][] = [['account name', me], ['computer name', computer], ['local host name', localHost],
+      ['full name', realName], ['serial number', serial], ['platform UUID', uuid]];
+    const checked = values.filter(([, v]) => v.length >= 4 && (v === me || v.toLowerCase() !== me.toLowerCase()));
+    for (const [what, v] of checked) expect(low.includes(v.toLowerCase()), what).toBe(false);
     expect(Number(r.summary['placeholders user'])).toBeGreaterThanOrEqual(1);
     expect(Number(r.summary['placeholders host'])).toBeGreaterThanOrEqual(1);
     expect(Number(r.summary['placeholders seed'])).toBeGreaterThanOrEqual(2);
+    if (realName.length >= 4 && realName.toLowerCase() !== me.toLowerCase()) expect(Number(r.summary['placeholders realname'])).toBeGreaterThanOrEqual(1);
     // The program's own path (-f) is in the repository, which may sit in the home folder.
     const argv = fs.readFileSync(argvLog, 'utf8').split(path.dirname(SCRIPT)).join('');
     expect(argv.length).toBeGreaterThan(0);
-    for (const [what, v] of [['account name', me], ['computer name', computer], ['serial number', serial]] as const) {
-      expect(argv.includes(v), `${what} in jq's arguments`).toBe(false);
-    }
+    for (const [what, v] of values.filter(([, x]) => x !== '')) expect(argv.includes(v), `${what} in jq's arguments`).toBe(false);
   });
 });
