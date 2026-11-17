@@ -13,6 +13,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1059.004': 'Unix Shell',
   'T1059.006': 'Python',
   'T1059.007': 'JavaScript',
+  'T1070.004': 'File Deletion',
   'T1074.001': 'Local Data Staging',
   'T1082': 'System Information Discovery',
   'T1105': 'Ingress Tool Transfer',
@@ -33,5 +34,6 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1557': 'Adversary-in-the-Middle',
   'T1560.001': 'Archive via Utility',
   'T1562.001': 'Disable or Modify Tools',
+  'T1564.001': 'Hidden Files and Directories',
   'T1569.001': 'Launchctl',
 };

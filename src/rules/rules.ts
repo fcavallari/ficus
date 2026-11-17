@@ -1,12 +1,13 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { basename, imageAt, normPath, timeMs } from '../model/util';
+import { basename, imageAt, latestImage, normPath, timeMs } from '../model/util';
 import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore } from './credentials';
-import { HOME, LOCATION_WORDS, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
+import { fileLedger } from './ledger';
+import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
@@ -630,6 +631,25 @@ function riskyParent(m: CaptureModel, p: Process): { cls: RiskyParent; path: str
   return null;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Dropped, then executed
+
+/** A file counts as freshly dropped when it was created or renamed into place at most this long before it ran. */
+export const DROP_WINDOW_MS = 15_000;
+/** Run-and-delete: the file was unlinked at most this long after it ran. */
+export const DELETE_WINDOW_MS = 60_000;
+
+const DROPPED_EXPLANATION = 'A file ran within 15 s of a process writing it, from a place a normal install does not run from (a temporary folder, Downloads, /Users/Shared, a mounted volume, a hidden folder) or under a hidden name in a home folder. Downloaded or unpacked code is staged and run right away: the `curl -o` then run pattern, which never passes Gatekeeper because curl sets no quarantine flag. High when the file is unsigned or ad-hoc signed, has a hidden name, or was deleted within 60 s of running (run and delete); med otherwise. Compilers and build tools run what they just built, so a toolchain as the writer is ignored, and so are Go\'s build folders.';
+
+/** Writers whose output is meant to be run at once: compilers, linkers, build systems and package managers. */
+const TOOLCHAIN = new Set(['go', 'cargo', 'rustc', 'swift', 'swiftc', 'clang', 'clang++', 'gcc', 'cc', 'ld', 'xcodebuild', 'make', 'cmake', 'ninja', 'brew']);
+
+/** A path worth checking for a drop: a strong odd place, or a hidden file name under home outside a build or tooling folder. */
+function dropCandidate(path: string): boolean {
+  if (oddLocation(path)?.strength === 'strong') return true;
+  return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
+}
+
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
@@ -1114,6 +1134,44 @@ export const RULES: Rule[] = [
       if (basename(img.path) === 'osascript') mitre.add('T1059.002');
       return {
         evidence: `${RISKY_PARENT_LABEL[found.cls]} ${found.path}${found.how} ran ${cmdline(img)}`,
+        mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'dropped-then-executed', title: 'Ran a file written just before', severity: 'med',
+    explanation: DROPPED_EXPLANATION,
+    mitre: ['T1105', 'T1204.002', 'T1070.004', 'T1564.001'], scope: 'image',
+    match: ({ m, img }) => {
+      if (img.inherited || img.path === null || !dropCandidate(img.path)) return null;
+      const execMs = timeMs(img.time);
+      if (execMs === null) return null;
+      const key = normPath(img.path).toLowerCase();
+      const ledger = fileLedger(m);
+      // The latest drop of this path before the exec, if it is recent enough.
+      let drop: { writer: ProcId; seq: number; ms: number } | null = null;
+      for (const d of ledger.drops.get(key) ?? []) {
+        if (d.ms === null || d.seq >= img.seq || execMs - d.ms < 0 || execMs - d.ms > DROP_WINDOW_MS) continue;
+        if (drop === null || d.seq > drop.seq) drop = { writer: d.writer, seq: d.seq, ms: d.ms };
+      }
+      if (drop === null) return null;
+      const writerProc = m.processes.get(drop.writer);
+      const writer = basename(writerProc ? latestImage(writerProc)?.path ?? null : null);
+      if (TOOLCHAIN.has(writer)) return null;
+      let deleteMs: number | null = null;
+      for (const u of ledger.unlinks.get(key) ?? []) {
+        if (u.ms === null || u.seq <= img.seq || u.ms < execMs || u.ms - execMs > DELETE_WINDOW_MS) continue;
+        if (deleteMs === null || u.ms < deleteMs) deleteMs = u.ms;
+      }
+      const hidden = hiddenName(img.path);
+      const evidence = [`${img.path} was written by ${writer || 'another process'} ${Math.round((execMs - drop.ms) / 1000)} s before it ran`];
+      if (deleteMs !== null) evidence.push(`deleted ${Math.round((deleteMs - execMs) / 1000)} s after`);
+      const mitre = new Set(['T1105', 'T1204.002']);
+      if (deleteMs !== null) mitre.add('T1070.004');
+      if (hidden) mitre.add('T1564.001');
+      return {
+        evidence: evidence.join(', '),
+        severity: deleteMs !== null || hidden || isUnsigned(img) || (!img.isPlatform && isAdhoc(img)) ? 'high' : 'med',
         mitre: [...mitre].sort(),
       };
     },
