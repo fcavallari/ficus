@@ -470,9 +470,10 @@ def net_shapes($str; $code; $login):
                                  | ($colon and ($b | test(COMMAND_BEFORE(LOGIN_PROGRAMS + "|git"))))
                                    or ($b | test(SSH_HOST_BEFORE)))) then
              .s | clean_host($dom; true) | .v = $x[:$at + 1] + .v
+           # The parentheses keep $tld a string: jq 1.8 reads `A and B as $x | C` as `(A and B) as $x | C`.
            elif ($dom | test("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$"))
-                and ($dom | split(".") | last | ascii_downcase) as $tld
-                | FILE_EXTENSIONS[$tld] != true or TLD_EXTENSIONS[$tld] == true then
+                and (($dom | split(".") | last | ascii_downcase) as $tld
+                     | FILE_EXTENSIONS[$tld] != true or TLD_EXTENSIONS[$tld] == true) then
              .s | placeholder("email"; $x) | {v: .ph, s: .state}
            else {v: $x, s: .s} end)
      else {v: $str, s: .} end)
@@ -741,8 +742,9 @@ def seed_kept($t; $m; $code):
         | ($pl + $m.string + $pr | rule_app_bundle) and $after[($pr | length):($pr | length) + 1] == "/")
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
+    # `A and (B as $x | C)` needs its parentheses: jq 1.8 reads `A and B as $x | C` as `(A and B) as $x | C`.
     or ((.acct[$m.string | gsub("\\\\(?= )"; "") | ascii_downcase] // "" | test("^user[0-9]+$"))
-        and weak_account($m.string) as $weak
+        and (weak_account($m.string) as $weak
         | ((($tok | plain_bundle_name) and $weak)
            or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
                | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
@@ -751,7 +753,7 @@ def seed_kept($t; $m; $code):
                | (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
                  and ((($part | plain_bundle_name) and $weak)
                       or (.keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true
-                          and ($weak or (if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/"))))));
+                          and ($weak or (if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/")))))));
 
 # $str with account names and seeds replaced, case-insensitively, as whole words (General string cleaning, step 7; a
 # word ends at anything but a letter or digit, so jdoe_backup is user1_backup):
