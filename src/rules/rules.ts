@@ -1,10 +1,13 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { basename, imageAt, normPath } from '../model/util';
+import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { HOME, LOCATION_WORDS, oddLocation, resolvePath, type LocationKind, type OddLocation } from './locations';
+import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
+import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
+import { fileLedger } from './ledger';
+import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
@@ -48,11 +51,60 @@ export const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
 /** No signature at all; an empty signing ID counts as none. */
 export const isUnsigned = (img: Image): boolean => !img.isPlatform && !img.signingId;
 
-/** The original parent's image when this process was born (the parent may exec something else later). */
-function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
-  const parent = p.originalParent !== null ? m.processes.get(p.originalParent) : undefined;
-  return parent ? imageAt(parent, p.firstSeq) : undefined;
+// ---------------------------------------------------------------------------------------------------------------
+// Credential stores
+
+/** Where a credential store is staged: a normal install never keeps one in these places. A volume is a backup. */
+const STAGING_KINDS: ReadonlySet<LocationKind> = new Set<LocationKind>(['temp', 'shared', 'downloads', 'hidden']);
+const CREDENTIAL_MITRE: Record<string, string> = {
+  'login keychain': 'T1555.001', 'saved Wi-Fi/keychain data': 'T1555.001',
+  'browser logins or cookies': 'T1555.003', 'Firefox logins': 'T1555.003',
+};
+const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
+
+/** The path an argument names: `--file=/x` is `/x`, an option alone names nothing. */
+function pathArgument(a: string): string | null {
+  if (!a.startsWith('-')) return a;
+  return a.startsWith('--') && a.includes('=') ? a.slice(a.indexOf('=') + 1) : null;
 }
+
+/** True when the path, or the folder it names, is in a strong place (a copy into `/tmp` or a hidden folder counts). */
+function inStrongPlace(path: string): boolean {
+  const dir = path.replace(/\/+$/, '');
+  return oddLocation(path)?.strength === 'strong' || strongPlace(normPath(`${dir}/`)) !== null || oddLocation(`${dir}/x`)?.strength === 'strong';
+}
+
+/** The writer's judgment: unsigned, ad-hoc signed, or run from a strong odd place. */
+function writerIsOdd(p: Process): boolean {
+  const last = [...p.images].reverse().find(i => !i.inherited);
+  if (!last) return false;
+  return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
+}
+
+/**
+ * Team IDs Apple signs its non-platform apps with. 59GAB85EFG is Apple's developer-tools team (unverified here: no
+ * Xcode on the machine it was checked on); the others were read with `codesign -dv` from Mac App Store apps: iWork
+ * (Keynote, Numbers, Pages), GarageBand and iMovie. Apple uses more than one team, so this is a list to extend.
+ */
+const APPLE_TEAM_IDS: ReadonlySet<string> = new Set(['59GAB85EFG', '74J34U3R6X', 'F3LWYJ7GM7', 'PTN9T2S29T']);
+const claimsApple = (img: Image): boolean => img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.');
+
+/**
+ * Apple's own code: a platform binary, or a `com.apple.*` signing ID with a real (not ad-hoc) signature from one of
+ * Apple's team IDs, or with no team ID at all and a path only Apple writes to. A signing ID is the signer's own choice,
+ * and a self-signed certificate carries no team ID, so neither the name nor a missing team ID proves anything on its
+ * own: under another team's certificate, or from /tmp, it is a spoof.
+ */
+function isAppleSigned(img: Image): boolean {
+  return hasAppleIdentity(img) || (claimsApple(img) && !isAdhoc(img) && !img.teamId && img.path !== null && appleProgramPath(img.path, true));
+}
+
+/** A platform binary, or a real (not ad-hoc) `com.apple.*` signature from one of Apple's team IDs: identity a path cannot lend. */
+function hasAppleIdentity(img: Image): boolean {
+  return img.isPlatform || (claimsApple(img) && !isAdhoc(img) && !!img.teamId && APPLE_TEAM_IDS.has(img.teamId));
+}
+
+const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
@@ -302,9 +354,25 @@ function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLo
 // Persistence
 
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/[^/]+\.plist$/i;
+/** A launch plist labelled as Apple's (`com.apple.…`, hidden or not) in a place only third parties write to. */
+export const APPLE_LABEL_PLIST = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/\.?com\.apple\.[^/]+\.plist$/i;
+/** Where Apple's own programs live. /usr/local is not Apple's: it is where third-party tools install. The volume ignores letter case. */
+const APPLE_PROGRAM_DIRS = /^\/(?:System|usr(?!\/local\/)|bin|sbin|Library\/Apple)\//i;
+/** Where Apple's developer tools live: the Command Line Tools and Xcode ship tools that carry no team ID of their own. */
+const APPLE_TOOL_DIRS = /^\/(?:Library\/Developer|Applications\/Xcode[^/]*\.app)\//i;
+const DOT_SEGMENT = /(?:^|\/)\.{1,2}(?:\/|$)/;
+
+/** True when the path is somewhere only Apple's own programs live. A path with a `.` or `..` segment is never trusted: it can lead anywhere. */
+function appleProgramPath(path: string, withDeveloperTools = false): boolean {
+  const n = normPath(path);
+  if (DOT_SEGMENT.test(n)) return false;
+  return APPLE_PROGRAM_DIRS.test(n) || (withDeveloperTools && APPLE_TOOL_DIRS.test(n));
+}
 const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
 const ALL_USERS_AGENT_DIR = /^\/Library\/LaunchAgents\//i;
 const USER_AGENT_DIR = /^\/Users\/[^/]+\/Library\/LaunchAgents\//i;
+/** Platform tools that write whatever they are told to: copiers, shells, interpreters and a downloader. */
+const GENERAL_TOOL = /^(?:cp|mv|ditto|tee|cat|curl|sh|bash|zsh|dash|ksh|csh|tcsh|osascript|python[0-9.]*|perl[0-9.]*|ruby[0-9.]*)$/;
 
 type LaunchKind = 'agent' | 'daemon' | 'login' | 'app' | 'user' | null;
 /** The kind of launch item, from the btm item type (0 user item, 1 app, 2 login item, 3 agent, 4 daemon) or its plist directory. */
@@ -372,6 +440,18 @@ export function launchTarget(item: PersistenceItem): { path: string; isApp: bool
   if (exe !== null && exe.startsWith('/')) return { path: exe, isApp: false };
   if (exe !== null) return app !== null ? { path: resolvePath(exe, app), isApp: false } : null;
   return app !== null ? { path: app, isApp: true } : null;
+}
+
+/** True when a captured Apple-signed image sits at the launch target (an app target: anywhere inside the bundle). */
+function appleSignedAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
+  const key = normPath(target.path).toLowerCase();
+  return [...m.processes.values()].some(q => q.images.some(i => {
+    // A platform image or a listed Apple team only: a team-less com.apple image under a developer path is apple-masquerade's
+    // trust, not a reason to clear a launch item that runs it.
+    if (!hasAppleIdentity(i) || i.path === null) return false;
+    const ip = normPath(i.path).toLowerCase();
+    return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
+  }));
 }
 
 /**
@@ -462,7 +542,7 @@ function plistBase(plists: string[]): string {
 // Pipes
 
 /** The language an exec'd image reads from a piped stdin, or null. */
-function pipeLang(img: Image): PipeLang | null {
+export function pipeLang(img: Image): PipeLang | null {
   if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
   const lang = PIPE_LANGS.find(([re]) => re.test(basename(img.path)))?.[1];
   return lang && readsStdin(lang, img.args) ? lang : null;
@@ -470,6 +550,136 @@ function pipeLang(img: Image): PipeLang | null {
 
 /** openssl digest commands, where -d means debug output rather than decode. */
 const OPENSSL_DIGESTS = /^(?:dgst|md4|md5|sha1|sha224|sha256|sha384|sha512|rmd160|ripemd160)$/;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pasted commands (ClickFix)
+
+const PASTE_CHAIN_EXPLANATION = 'A shell, interpreter or osascript read its commands from a pipe a moment after a sibling process (same parent, within 3 s) decoded data (base64 -d, openssl enc -d, xxd -r) or fetched it with a curl, nscurl or wget flag that skips certificate checks or sets a custom user agent. That is the line a ClickFix page tells the user to paste into Terminal: fetch or decode a payload and run it without a file on disk. A plain `curl -fsSL … | bash`, the installer pattern of Homebrew and many tools, does not match this rule (shell-from-pipe still flags it). AI coding agents decode and fetch through their own shell-snapshot shells, so those are ignored.';
+
+/** The first non-inherited image of a process: what it exec'd as soon as it was forked. */
+const firstExec = (p: Process): Image | undefined => p.images.find(i => !i.inherited);
+
+/** A process that runs commands read from a pipe: a shell or interpreter, or an osascript running its script from stdin. */
+function readsPastedCommands(img: Image): boolean {
+  if (pipeLang(img) !== null) return true;
+  return basename(img.path) === 'osascript' && img.stdinIsPipe === true && img.args !== null && osascriptArgs(rest(img)).source === 'stdin';
+}
+
+/** What a sibling's image does for a paste chain: decode data, or fetch it with a flag that hides the fetch from checks. */
+function pasteHelper(img: Image): 'decode' | 'fetch' | null {
+  if (!img.args) return null;
+  const n = basename(img.path);
+  const a = rest(img);
+  if (n === 'base64') return hasShortFlag(a, 'd') || hasShortFlag(a, 'D') || a.includes('--decode') ? 'decode' : null;
+  if (n === 'openssl') return a[0] === 'enc' && a.includes('-d') ? 'decode' : null;
+  if (n === 'xxd') return hasShortFlag(a, 'r') ? 'decode' : null;
+  if (n === 'curl' || n === 'nscurl') {
+    const o = parseOpts(a, CURL_SPEC);
+    return hasOpt(o, 'k', ['--insecure']) || hasOpt(o, 'A', ['--user-agent']) ? 'fetch' : null;
+  }
+  if (n === 'wget') return hasOpt(parseOpts(a, WGET_SPEC), null, ['--no-check-certificate']) ? 'fetch' : null;
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Parents that should not run commands
+
+const RISKY_PARENT_EXPLANATION = 'An app that has no business running commands ran one: Script Editor, an AppleScript applet or an Automator application stub; Word, Excel or PowerPoint (a macro or a booby-trapped document); or a developer tool (VS Code, Cursor, Windsurf, Xcode, dotnet, node, bun) running a download-and-run or an osascript. Droppers disguised as documents, scripts and project folders use these as the first step. Microsoft AutoUpdate and AI coding agents are ignored.';
+
+type RiskyParent = 'script' | 'office' | 'developer';
+const RISKY_PARENT_LABEL: Record<RiskyParent, string> = { script: 'Script Editor or an AppleScript applet', office: 'Office app', developer: 'developer tool' };
+
+const SCRIPT_APP_SIGNING_ID = 'com.apple.ScriptEditor2';
+const OFFICE_APP = /\/Microsoft (?:Word|Excel|PowerPoint)\.app\//;
+const OFFICE_UPDATER = '/Microsoft AutoUpdate.app/';
+/** Microsoft's own Apple team ID: a folder name is anyone's to choose, so the updater is told by its signature. */
+const MICROSOFT_TEAM_ID = 'UBF8T346G9';
+const DEVELOPER_APP = /\/(?:Visual Studio Code|Cursor|Windsurf|Xcode)\.app\//;
+const DEVELOPER_PROGRAMS = new Set(['xcodebuild', 'XCBBuildService', 'dotnet', 'node', 'bun']);
+const SCRIPT_APP_CHILDREN = new Set(['curl', 'nscurl', 'osascript', 'codesign', 'xattr', 'chmod', 'launchctl']);
+const OFFICE_CHILDREN = new Set(['osascript', 'curl', 'chmod']);
+
+/** True when this image is Microsoft AutoUpdate: inside a bundle of that name and signed by Microsoft. */
+const isOfficeUpdater = (img: Image | undefined): boolean => img !== undefined && (img.path ?? '').includes(OFFICE_UPDATER) && img.teamId === MICROSOFT_TEAM_ID;
+
+/** Which kind of risky parent this path or signing ID is, or null. Microsoft AutoUpdate, as signed by Microsoft, is never one. */
+function riskyParentClass(img: Image | undefined): RiskyParent | null {
+  if (img === undefined) return null;
+  const path = img.path ?? '';
+  if (img.signingId === SCRIPT_APP_SIGNING_ID || path.endsWith('/Contents/MacOS/applet') || path.includes('Automator Application Stub')) return 'script';
+  if (isOfficeUpdater(img)) return null;
+  if (OFFICE_APP.test(path)) return 'office';
+  const name = basename(path);
+  return DEVELOPER_APP.test(path) || DEVELOPER_PROGRAMS.has(name) || name.startsWith('Code Helper') ? 'developer' : null;
+}
+
+/** The text a shell is told to run with -c, or null when it has no -c. */
+function shellCommand(img: Image): string | null {
+  const a = rest(img);
+  const i = a.findIndex(x => /^-[A-Za-z]*c[A-Za-z]*$/.test(x));
+  return i < 0 ? null : a.slice(i + 1).join(' ');
+}
+
+/** A shell command that fetches and then hides or runs it: nohup, a pipe into an interpreter, or a fetch with certificate checks turned off. */
+function downloadAndRun(command: string): boolean {
+  if (!/\b(?:curl|wget)\b/.test(command)) return false;
+  if (/\bnohup\b/.test(command) || /(?<!\|)\|(?!\|)\s*(?:sudo\s+)?(?:\S*\/)?(?:sh|bash|zsh|node|python[0-9.]*)(?![\w./-])/.test(command)) return true;
+  // The flag that skips certificate checks belongs to the fetch itself and differs by tool: curl -k or --insecure, but
+  // wget --no-check-certificate (wget -k is --convert-links). `curl … && tar -xkf` or `du -sk` are not it.
+  return command.split(/&&|\|\||[;|&\n]/).some(part =>
+    (/\bcurl\b/.test(part) && /(?:^|\s)-[A-Za-z]*k[A-Za-z]*(?=\s|$)|--insecure/.test(part))
+    || (/\bwget\b/.test(part) && /--no-check-certificate/.test(part)));
+}
+
+/** Does this program, run by a parent of this class, count? A developer parent only counts for a download-and-run or osascript. */
+function riskyChild(cls: RiskyParent, img: Image): boolean {
+  const n = basename(img.path);
+  const shell = img.path !== null && SHELLS.has(img.path);
+  if (cls === 'developer') {
+    if (n === 'osascript') return true;
+    const command = shell ? shellCommand(img) : null;
+    return command !== null && downloadAndRun(command);
+  }
+  if (shell || n === 'osascript' || n === 'curl') return true;
+  return cls === 'script'
+    ? SCRIPT_APP_CHILDREN.has(n) || /^python[0-9.]*$/.test(n)
+    : OFFICE_CHILDREN.has(n) || /^(?:python|perl|ruby)[0-9.]*$/.test(n);
+}
+
+/** The parent that makes this process risky: its class and path, looking at the original parent and (for Office) the responsible process. */
+function riskyParent(m: CaptureModel, p: Process): { cls: RiskyParent; path: string; how: string } | null {
+  const parent = originalParentImage(m, p);
+  const cls = riskyParentClass(parent);
+  if (parent !== undefined && cls !== null) return { cls, path: parent.path ?? '', how: '' };
+  const resp = p.responsible !== null ? m.processes.get(p.responsible) : undefined;
+  const respImage = resp ? imageAt(resp, p.firstSeq) : undefined;
+  // Office's own children are often launched through a plain shell: the responsible process is still the document's app.
+  // Microsoft AutoUpdate anywhere in the chain is the updater, not a document.
+  if (riskyParentClass(respImage) === 'office' && !isOfficeUpdater(parent)) return { cls: 'office', path: respImage?.path ?? '', how: ' (responsible process)' };
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Dropped, then executed
+
+/** A file counts as freshly dropped when it was created or renamed into place at most this long before it ran. */
+export const DROP_WINDOW_MS = 15_000;
+/** Run-and-delete: the file was unlinked at most this long after it ran. */
+export const DELETE_WINDOW_MS = 60_000;
+
+const DROPPED_EXPLANATION = 'A file ran within 15 s of a process writing it, from a place a normal install does not run from (a temporary folder, Downloads, /Users/Shared, a mounted volume, a hidden folder) or under a hidden name in a home folder. Downloaded or unpacked code is staged and run right away: the `curl -o` then run pattern, which never passes Gatekeeper because curl sets no quarantine flag. High when the file is unsigned or ad-hoc signed, has a hidden name, or was deleted within 60 s of running (run and delete); med otherwise. Compilers and build tools run what they just built, so a toolchain as the writer is ignored, and so are Go\'s build folders.';
+
+/** Writers whose output is meant to be run at once: compilers, linkers, build systems and package managers. */
+const TOOLCHAIN = new Set([
+  'go', 'link', 'cargo', 'rustc', 'rust-lld', 'swift', 'swiftc', 'swift-frontend', 'clang', 'clang++', 'gcc', 'cc', 'ld', 'lld', 'ld64.lld', 'zig',
+  'xcodebuild', 'make', 'cmake', 'ninja', 'brew',
+]);
+
+/** A path worth checking for a drop: a strong odd place, or a hidden file name under home outside a build or tooling folder. */
+function dropCandidate(path: string): boolean {
+  if (oddLocation(path)?.strength === 'strong') return true;
+  return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
+}
 
 export const RULES: Rule[] = [
   {
@@ -551,7 +761,13 @@ export const RULES: Rule[] = [
         target !== null && !target.isApp ? `runs ${target.path}` : item.executablePath ? `runs ${item.executablePath}` : null,
         app !== null ? `app ${app}` : null,
       ].filter(Boolean).join('; ') || 'launch item with no paths';
-      const { severity, reason } = persistenceSeverity(target, m);
+      const base = persistenceSeverity(target, m);
+      // An Apple-named plist that runs something Apple did not ship is the masquerade `apple-masquerade` describes.
+      const wearsApple = target !== null && item.plistPath !== null && APPLE_LABEL_PLIST.test(normPath(item.plistPath))
+        && !appleProgramPath(target.path) && !appleSignedAt(m, target);
+      const note = wearsApple ? `Apple-named plist but runs ${target.path}` : null;
+      const severity: Severity = wearsApple ? 'high' : base.severity;
+      const reason = note === null ? base.reason : base.severity === 'high' ? `${base.reason}; ${note}` : note;
       const kind = launchKind(item.itemType, item.plistPath);
       return {
         evidence: `${evidence}; ${severity}: ${reason}`, severity, mitre: launchMitre(kind),
@@ -820,6 +1036,193 @@ export const RULES: Rule[] = [
       if (kind === null) return null;
       const { mitre, what } = RECON_KINDS[kind];
       return { evidence: cmdline(img), mitre: [mitre], explanation: `${what}${RECON_TAIL}` };
+    },
+  },
+  {
+    id: 'credential-store-copy', title: 'Credential store copied', severity: 'med',
+    explanation: CREDENTIAL_COPY_EXPLANATION,
+    mitre: ['T1555.001', 'T1555.003', 'T1005', 'T1074.001'], scope: 'process',
+    matchProcess: (p) => {
+      const evidence: string[] = [];
+      const labels = new Set<string>();
+      let staged = false;                 // a credential store landed in, or a copy tool names, a staging place
+      let copyToPlace = false;            // a copy tool names a credential store and, apart from it, a strong place
+      const seen = new Set<string>();
+      // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder, by something other than a browser.
+      for (const op of p.fileOps) {
+        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        if (target === undefined) continue;
+        const label = credentialStore(target);
+        const where = oddLocation(target);
+        if (label === null || where === null || where.strength !== 'strong' || !STAGING_KINDS.has(where.kind)) continue;
+        // A browser engine writing its own profile is not theft; automation does it in a temporary folder with an ad-hoc browser.
+        if (isBrowserEngine(imageAt(p, op.seq)?.path ?? null)) continue;
+        const key = normPath(target).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
+        labels.add(label);
+        staged = true;
+      }
+      // (b) A copy tool with a credential store among its arguments.
+      for (const img of p.images) {
+        if (img.inherited || !COPY_TOOLS.has(basename(img.path)) || !img.args) continue;
+        const named = img.args.slice(1).flatMap(a => { const x = pathArgument(a); return x === null ? [] : [resolvePath(x, img.cwd)]; });
+        const found = named.flatMap((x, i) => { const l = credentialStore(x); return l === null ? [] : [{ i, l }]; });
+        if (found.length === 0) continue;
+        for (const { l } of found) labels.add(l);
+        evidence.push(`${cmdline(img)} (${found[0]!.l})`);
+        // Another argument in a strong place: the copy goes to, or comes from, a staging place.
+        if (found.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) { staged = true; copyToPlace = true; }
+      }
+      if (evidence.length === 0) return null;
+      const mitre = new Set(['T1005']);
+      for (const l of labels) if (CREDENTIAL_MITRE[l]) mitre.add(CREDENTIAL_MITRE[l]!);
+      if (staged) mitre.add('T1074.001');
+      return {
+        evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
+        mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'apple-masquerade', title: 'Pretends to be Apple', severity: 'high',
+    explanation: APPLE_MASQUERADE_EXPLANATION,
+    mitre: ['T1036.005', 'T1543.001', 'T1543.004'], scope: 'image',
+    match: ({ p, img, imgIndex }) => {
+      const evidence: string[] = [];
+      const mitre = new Set<string>();
+      let severity: Severity = 'med';
+      // (a) Code that signs itself with an Apple signing ID: anyone can pick one, with an ad-hoc signature, a self-signed
+      // certificate (no team ID) or another team's certificate. Apple's own code is platform-signed, or carries one of
+      // Apple's team IDs, or sits in a place only Apple writes to.
+      if (claimsApple(img) && !isAppleSigned(img)) {
+        const who = img.path ?? 'a program';
+        evidence.push(isAdhoc(img) ? `${who} is ad-hoc signed as ${img.signingId}`
+          : img.teamId ? `${who} claims the signing ID ${img.signingId} but is signed by team ${img.teamId}`
+          : `${who} claims the signing ID ${img.signingId} but has no Apple team ID`);
+        mitre.add('T1036.005');
+        severity = 'high';
+      }
+      // (b) A com.apple launch plist written by code that is not Apple's. The process's writes are judged once, under its
+      // first exec'd image: a fork-only writer is skipped here because persistence-plist covers it.
+      if (p.images.findIndex(i => !i.inherited) === imgIndex) {
+        const seen = new Set<string>();
+        for (const f of p.fileOps) {
+          const target = f.kind === 'create' ? f.path : f.kind === 'rename' ? f.toPath : undefined;
+          if (!target) continue;
+          const n = normPath(target);
+          if (!APPLE_LABEL_PLIST.test(n) || seen.has(n.toLowerCase())) continue;
+          const writer = imageAt(p, f.seq);
+          // Apple's installers write to /Library; in a user's own LaunchAgents a platform cp, tee, shell, osascript,
+          // interpreter or curl is only copying someone's plist into place, however Apple-signed the tool is.
+          if (writer === undefined || (isAppleSigned(writer) && !(USER_AGENT_DIR.test(n) && writer.isPlatform && GENERAL_TOOL.test(basename(writer.path))))) continue;
+          seen.add(n.toLowerCase());
+          evidence.push(`${writer.path ?? 'a program'} ${f.kind === 'create' ? 'created' : 'renamed to'} ${target}`);
+          mitre.add('T1036.005');
+          for (const t of launchMitre(launchKind(null, n))) mitre.add(t);
+          if (USER_AGENT_DIR.test(n) || isUnsigned(writer) || isAdhoc(writer)) severity = 'high';
+        }
+      }
+      return evidence.length === 0 ? null : { evidence: evidence.join('; '), severity, mitre: [...mitre].sort() };
+    },
+  },
+  {
+    id: 'clickfix-paste-chain', title: 'Pasted command: fetch, decode and run', severity: 'high',
+    explanation: PASTE_CHAIN_EXPLANATION,
+    mitre: ['T1204.004', 'T1059.004', 'T1140', 'T1105'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      if (!readsPastedCommands(img)) return null;
+      // Once per process: /bin/sh re-execs /bin/bash with the same arguments and the same pipe.
+      if (p.images.slice(0, imgIndex).some(i => !i.inherited && i.path !== null && readsPastedCommands(i))) return null;
+      const readerMs = timeMs(firstExec(p)?.time ?? null);
+      if (readerMs === null || underAgentShell(m, p)) return null;
+      const found: { how: 'decode' | 'fetch'; line: string }[] = [];
+      for (const s of siblings(m, p)) {
+        const ms = timeMs(firstExec(s)?.time ?? null);
+        if (ms === null || Math.abs(ms - readerMs) > PASTE_WINDOW_MS) continue;
+        for (const i of s.images) {
+          const how = i.inherited ? null : pasteHelper(i);
+          if (how !== null) { found.push({ how, line: cmdline(i) }); break; }
+        }
+      }
+      if (found.length === 0) return null;
+      const mitre = new Set(['T1204.004']);
+      if (pipeLang(img)?.mitre === 'T1059.004') mitre.add('T1059.004');
+      for (const f of found) mitre.add(f.how === 'decode' ? 'T1140' : 'T1105');
+      return {
+        evidence: `${cmdline(img)} reads a pipe within ${PASTE_WINDOW_MS / 1000} s of ${found.map(f => f.line).join(' and ')}`,
+        mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'risky-parent-spawn', title: 'App that should not run commands ran one', severity: 'high',
+    explanation: RISKY_PARENT_EXPLANATION,
+    mitre: ['T1059.002', 'T1059.004', 'T1204.002'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      // Only the first program the process ran: /bin/sh re-execs /bin/bash, and a child may run on to something else.
+      if (imgIndex !== p.images.findIndex(i => !i.inherited)) return null;
+      const found = riskyParent(m, p);
+      if (found === null || !riskyChild(found.cls, img)) return null;
+      if (found.cls === 'developer') {
+        // An agent's own spawns are expected: an npm-installed agent (node or bun running it) runs osascript and shells
+        // itself, and an agent's snapshot shell counts only when its parent is that agent. The suspect's own command
+        // line is never evidence of who it is: a snapshot path in a comment would let any payload through.
+        const parent = originalParentImage(m, p);
+        if (agentRuntime(parent) !== null || sourcesAgentSnapshot(img, parent)) return null;
+      }
+      const mitre = new Set<string>();
+      if (found.cls === 'script') mitre.add('T1059.002');
+      if (found.cls === 'office') mitre.add('T1204.002');
+      if (img.path !== null && SHELLS.has(img.path)) mitre.add('T1059.004');
+      if (basename(img.path) === 'osascript') mitre.add('T1059.002');
+      return {
+        evidence: `${RISKY_PARENT_LABEL[found.cls]}${found.path ? ` ${found.path}` : ''}${found.how} ran ${cmdline(img)}`,
+        mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'dropped-then-executed', title: 'Ran a file written just before', severity: 'med',
+    explanation: DROPPED_EXPLANATION,
+    mitre: ['T1105', 'T1204.002', 'T1070.004', 'T1564.001'], scope: 'image',
+    match: ({ m, img }) => {
+      if (img.inherited || img.path === null || !dropCandidate(img.path)) return null;
+      const execMs = timeMs(img.time);
+      if (execMs === null) return null;
+      const key = normPath(img.path).toLowerCase();
+      const ledger = fileLedger(m);
+      // The latest drop of this path before the exec, if it is recent enough.
+      let drop: { writer: ProcId; seq: number; ms: number } | null = null;
+      for (const d of ledger.drops.get(key) ?? []) {
+        if (d.ms === null || d.seq >= img.seq || execMs - d.ms < 0 || execMs - d.ms > DROP_WINDOW_MS) continue;
+        if (drop === null || d.seq > drop.seq) drop = { writer: d.writer, seq: d.seq, ms: d.ms };
+      }
+      if (drop === null) return null;
+      const writerProc = m.processes.get(drop.writer);
+      // The writer is the image the process was running when it wrote. A toolchain name is only a name: a program that runs
+      // from a strong odd place or has no signature at all does not earn the exemption (an ad-hoc one does: Go's linker is).
+      const writerImage = writerProc ? imageAt(writerProc, drop.seq) : undefined;
+      const writer = basename(writerImage?.path ?? null);
+      const dubious = writerImage !== undefined && (isUnsigned(writerImage) || (writerImage.path !== null && oddLocation(writerImage.path)?.strength === 'strong'));
+      if (TOOLCHAIN.has(writer) && !dubious) return null;
+      let deleteMs: number | null = null;
+      for (const u of ledger.unlinks.get(key) ?? []) {
+        if (u.ms === null || u.seq <= img.seq || u.ms < execMs || u.ms - execMs > DELETE_WINDOW_MS) continue;
+        if (deleteMs === null || u.ms < deleteMs) deleteMs = u.ms;
+      }
+      const hidden = hiddenName(img.path);
+      const evidence = [`${img.path} was written by ${writer || 'another process'} ${Math.round((execMs - drop.ms) / 1000)} s before it ran`];
+      if (deleteMs !== null) evidence.push(`deleted ${Math.round((deleteMs - execMs) / 1000)} s after`);
+      const mitre = new Set(['T1105', 'T1204.002']);
+      if (deleteMs !== null) mitre.add('T1070.004');
+      if (hidden) mitre.add('T1564.001');
+      return {
+        evidence: evidence.join(', '),
+        severity: deleteMs !== null || hidden || isUnsigned(img) || (!img.isPlatform && isAdhoc(img)) ? 'high' : 'med',
+        mitre: [...mitre].sort(),
+      };
     },
   },
 ];

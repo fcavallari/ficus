@@ -36,20 +36,20 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Delivery',
     what: <>A fake app in a disk image, a cracked download, or a “ClickFix” page that talks the user into pasting a command
       into Terminal. Files fetched with <C>curl</C> get no quarantine flag, so Gatekeeper never looks at them.</>,
-    rules: ['download', 'odd-location-exec', 'unsigned', 'adhoc'],
+    rules: ['download', 'dropped-then-executed', 'odd-location-exec', 'unsigned', 'adhoc'],
   },
   {
     name: 'Execution',
     what: <>The pasted command runs: <C>curl … | bash</C>, a base64 blob decoded on the fly, an AppleScript stager, an app
       that quietly opens a shell.</>,
-    rules: ['shell-from-pipe', 'payload-decode', 'osascript-script', 'shell-under-app'],
+    rules: ['shell-from-pipe', 'clickfix-paste-chain', 'payload-decode', 'osascript-script', 'shell-under-app', 'risky-parent-spawn'],
   },
   {
     name: 'Getting past the defences',
     what: <>Removing the quarantine flag from what it brought, turning Gatekeeper off, trusting a certificate, detaching
-      from the parent that started it so the tree looks innocent, and borrowing someone else’s privileges through a setuid
-      binary.</>,
-    rules: ['quarantine-strip', 'security-setting-change', 'orphaned', 'uid-mismatch'],
+      from the parent that started it so the tree looks innocent, borrowing someone else’s privileges through a setuid
+      binary, and taking an Apple name (a <C>com.apple.…</C> signing ID or launch plist) so it blends in.</>,
+    rules: ['quarantine-strip', 'security-setting-change', 'orphaned', 'uid-mismatch', 'apple-masquerade'],
   },
   {
     name: 'Credential theft',
@@ -61,7 +61,7 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Discovery and collection',
     what: <>A few quick questions about the machine (<C>whoami</C>, <C>sw_vers</C>, <C>system_profiler</C>), then browser
       profiles, keychains, wallets, Notes and documents copied into a temporary folder and packed into an archive.</>,
-    rules: ['recon', 'archive-staging'],
+    rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
     name: 'Persistence',

@@ -1,4 +1,4 @@
-import { normPath } from '../model/util';
+import { basename, normPath } from '../model/util';
 
 /**
  * Where an odd location is. Strong kinds are places a normal install never runs from: temporary folders, Downloads,
@@ -49,6 +49,12 @@ export function strongPlace(p: string): OddLocation | null {
 /** True when some folder on the path is a project build or tooling folder (node_modules, .build, go-build…). */
 export function inBuildDir(path: string): boolean {
   return normPath(path).split('/').some(isToolingDir);
+}
+
+/** True when the file's own name is hidden: it starts with a dot (but is not `.` or `..`). */
+export function hiddenName(path: string): boolean {
+  const name = basename(path);
+  return name.startsWith('.') && name !== '.' && name !== '..';
 }
 
 export function oddLocation(path: string): OddLocation | null {

