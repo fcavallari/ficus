@@ -233,6 +233,7 @@ HOMES_AWK='
 FILENAME == ARGV[1] { if (split($0, f, "\t") >= 2 && f[1] == "user") acct[tolower(f[2])] = 1; next }
 {
   s = $0
+  gsub(/\\\//, "/", s)   # eslogger writes a slash as \/
   while (match(s, "/Users/[^/\"]+/")) {
     n = tolower(substr(s, RSTART + 7, RLENGTH - 8)); s = substr(s, RSTART + RLENGTH - 1)
     if (n != "shared") { homes = 1; if (n in acct) { found = 1; exit } }
@@ -275,18 +276,41 @@ start_recording() {
   ES_PID=$!
 }
 
-# stop_capture: stop the recorder (ES_PID is the sudo running eslogger): SIGINT so eslogger flushes, then SIGTERM.
-#   Waits a few seconds for each; never blocks for good. ps, not kill -0: the process belongs to root. As in
-#   gameleira-lab.sh; only the recorder is signalled, the cleaner ends when the pipe closes.
+# wait_for PID SECONDS: waits, without polling, until the child PID ends (returns 0), SECONDS pass (1; empty: no limit)
+#   or Ctrl-C, TERM or HUP arrives (2; the trap counts them in SIGNALS). Never polls with ps or sleep: eslogger records
+#   every program this script runs, and ps is a recon tool the rules flag. A timer child signals USR1 when time is up;
+#   on TERM it kills its own sleep, so none is left behind: `stop` covers a TERM that comes before `s` is set (a trap
+#   runs between commands), one before the trap is set ends the timer before its sleep starts, and SIGKILL reaches a
+#   sleep that has not yet exec'd (a forked bash, which would take a TERM as its own trap's and then lose it).
+SIGNALS=0
+wait_for() {
+  local timer= before=$SIGNALS result=0
+  TIMED_OUT=
+  trap 'TIMED_OUT=1' USR1
+  if [ -n "$2" ]; then
+    ( s= stop=
+      trap 'stop=1; [ -z "$s" ] || kill -KILL "$s" 2>/dev/null' TERM
+      sleep "$2" & s=$!
+      [ -z "$stop" ] || kill -KILL "$s" 2>/dev/null
+      [ -n "$stop" ] || wait "$s" 2>/dev/null
+      [ -n "$stop" ] || kill -USR1 $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    timer=$!
+  fi
+  [ -n "$TIMED_OUT" ] || [ "$SIGNALS" != "$before" ] || wait "$1" 2>/dev/null
+  if [ -n "$TIMED_OUT" ]; then result=1; elif [ "$SIGNALS" != "$before" ]; then result=2; fi
+  if [ -n "$timer" ]; then kill -TERM "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi
+  return "$result"
+}
+
+# stop_capture: stop the recorder (ES_PID is the sudo running eslogger): SIGINT so eslogger flushes, then SIGTERM, to
+#   the recorder only, as gameleira-lab.sh does; the cleaner ends when the pipe closes. Waits 5 s for each (another
+#   Ctrl-C skips to SIGTERM); never blocks for good.
 stop_capture() {
   [ -n "$ES_PID" ] || return 0
-  local sig i
+  local sig
   for sig in INT TERM; do
     $SUDO_CMD kill "-$sig" "$ES_PID" 2>/dev/null
-    i=0
-    while ps -p "$ES_PID" >/dev/null 2>&1 && [ $i -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
-    if ! ps -p "$ES_PID" >/dev/null 2>&1; then
-      wait "$ES_PID" 2>/dev/null
+    if wait_for "$ES_PID" 5; then
       ES_PID=''
       return 0
     fi
@@ -295,24 +319,18 @@ stop_capture() {
   return 1
 }
 
-# record_until_stopped SECONDS: waits for Ctrl-C (STOP, set by the trap), SECONDS (none: no limit) or the recorder
-# ending by itself, then stops the recorder and waits for the cleaner to finish. Returns 1 when the recorder stopped by
-# itself.
+# record_until_stopped SECONDS: waits for Ctrl-C (or TERM, HUP), SECONDS (empty: no limit) or the recorder ending by
+# itself, then stops the recorder and waits for the cleaner to finish. Returns 1 when the recorder stopped by itself.
 record_until_stopped() {
-  local started=$SECONDS by_itself=0
-  while [ -z "$STOP" ]; do
-    if ! ps -p "$ES_PID" >/dev/null 2>&1; then by_itself=1; break; fi
-    [ -z "$1" ] || [ $((SECONDS - started)) -lt "$1" ] || break
-    sleep 0.5
-  done
-  if [ "$by_itself" = 1 ]; then
-    wait "$ES_PID" 2>/dev/null
+  local by_itself=0
+  if [ -z "$STOP" ] && wait_for "$ES_PID" "$1"; then
+    by_itself=1
     ES_PID=''
   elif ! stop_capture; then
     ES_PID=''
     die "the capture may still be growing"
   fi
-  # A trapped signal ends `wait` early: wait until the cleaner is really gone.
+  # A trapped signal ends `wait` early: wait until the cleaner is really gone (kill -0 is a builtin, it runs nothing).
   while kill -0 "$CLEANER_PID" 2>/dev/null; do wait "$CLEANER_PID"; done
   CLEANER_PID=''
   return "$by_itself"
@@ -453,7 +471,7 @@ main() {
   if [ "$mode" = record ]; then
     # Ctrl-C, or the terminal closing, stops eslogger only; the cleaner then reads to the end of the pipe.
     STOP=
-    trap 'STOP=1' INT TERM HUP
+    trap 'STOP=1; SIGNALS=$((SIGNALS + 1))' INT TERM HUP
     start_recording "$config" "$key" "$stats" "$out"
     if [ -n "$seconds" ]; then
       printf 'gameleira-clean: recording for %s s; Ctrl-C stops it sooner.\n' "$seconds" >&2
@@ -476,7 +494,13 @@ main() {
   fi
 
   if [ -n "$stopped_by_itself" ]; then
-    printf 'gameleira-clean: eslogger stopped by itself (see above; does the terminal have Full Disk Access?)\n' >&2
+    if [ -s "$stats" ] && [ "$("$JQ" -r '.eventsIn' < "$stats" 2>/dev/null)" = 0 ]; then
+      # Nothing was recorded: leave no key or empty capture in the way of the next run.
+      [ -n "$LOADED_KEY" ] || rm -f "$key"
+      [ "$out" = - ] || [ -s "$out" ] || rm -f "$out"
+      die "eslogger stopped before recording anything (see above; does the terminal have Full Disk Access?)"
+    fi
+    printf 'gameleira-clean: eslogger stopped by itself (see above)\n' >&2
   fi
   [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and $key holds only the placeholders made so far: pass -k $key to carry on from it, or remove it"
   print_summary "$stats"

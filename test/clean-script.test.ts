@@ -2974,7 +2974,7 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
 describe.skipIf(!fs.existsSync(JQ))('record', () => {
   const darwin = process.platform === 'darwin';
   const ALICE = synthLines().find(l => l.includes('/Users/alice/'))!;
-  const recorder = (lineFile: string): string => `trap '' INT; while :; do cat '${lineFile}'; sleep 0.05; done`;
+  const recorder = (lineFile: string): string => `trap '' INT; while :; do cat '${lineFile}'; /bin/sleep 0.05; done`;
   const lineFile = (dir: string): string => {
     const f = path.join(dir, 'line.jsonl');
     fs.writeFileSync(f, ALICE + '\n');
@@ -2997,6 +2997,16 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     return lines(r.stdout.toString()).length;
   };
   const sleep = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms));
+  /** /bin/bash ARGS in a process group of its own (the group's id is its pid), to its end and its streams' close. */
+  const detached = (args: string[]): Promise<{ status: number | null; stdout: string; stderr: string; pid: number }> => {
+    const child = spawn('/bin/bash', args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    groups.push(child.pid!);
+    let stdout = '';
+    let stderr = '';
+    child.stdout!.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+    child.stderr!.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+    return new Promise(res => child.on('close', status => res({ status, stdout, stderr, pid: child.pid! })));
+  };
 
   test('record refuses to run as root', () => {
     const r = runClean(['record', '-t', '5'], { env: { GAMELEIRA_CLEAN_FAKE_UID: '0' } });
@@ -3005,10 +3015,10 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(r.summary['key']).toBeUndefined();
   });
 
-  test('stopping the recorder lets the cleaner finish', () => {
+  test('stopping the recorder lets the cleaner finish', async () => {
     const dir = tmpDir();
     const t0 = Date.now();
-    const res = spawnSync('/bin/bash', ['-c', [
+    const res = await detached(['-c', [
       `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `SUDO_CMD=''`,
       `RECORDER=(/bin/bash -c "${recorder(lineFile(dir))}")`,
@@ -3022,9 +3032,12 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
       'wait "$CLEANER_PID"',
       'if ps -p "$recorder" >/dev/null 2>&1; then echo alive; else echo stopped; fi',
       'cleanup',
-    ].join('\n')], { timeout: 20000 });
-    expect(res.stdout.toString().trim().split('\n').at(-1), res.stderr.toString()).toBe('stopped');
+    ].join('\n')]);
+    expect(res.stdout.trim().split('\n').at(-1), res.stderr).toBe('stopped');
     expect(Date.now() - t0).toBeLessThan(15000);
+    // Nothing is left behind, a timer's sleep included.
+    for (let i = 0; i < 20 && inGroup(res.pid) > 0; i++) await sleep(100);
+    expect(inGroup(res.pid)).toBe(0);
     const out = fs.readFileSync(path.join(dir, 'out'), 'utf8');
     expect(lines(out).length).toBeGreaterThan(0);
     complete(out, fs.readFileSync(path.join(dir, 'key'), 'utf8'));
@@ -3063,25 +3076,52 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(inGroup(pgid)).toBe(0);
   }, 30000);
 
-  test.runIf(darwin)('record -t stops by itself and prints the summary', () => {
+  // eslogger records every program the script runs, so waiting must not poll: `ps` is a recon tool the rules flag.
+  test.runIf(darwin)('record -t stops by itself and prints the summary, without polling', () => {
     const dir = tmpDir();
     const out = path.join(dir, 'out.jsonl');
+    const bin = path.join(dir, 'bin');
+    const log = path.join(dir, 'runs');
+    fs.mkdirSync(bin);
+    for (const p of ['ps', 'sleep']) fs.writeFileSync(path.join(bin, p), `#!/bin/bash\necho ${p} >> '${log}'\nexec /bin/${p} "$@"\n`, { mode: 0o755 });
     const t0 = Date.now();
-    const r = runClean(['record', '-t', '1', '-o', out], { env: { GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) } });
+    const r = runClean(['record', '-t', '2', '-o', out], { env: { GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)), PATH: `${bin}:${process.env.PATH}` } });
     expect(r.status, r.stderr).toBe(0);
     expect(Date.now() - t0).toBeLessThan(15000);
+    const runs = fs.existsSync(log) ? lines(fs.readFileSync(log, 'utf8')) : [];
+    expect(runs.filter(x => x === 'ps')).toHaveLength(0);
+    // One timer for -t, one for each signal stop_capture sends (the stand-in ignores SIGINT).
+    expect(runs.filter(x => x === 'sleep').length).toBeLessThanOrEqual(3);
     expect(lines(r.out).length).toBeGreaterThan(0);
     expect(r.summary['events out']).toBe(String(lines(r.out).length));
     expect(r.summary['events the cleaner could not clean']).toBe('0');
     complete(r.out, r.key);
   }, 20000);
 
+  test.runIf(darwin)('record that records nothing fails and leaves no key or capture behind', () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const key = path.join(dir, 'fresh.key.tsv');
+    const r = runClean(['record', '-o', out, '-k', key], { env: { GAMELEIRA_CLEAN_RECORDER: 'exit 0' } });
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.stderr).toMatch(/eslogger stopped before recording anything/);
+    expect(fs.existsSync(key)).toBe(false);
+    expect(fs.existsSync(out)).toBe(false);
+  });
+
+  // eslogger writes a slash as \/; JSON.stringify does not, so both forms are checked. With local seeds on, stderr can
+  // name this Mac's account (the short-names line), so it is only ever tested, never printed.
+  const escapeSlashes = (l: string): string => l.replace(/\//g, '\\/');
+  const WARNING = "this capture's home folders name no account of this Mac; names outside paths are only caught with -S";
+
   test.runIf(darwin)('clean -i warns about a capture from another Mac', () => {
-    const input = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1) + '\n';
-    const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
-    expect(r.status).toBe(0);
-    expect(r.stderr).toMatch(/this capture's home folders name no account of this Mac; names outside paths are only caught with -S/);
-    expect(lines(r.out)).toHaveLength(1);
+    const line = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1);
+    for (const l of [line, escapeSlashes(line)]) {
+      const r = runClean(['clean', '-o', '-'], { input: l + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+      expect(r.status).toBe(0);
+      expect(r.stderr.includes(WARNING), 'the other-Mac warning').toBe(true);
+      expect(lines(r.out)).toHaveLength(1);
+    }
   });
 
   // This Mac's own names: computed here and never printed, so a failure names the check, not the value.
@@ -3099,10 +3139,10 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const input = [
       esCreate(zsh, { path: `/Users/${me}/Documents/notes.txt` }, 1),
       esExec(sh, echo, { args: ['echo', `owner ${me} on ${computer}`, serial], cwd: `/Users/${me}`, env: [`HOME=/Users/${me}`], seq: 2 }),
-    ].join('\n') + '\n';
+    ].map(escapeSlashes).join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '', GAMELEIRA_CLEAN_JQ: spyJq } });
     expect(r.status).toBe(0);
-    expect(r.stderr.includes('name no account of this Mac'), 'warning on a capture of this Mac').toBe(false);
+    expect(r.stderr.includes(WARNING), 'warning on a capture of this Mac').toBe(false);
     const low = r.out.toLowerCase();
     expect(low.includes(`/users/${me.toLowerCase()}/`), 'account name in a path').toBe(false);
     // A short or common account or computer name is replaced only where it cannot be another word (see the seeds tests).
