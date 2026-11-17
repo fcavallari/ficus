@@ -78,6 +78,13 @@ function writerIsOdd(p: Process): boolean {
   return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
 }
 
+/** Apple's own code: a platform binary, or a `com.apple.*` signing ID backed by a real (not ad-hoc) signature. */
+function isAppleSigned(img: Image): boolean {
+  return img.isPlatform || (img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.') && !isAdhoc(img));
+}
+
+const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself ad-hoc with a `com.apple.…` signing ID (Apple\'s own code is platform-signed, and anyone can pick any ad-hoc ID), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
+
 /** The original parent's image when this process was born (the parent may exec something else later). */
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
   const parent = p.originalParent !== null ? m.processes.get(p.originalParent) : undefined;
@@ -332,6 +339,10 @@ function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLo
 // Persistence
 
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/[^/]+\.plist$/i;
+/** A launch plist labelled as Apple's (`com.apple.…`, hidden or not) in a place only third parties write to. */
+export const APPLE_LABEL_PLIST = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/\.?com\.apple\.[^/]+\.plist$/i;
+/** Where Apple's own programs live. /usr/local is not Apple's: it is where third-party tools install. */
+const APPLE_PROGRAM_DIRS = /^\/(?:System|usr(?!\/local\/)|bin|sbin|Library\/Apple)\//;
 const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
 const ALL_USERS_AGENT_DIR = /^\/Library\/LaunchAgents\//i;
 const USER_AGENT_DIR = /^\/Users\/[^/]+\/Library\/LaunchAgents\//i;
@@ -402,6 +413,16 @@ export function launchTarget(item: PersistenceItem): { path: string; isApp: bool
   if (exe !== null && exe.startsWith('/')) return { path: exe, isApp: false };
   if (exe !== null) return app !== null ? { path: resolvePath(exe, app), isApp: false } : null;
   return app !== null ? { path: app, isApp: true } : null;
+}
+
+/** True when a captured platform binary sits at the launch target (an app target: anywhere inside the bundle). */
+function platformAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
+  const key = normPath(target.path).toLowerCase();
+  return [...m.processes.values()].some(q => q.images.some(i => {
+    if (!i.isPlatform || i.path === null) return false;
+    const ip = normPath(i.path).toLowerCase();
+    return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
+  }));
 }
 
 /**
@@ -581,7 +602,13 @@ export const RULES: Rule[] = [
         target !== null && !target.isApp ? `runs ${target.path}` : item.executablePath ? `runs ${item.executablePath}` : null,
         app !== null ? `app ${app}` : null,
       ].filter(Boolean).join('; ') || 'launch item with no paths';
-      const { severity, reason } = persistenceSeverity(target, m);
+      const base = persistenceSeverity(target, m);
+      // An Apple-named plist that runs something Apple did not ship is the masquerade `apple-masquerade` describes.
+      const wearsApple = target !== null && item.plistPath !== null && APPLE_LABEL_PLIST.test(normPath(item.plistPath))
+        && !APPLE_PROGRAM_DIRS.test(normPath(target.path)) && !platformAt(m, target);
+      const note = wearsApple ? `Apple-named plist but runs ${target.path}` : null;
+      const severity: Severity = wearsApple ? 'high' : base.severity;
+      const reason = note === null ? base.reason : base.severity === 'high' ? `${base.reason}; ${note}` : note;
       const kind = launchKind(item.itemType, item.plistPath);
       return {
         evidence: `${evidence}; ${severity}: ${reason}`, severity, mitre: launchMitre(kind),
@@ -895,6 +922,40 @@ export const RULES: Rule[] = [
         evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
         mitre: [...mitre].sort(),
       };
+    },
+  },
+  {
+    id: 'apple-masquerade', title: 'Pretends to be Apple', severity: 'high',
+    explanation: APPLE_MASQUERADE_EXPLANATION,
+    mitre: ['T1036.005', 'T1543.001', 'T1543.004'], scope: 'image',
+    match: ({ p, img, imgIndex }) => {
+      const evidence: string[] = [];
+      const mitre = new Set<string>();
+      let severity: Severity = 'med';
+      // (a) Ad-hoc code that signs itself with an Apple signing ID: anyone can do it, and Apple never ships it.
+      if (img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.') && !img.isPlatform && isAdhoc(img)) {
+        evidence.push(`${img.path ?? 'a program'} is ad-hoc signed as ${img.signingId}`);
+        mitre.add('T1036.005');
+        severity = 'high';
+      }
+      // (b) A com.apple launch plist written by code that is not Apple's. The process's writes are judged once.
+      if (p.images.findIndex(i => !i.inherited) === imgIndex) {
+        const seen = new Set<string>();
+        for (const f of p.fileOps) {
+          const target = f.kind === 'create' ? f.path : f.kind === 'rename' ? f.toPath : undefined;
+          if (!target) continue;
+          const n = normPath(target);
+          if (!APPLE_LABEL_PLIST.test(n) || seen.has(n.toLowerCase())) continue;
+          const writer = imageAt(p, f.seq);
+          if (writer === undefined || isAppleSigned(writer)) continue;
+          seen.add(n.toLowerCase());
+          evidence.push(`${writer.path ?? 'a program'} ${f.kind === 'create' ? 'created' : 'renamed to'} ${target}`);
+          mitre.add('T1036.005');
+          for (const t of launchMitre(launchKind(null, n))) mitre.add(t);
+          if (USER_AGENT_DIR.test(n) || isUnsigned(writer) || isAdhoc(writer)) severity = 'high';
+        }
+      }
+      return evidence.length === 0 ? null : { evidence: evidence.join('; '), severity, mitre: [...mitre].sort() };
     },
   },
 ];

@@ -346,6 +346,7 @@ run() {
 #   46  a standalone launch agent for an updater app, no process tied to it
 #   50..53  a second shell runs sw_vers, uname -a, system_profiler: a recon burst
 #   80  zsh: cp of the login keychain into /tmp/lab
+#   85  zsh: an unsigned program from /Users/Shared writes a launch agent plist named com.apple.…
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -491,6 +492,13 @@ synthetic_story() {
   ev_create 80.2 "$c" "$LAB/login.keychain-db"
   ev_exit 80.3 "$c"
   answer keychain-copy credential-store-copy high queued 'Keychains/login.keychain-db' 'The login keychain copied into a temporary folder: stealers stage it there before uploading.'
+
+  # 10. An unsigned program writes a launch agent plist that wears Apple's name.
+  ev_fork 85.0 "$ZSH" 7620 9620; c=$LAST
+  ev_exec 85.1 "$c" /Users/Shared/Softwareupdate/helper unsigned '' '' "$CWD" tty helper --install com.apple.softwareupdate.helper
+  ev_create 85.2 "$c" "$AGENTS/com.apple.softwareupdate.helper.plist"
+  ev_exit 85.3 "$c"
+  answer masquerade apple-masquerade high queued '--install com.apple.softwareupdate.helper' 'An unsigned program writes a launch agent plist named like Apple'"'"'s: the persistence looks like part of macOS.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -513,6 +521,7 @@ live_answers() {
     '#     succeed, or get a password prompt. Only csrutil, which refuses outside Recovery, runs.' \
     '#   keychain-access med and low: the lab makes one keychain call, for an item that does not exist.' \
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
+    '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'

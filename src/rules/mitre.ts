@@ -4,6 +4,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1016': 'System Network Configuration Discovery',
   'T1016.002': 'Wi-Fi Discovery',
   'T1033': 'System Owner/User Discovery',
+  'T1036.005': 'Masquerading: Match Legitimate Name or Location',
   'T1036.009': 'Break Process Trees',
   'T1056.002': 'GUI Input Capture',
   'T1057': 'Process Discovery',
