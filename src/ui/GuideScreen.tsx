@@ -188,7 +188,7 @@ function RuleList({ show, setShow, order, setOrder }: {
               {newStage && <li className="grules-stage"><h4>{stage}</h4></li>}
               <li id={`g-rule-${r.id}`}>
                 <div className="grule-h">
-                  <span className="grule-sev" aria-label={`Severity: ${levelsText(levels)}`}>
+                  <span className="grule-sev" role="img" aria-label={`Severity: ${levelsText(levels)}`}>
                     {levels.map(l => <span key={l} className={`badge sev-${l}`} aria-hidden="true">{l}</span>)}
                   </span>
                   <strong>{r.title}</strong>
@@ -598,8 +598,8 @@ export function GuideScreen({ section }: { section: string }) {
                   <RuleChip id="odd-location-exec" /> and <RuleChip id="adhoc" />.</td></tr>
                 <tr><td>The applet</td><td>Its shell (<C>echo practice-applet</C>) shows <RuleChip id="risky-parent-spawn" />,
                   an app that should not run commands, and <RuleChip id="shell-under-app" />. The applet itself shows{' '}
-                  <RuleChip id="dropped-then-executed" />: <C>osacompile</C> had just written it. If it has not returned after a
-                  few seconds, press Ctrl-C.</td></tr>
+                  <RuleChip id="dropped-then-executed" />: <C>osacompile</C> had just written it. An applet may wait for
+                  more to do once its script has run, so the step stops it after five seconds.</td></tr>
                 <tr><td><C>(sleep 90 &amp;)</C></td><td><RuleChip id="orphaned" />: its current parent is launchd, its original
                   parent the subshell. Switch the Tree between parent modes and watch it move.</td></tr>
                 <tr><td><C>open -a Calculator</C></td><td>Nothing flagged. Find it in the Tree: launchd started it (by way of{' '}
@@ -749,7 +749,8 @@ cp /usr/bin/true /tmp/stage/agent && codesign -f -s - /tmp/stage/agent && /tmp/s
 
 # 6. an app that runs a shell: an AppleScript applet
 echo 'do shell script "echo practice-applet"' > /tmp/stage/applet.applescript
-osacompile -o /tmp/stage/Practice.app /tmp/stage/applet.applescript && /tmp/stage/Practice.app/Contents/MacOS/applet
+osacompile -o /tmp/stage/Practice.app /tmp/stage/applet.applescript
+/tmp/stage/Practice.app/Contents/MacOS/applet & sleep 5; kill $! 2>/dev/null
 
 # 7. detach from the parent
 (sleep 90 &)
