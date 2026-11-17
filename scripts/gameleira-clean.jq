@@ -1539,6 +1539,13 @@ def argv_secrets($args):
 def code_maybe:
   contains("=") or contains("--") or contains("assword") or contains("curl") or contains("dscl") or contains("security") or contains("mysql")
   or contains("mariadb") or contains("sshpass") or contains("zip") or contains("7z") or contains("openssl");
+# A word of shell code as the shell reads it: '…' as it is, "…" with \" \\ \$ \` undone, \x outside quotes as x.
+def SHELL_PIECE: "'([^']*)'|\"((?:\\\\[\\s\\S]|[^\"\\\\])*)\"|\\\\([\\s\\S])|([^'\"\\\\]+)|([\\s\\S])";
+def shell_unquote:
+  [scan(SHELL_PIECE) | if .[0] != null then .[0] elif .[1] != null then .[1] | gsub("\\\\(?<c>[\"\\\\$`\n])"; .c)
+                       else .[2] // .[3] // .[4] end] | join("");
+# A value written back as one shell word: as it is when nothing in it is special to the shell, else in '…'.
+def shell_quote: if test("^[^\\s'\"\\\\$`;&|<>()*?\\[\\]{}#~]*$") then . else "'" + gsub("'"; "'\\''") + "'" end;
 def CODE_SEPARATORS: {";": true, "|": true, "&": true, "(": true, ")": true, "`": true, "\n": true};
 # AppleScript's do shell script … password "…" (osascript -e, or in shell code) is redacted first.
 def APPLESCRIPT_PASSWORD: "(?i)(?<p>\\bpassword\\s+)\"(?:[^\"\\\\]|\\\\.)*\"";
@@ -1556,23 +1563,27 @@ def code_secrets($str0):
          else .cur += [$m] end)
      | .cmds + [.cur] | map(select(length > 0))) as $cmds
     | reduce $cmds[] as $c ({s: ., ed: []};
-        ($c | map(.string | plain_word)) as $u
+        # Each word as the shell reads it; a plain word ("…", '…' or no quotes) keeps its quotes when it is written back,
+        # any other word that changes is written as one shell word (shell_quote).
+        ($c | map(.string | plain_word)) as $pw
+        | ($c | map(.string | plain_word // shell_unquote)) as $u
         | (.s | command_secrets($u)) as $r
         | .s = $r.s
         | reduce range(0; $c | length) as $i (.;
             $c[$i] as $m | $m.string as $raw
             | if $r.v[$i] != $u[$i] then
                 .ed += [{at: $m.offset, len: $m.length,
-                         text: (if $u[$i] != null and $raw != $u[$i] then $raw[:1] + $r.v[$i] + $raw[-1:] else $r.v[$i] end)}]
+                         text: (if $pw[$i] == null then $r.v[$i] | shell_quote
+                                elif $raw != $pw[$i] then $raw[:1] + $r.v[$i] + $raw[-1:] else $r.v[$i] end)}]
               else
                 # Quoted code in the code: "…" (only \" escaped inside) or '…'.
-                ($u[$i] // (if $raw | test("^\"(?:[^\"\\\\]|\\\\\")*\"$") then $raw[1:-1] | gsub("\\\\\""; "\"") else null end)) as $in
+                ($pw[$i] // (if $raw | test("^\"(?:[^\"\\\\]|\\\\\")*\"$") then $raw[1:-1] | gsub("\\\\\""; "\"") else null end)) as $in
                 | if $in == null or $in == $raw or ($in | code_maybe | not) then .
                   else (.s | code_secrets($in)) as $q
                     | if $q.v == $in then .s = $q.s
                       else .s = $q.s
                         | .ed += [{at: $m.offset, len: $m.length,
-                                   text: ($raw[:1] + (if $raw[:1] == "\"" and $u[$i] == null then $q.v | gsub("\""; "\\\"") else $q.v end) + $raw[-1:])}]
+                                   text: ($raw[:1] + (if $raw[:1] == "\"" and $pw[$i] == null then $q.v | gsub("\""; "\\\"") else $q.v end) + $raw[-1:])}]
                       end
                   end
               end))
