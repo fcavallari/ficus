@@ -1502,11 +1502,16 @@ def command_at($w; $from):
 # One command (a list of words: strings, or null where a word is not plain): credentials redacted and request bodies
 # keyed, behind wrappers too (sudo -u root curl -u bob:pw …: the wrapper's own option values are not the command's).
 # Input: the state. Output: {v, s}.
+# Words before a command (assignments, a wrapper and its options) or with no command: only the generic credentials.
+# Input: the state. Output: {v, s}.
+def generic_secrets($x):
+  generic_edits($x; 0; false) as $ed
+  | if $ed == [] then {v: $x, s: .}
+    else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $d ($x; .[$d.i] = $d.v)), s: .} end;
 def command_secrets($w):
   (($w[0] // "") | split("/") | last // "") as $p0
   | (if WRAPPER_OPTIONS[$p0] != null or ($p0 | test("^[A-Za-z_][A-Za-z0-9_]*=")) then command_at($w; 0) else 0 end) as $k
-  | if $k == null then {v: $w, s: .} | .v as $x | .s | generic_edits($x; 0; false) as $ed
-      | if $ed == [] then {v: $x, s: .} else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $d ($x; .[$d.i] = $d.v)), s: .} end
+  | if $k == null then generic_secrets($w)
     else
       (($w[$k] // "") | split("/") | last // "") as $prog
       | redact_args($w[$k:]; $prog) as $r0
@@ -1515,11 +1520,7 @@ def command_secrets($w):
       | ($r0 | if $u == null then . else wrapped_at($r0.v; $u) as $c
            | if $c == null then . else .v as $v | .s | command_secrets($v[$c:]) | .v = $v[:$c] + .v end end) as $r
       | ($r.s | map_data($r.v; $prog)) as $d
-      | (if $k == 0 then {v: [], s: $d.s}
-         else ($w[:$k]) as $pre | $d.s | generic_edits($pre; 0; false) as $ed
-           | if $ed == [] then {v: $pre, s: .}
-             else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $e ($pre; .[$e.i] = $e.v)), s: .} end
-         end) as $h
+      | (if $k == 0 then {v: [], s: $d.s} else $d.s | generic_secrets($w[:$k]) end) as $h
       | {v: ($h.v + $d.v), s: $h.s}
     end;
 
