@@ -1269,8 +1269,9 @@ def unrest_urls($prot): if $prot == [] then . else gsub("\u0001(?<i>[0-9]+)\u000
 def REDACTED: "\u0002";
 def unmark: if contains("\u0002") then split("\u0002") | join("<redacted>") else . end;
 
-# Credential shapes, recognised anywhere: AWS access keys, GitHub tokens, Slack tokens, sk- API keys, JWTs and PEM
-# private key blocks. One regex of the kinds a cheap test finds (each regex is compiled on every call); no shape is
+# Credential shapes, recognised anywhere: AWS access keys, GitHub tokens, Slack tokens, sk- API keys, JWTs, PEM
+# private key blocks, and the token after Bearer (an Authorization header outside curl's -H: git -c
+# http.extraHeader=…). One regex of the kinds a cheap test finds (each regex is compiled on every call); no shape is
 # shorter than 15 characters. Input: the string.
 def shape_res:
   if length < 15 then []
@@ -1280,6 +1281,7 @@ def shape_res:
          (if contains("xox") then "(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}" else empty end),
          (if contains("sk-") or contains("sk_") then "(?<![A-Za-z0-9_-])(?:sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,})" else empty end),
          (if contains("eyJ") then "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*" else empty end),
+         (if contains("earer") then "(?<=[Bb]earer\\s)[A-Za-z0-9._~+/-]{8,}=*" else empty end),
          (if contains("PRIVATE KEY") then
             "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:[\\s\\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|[\\s\\S]*$)" else empty end) ]
   end;
@@ -1501,16 +1503,19 @@ def command_secrets($w):
       | {v: ($h.v + $d.v), s: $h.s}
     end;
 
-# Credentials and request bodies in an exec's arguments (argv). An argument that is code (sh -c 'TOKEN=x curl …') is
-# not one NAME=value: its commands are read in the walk (code_secrets), so an edit here is undone. Input: the state.
-# Output: {v, s}.
+# Credentials and request bodies in an exec's arguments (argv), and in ssh's remote command when it comes as several
+# arguments (ssh host mysql -pX). An argument that is code (sh -c 'TOKEN=x curl …') is not one NAME=value: its commands
+# are read in the walk (code_secrets), so an edit here is undone. Input: the state. Output: {v, s}.
 def argv_secrets($args):
   if ($args | length) < 2 then {v: $args, s: .}
-  else command_secrets([$args[] | if type == "string" then . else null end]) as $r
-    | ($args[0] | if type == "string" then split("/") | last // "" else "" end) as $prog
+  else ($args[0] | if type == "string" then split("/") | last // "" else "" end) as $prog
+    | command_secrets([$args[] | if type == "string" then . else null end])
+    | (if $prog == "ssh" then ssh_command_index($args) else null end) as $sc
+    | (if $sc == null or $sc >= ($args | length) then .
+       else .v as $v | .s | command_secrets($v[$sc:]) | .v = $v[:$sc] + .v end) as $r
     | [range(1; $args | length) as $i
        | select(($args[$i] | type) == "string" and $r.v[$i] != $args[$i] and ($args[$i] | test("\\s")))
-       | select(code_arg($prog; $args; $i; shell_text($args; $i; if $prog == "ssh" then ssh_command_index($args) else null end)))
+       | select(code_arg($prog; $args; $i; shell_text($args; $i; $sc)))
        | $i] as $code
     | {v: [range(0; $args | length) as $i
            | if ($args[$i] | type) != "string" or ($code | index([$i])) != null then $args[$i] else $r.v[$i] end],
@@ -1522,13 +1527,18 @@ def argv_secrets($args):
 # quoted word keeps its quotes; a quoted word that is code itself (bash -c "…", do shell script "…") is read the same
 # way. A cheap test first: nothing can match without one of these words.
 def code_maybe:
-  contains("=") or contains("--") or contains("curl") or contains("dscl") or contains("security") or contains("mysql")
+  contains("=") or contains("--") or contains("assword") or contains("curl") or contains("dscl") or contains("security") or contains("mysql")
   or contains("mariadb") or contains("sshpass") or contains("zip") or contains("7z") or contains("openssl");
 def CODE_SEPARATORS: {";": true, "|": true, "&": true, "(": true, ")": true, "`": true, "\n": true};
-def code_secrets($str):
-  if ($str | code_maybe | not) then {v: $str, s: .}
+# AppleScript's do shell script … password "…" (osascript -e, or in shell code) is redacted first.
+def APPLESCRIPT_PASSWORD: "(?i)(?<p>\\bpassword\\s+)\"(?:[^\"\\\\]|\\\\.)*\"";
+def code_secrets($str0):
+  if ($str0 | code_maybe | not) then {v: $str0, s: .}
   else
-    (reduce ($str | match(CODE_WORDS; "g")) as $m ({cmds: [], cur: [], redir: false};
+    ([$str0 | match(APPLESCRIPT_PASSWORD; "g")] | length) as $ap
+    | (if $ap == 0 then $str0 else $str0 | gsub(APPLESCRIPT_PASSWORD; "\(.p)\"\u0002\"") end) as $str
+    | .stats.redacted += $ap
+    | (reduce ($str | match(CODE_WORDS; "g")) as $m ({cmds: [], cur: [], redir: false};
        $m.string[:1] as $c
        | if CODE_SEPARATORS[$c] then .cmds += [.cur] | .cur = [] | .redir = false
          elif $c == "<" or $c == ">" then .redir = true

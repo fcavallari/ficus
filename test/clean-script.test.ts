@@ -2572,6 +2572,27 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  test('ssh remote commands, AppleScript passwords and bearer tokens are redacted', () => {
+    const input = [
+      run(1660, '/usr/bin/ssh', ['ssh', '-p', '2222', 'db.example.com', 'mysql', '-pRemotePW', 'prod'], '/', 1),
+      run(1661, '/usr/bin/ssh', ['ssh', 'db.example.com', 'curl -u bob:pw11 https://evil.example.net'], '/', 2),
+      run(1662, '/usr/bin/osascript', ['osascript', '-e', 'do shell script "whoami" user name "jdoe" password "Pa55 word" with administrator privileges'], '/', 3),
+      run(1663, '/usr/bin/git', ['git', '-c', 'http.extraHeader=Authorization: Bearer tokABCDEF123', 'clone', 'https://github.com/x/y.git'], '/', 4),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const R = '<redacted>';
+      expect(args[0]).toEqual(['ssh', '-p', '2222', 'db.example.com', 'mysql', `-p${R}`, 'prod']);
+      expect(args[1]).toEqual(['ssh', 'db.example.com', `curl -u ${R} https://evil.example.net`]);
+      expect(args[2]![2]).toBe(`do shell script "whoami" user name "user1" password "${R}" with administrator privileges`);
+      expect(args[3]![2]).toBe(`http.extraHeader=Authorization: Bearer ${R}`);
+      expect(r.out).not.toMatch(/RemotePW|pw11|Pa55|tokABC/);
+      expect(r.key).not.toMatch(/RemotePW|pw11|Pa55|tokABC/);
+      expect(r.summary['redacted']).toBe('4');
+      sameFindings(input, r.out);
+    }
+  });
+
   test('a credential shape in a path is redacted where it stands, and the path keeps its shape', () => {
     const input = [
       esCreate(zsh, { path: `/tmp/${AKIA}.txt` }, 1),
