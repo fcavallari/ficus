@@ -2272,4 +2272,21 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       expect(r.out).not.toMatch(/jane|acme|10\.0\.0/);
     }
   });
+
+  test('user info with a / in its password is removed whole, never in the key', () => {
+    const input = [
+      run(1220, '/usr/bin/curl', ['curl', '-o', '/dev/null', 'https://bob:p/w0rd@evil.example.net/x'], '/', 1),
+      // Not user info: an @ in the path, a port.
+      run(1221, '/usr/bin/curl', ['curl', '-o', '/dev/null', 'https://evil.example.net:8443/a/@team'], '/', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const n = keyed(r.key, 'name');
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    expect(args[0]).toEqual(['curl', '-o', '/dev/null', `https://evil.example.net/${n.get('x')}`]);
+    expect(args[1]).toEqual(['curl', '-o', '/dev/null', `https://evil.example.net:8443/${n.get('a')}/${n.get('@team')}`]);
+    expect(r.summary['redacted']).toBe('1');
+    expect(r.key).not.toMatch(/bob|w0rd|"p"/);
+    expect(r.out).not.toMatch(/bob|w0rd/);
+  });
 });

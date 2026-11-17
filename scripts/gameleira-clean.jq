@@ -1122,8 +1122,14 @@ def arg_value($prog; $a):
 # an internal host replaced, path segments cleaned like names in a cleaned place (with their %-escapes undone, as in a
 # file:// URL), query and fragment values made data placeholders. Without a scheme (a curl or wget argument: evil.sh,
 # intranet/a.sh, acme:8080/p) it is read the same way. Input: the state. Output: {v, s}.
-def clean_url($u):
-  ($u | capture("^(?<sch>[A-Za-z][A-Za-z0-9+.-]*://)?(?<auth>[^/?#]*)(?<path>/[^?#]*)?(?<q>\\?[^#]*)?(?<f>#[\\s\\S]*)?$")) as $c
+def clean_url($u0):
+  # User info whose password holds an unescaped / (https://bob:p/w0rd@host/x): everything after the scheme up to the
+  # last @ before any ? or #, when it starts user:password and the password does not start like a port.
+  ([$u0 | capture("^(?<sch>[A-Za-z][A-Za-z0-9+.-]*://)(?<ui>[^/?#@:]+:(?![0-9]*(?:/|$))[^?#]*)@(?<rest>[^@?#]*(?:[?#][\\s\\S]*)?)$")]
+   | .[0]) as $odd
+  | (if $odd != null and ($odd.ui | contains("/")) then .stats.redacted += 1 else . end)
+  | (if $odd != null and ($odd.ui | contains("/")) then $odd.sch + $odd.rest else $u0 end) as $u
+  | ($u | capture("^(?<sch>[A-Za-z][A-Za-z0-9+.-]*://)?(?<auth>[^/?#]*)(?<path>/[^?#]*)?(?<q>\\?[^#]*)?(?<f>#[\\s\\S]*)?$")) as $c
   | ($c.auth | capture("^(?<ui>[\\s\\S]*)@(?<hp>[^@]*)$") // {ui: null, hp: .}) as $a
   | ($a.hp | capture("^(?<h>\\[[^\\]]*\\])(?<p>[\\s\\S]*)$") // capture("^(?<h>[^:]*)(?<p>[\\s\\S]*)$")) as $hp
   | (if $a.ui != null then .stats.redacted += 1 else . end)
