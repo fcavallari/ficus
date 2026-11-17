@@ -222,6 +222,24 @@ describe('persistence-item with an Apple-named plist', () => {
     const spoof = img({ path: '/Library/Caches/sync', signingId: 'com.apple.sync', teamId: 'ABCDE12345', csFlags: 0, args: ['sync'] });
     expect(run(capture([proc('200:1', [spoof])], [item('/Library/LaunchDaemons/com.apple.sync.plist', '/Library/Caches/sync')]))[0]!.severity).toBe('high');
   });
+  // The team-less-under-an-Apple-path trust is apple-masquerade's own; a persistence item's target needs a platform image or a listed team.
+  test.each(['/Applications/XcodeX.app/Contents/MacOS/x', '/Library/Developer/x/x', '/Applications/Xcode.app/Contents/MacOS/x'])(
+    'a self-signed team-less com.apple image captured at %s does not clear an Apple-named plist item', (exe) => {
+      for (const teamId of [null, '']) {
+        const x = img({ path: exe, signingId: 'com.apple.x', teamId, csFlags: 0, args: ['x'] });
+        const f = run(capture([proc('200:1', [x])], [item('/Library/LaunchDaemons/com.apple.sync.plist', exe)]));
+        expect(f, `${exe} ${teamId}`).toHaveLength(1);
+        expect(f[0]!.severity, `${exe} ${teamId}`).toBe('high');
+        expect(f[0]!.evidence).toContain('Apple-named plist');
+      }
+    });
+  test('a genuine listed-team image at the target is not raised, whatever its path', () => {
+    for (const exe of ['/Library/Caches/sync', '/Applications/XcodeX.app/Contents/MacOS/x']) {
+      const x = img({ path: exe, signingId: 'com.apple.dt.Xcode', teamId: '59GAB85EFG', csFlags: 0, args: ['x'] });
+      const f = run(capture([proc('200:1', [x])], [item('/Library/LaunchDaemons/com.apple.sync.plist', exe)]));
+      expect(f[0]!.severity, exe).toBe('med');
+    }
+  });
   test.each(['/usr/Local/bin/sync', '/USR/local/bin/sync', '/usr/../tmp/sync', '/System/../tmp/sync', '/usr/./local/sync'])('%s is not an Apple path', (exe) => {
     const f = run(capture([], [item('/Library/LaunchDaemons/com.apple.sync.plist', exe)]));
     expect(f[0]!.severity).toBe('high');

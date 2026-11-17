@@ -96,10 +96,12 @@ const claimsApple = (img: Image): boolean => img.signingId !== null && img.signi
  * own: under another team's certificate, or from /tmp, it is a spoof.
  */
 function isAppleSigned(img: Image): boolean {
-  if (img.isPlatform) return true;
-  if (!claimsApple(img) || isAdhoc(img)) return false;
-  if (img.teamId) return APPLE_TEAM_IDS.has(img.teamId);
-  return img.path !== null && appleProgramPath(img.path, true);
+  return hasAppleIdentity(img) || (claimsApple(img) && !isAdhoc(img) && !img.teamId && img.path !== null && appleProgramPath(img.path, true));
+}
+
+/** A platform binary, or a real (not ad-hoc) `com.apple.*` signature from one of Apple's team IDs: identity a path cannot lend. */
+function hasAppleIdentity(img: Image): boolean {
+  return img.isPlatform || (claimsApple(img) && !isAdhoc(img) && !!img.teamId && APPLE_TEAM_IDS.has(img.teamId));
 }
 
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
@@ -444,7 +446,9 @@ export function launchTarget(item: PersistenceItem): { path: string; isApp: bool
 function appleSignedAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
   const key = normPath(target.path).toLowerCase();
   return [...m.processes.values()].some(q => q.images.some(i => {
-    if (!isAppleSigned(i) || i.path === null) return false;
+    // A platform image or a listed Apple team only: a team-less com.apple image under a developer path is apple-masquerade's
+    // trust, not a reason to clear a launch item that runs it.
+    if (!hasAppleIdentity(i) || i.path === null) return false;
     const ip = normPath(i.path).toLowerCase();
     return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
   }));
