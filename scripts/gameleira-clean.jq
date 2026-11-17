@@ -1525,22 +1525,24 @@ def command_secrets($w):
     end;
 
 # Credentials and request bodies in an exec's arguments (argv), and in ssh's remote command when it comes as several
-# arguments (ssh host mysql -pX). An argument that is code (sh -c 'TOKEN=x curl …') is not one NAME=value: its commands
-# are read in the walk (code_secrets), so an edit here is undone. Input: the state. Output: {v, s}.
+# arguments (ssh host mysql -pX). An argument that is code (sh -c 'TOKEN=x curl …', which has a space) is left out
+# here, not one NAME=value: its commands are read in the walk (code_secrets). Input: the state. Output: {v, s}.
 def argv_secrets($args):
   if ($args | length) < 2 then {v: $args, s: .}
   else ($args[0] | if type == "string" then split("/") | last // "" else "" end) as $prog
-    | command_secrets([$args[] | if type == "string" then . else null end])
     | (if $prog == "ssh" then ssh_command_index($args) else null end) as $sc
-    | (if $sc == null or $sc >= ($args | length) then .
-       else .v as $v | .s | command_secrets($v[$sc:]) | .v = $v[:$sc] + .v end) as $r
     | [range(1; $args | length) as $i
-       | select(($args[$i] | type) == "string" and $r.v[$i] != $args[$i] and ($args[$i] | test("\\s")))
+       | select(($args[$i] | type) == "string" and ($args[$i] | contains(" ") or contains("\t") or contains("\n")))
        | select(code_arg($prog; $args; $i; shell_text($args; $i; $sc)))
        | $i] as $code
+    | command_secrets([range(0; $args | length) as $i
+                       | $args[$i] | if type == "string" and ($code | index([$i])) == null then . else null end])
+    | (if $sc == null or $sc >= ($args | length) then .
+       else .v as $v | .s | command_secrets($v[$sc:]) | .v = $v[:$sc] + .v end)
+    | . as $r
     | {v: [range(0; $args | length) as $i
            | if ($args[$i] | type) != "string" or ($code | index([$i])) != null then $args[$i] else $r.v[$i] end],
-       s: ($r.s | .stats.redacted -= ($code | length))}
+       s: $r.s}
   end;
 
 # The same in shell code (sh -c, su -c, osascript -e, ssh's remote command, behind wrappers: what code_arg finds),
