@@ -3105,7 +3105,8 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
   const startRecord = (dir: string, out: string, recorderCmd: string): { pid: number; closed: Promise<{ status: number | null; stderr: string }> } => {
     const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out], {
       cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorderCmd },
+      // TMPDIR in the test folder: a script killed with SIGKILL cannot remove its temporary files.
+      env: { ...process.env, TMPDIR: dir, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorderCmd },
     });
     groups.push(child.pid!);
     let stderr = '';
