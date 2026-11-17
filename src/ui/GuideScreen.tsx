@@ -8,7 +8,7 @@ import { TRIAGE_KEYS } from './triage-model';
 
 /*
  * The guide: how to capture macOS activity with eslogger, how to read what it records, what an intrusion looks like in
- * it, and how Gameleira helps. Facts that the app also holds (the capture command, the rules, the keys) are read from
+ * it, and how Ficus helps. Facts that the app also holds (the capture command, the rules, the keys) are read from
  * the app's own tables, so the guide cannot drift from what the app does.
  */
 
@@ -19,7 +19,7 @@ export const GUIDE_SECTIONS = [
   { id: 'anatomy', title: 'Reading an event' },
   { id: 'lineage', title: 'Where a process came from' },
   { id: 'look-for', title: 'What to look for' },
-  { id: 'gameleira', title: 'Working a capture here' },
+  { id: 'ficus', title: 'Working a capture here' },
   { id: 'practice', title: 'Practice on your own Mac' },
   { id: 'jq', title: 'Beyond the app: jq' },
   { id: 'words', title: 'Words you will meet' },
@@ -217,7 +217,7 @@ export function GuideScreen({ section }: { section: string }) {
             <ol className="gpath">
               <li><strong>Capture.</strong> Run <C>eslogger</C> on the Mac while the activity happens (or while you reproduce
                 it). <a href="#guide/capture" onClick={e => { e.preventDefault(); goTo('capture'); }}>How</a></li>
-              <li><strong>Rebuild the tree.</strong> Drop the file into a session here. Gameleira links every process to the
+              <li><strong>Rebuild the tree.</strong> Drop the file into a session here. Ficus links every process to the
                 processes that started it.</li>
               <li><strong>Triage.</strong> Work the queue of flagged processes: mark each suspicious or benign, take notes.</li>
               <li><strong>Scope.</strong> From each suspicious process, follow its roots up and its children down until you know
@@ -266,8 +266,8 @@ export function GuideScreen({ section }: { section: string }) {
               <li>Apple says plainly that its output is not an API: field names can change between macOS releases. Each event
                 carries a <C>schema_version</C> and a message <C>version</C> so you can tell which layout you have.</li>
               <li>Start the capture <em>before</em> the activity. A process that started earlier appears without its birth, so
-                its parents are unknown (Gameleira shows these as “started before the capture”).</li>
-              <li>Captures grow fast: one busy hour with the command above is easily tens of megabytes. Gameleira has loaded a
+                its parents are unknown (Ficus shows these as “started before the capture”).</li>
+              <li>Captures grow fast: one busy hour with the command above is easily tens of megabytes. Ficus has loaded a
                 500 MB capture; keep them shorter when you can.</li>
             </ul>
             <Note kind="careful">On a company-managed Mac, granting Full Disk Access or running <C>sudo eslogger</C> may be blocked
@@ -278,7 +278,7 @@ export function GuideScreen({ section }: { section: string }) {
           </Section>
 
           <Section id="events" n={3} title="Which events to record">
-            <p>The command above asks for the events Gameleira builds on. Each one answers a question:</p>
+            <p>The command above asks for the events Ficus builds on. Each one answers a question:</p>
             <table className="gtable">
               <thead><tr><th>Event</th><th>What it records</th><th>Why a hunter cares</th></tr></thead>
               <tbody>
@@ -300,7 +300,7 @@ export function GuideScreen({ section }: { section: string }) {
                   system itself.</td></tr>
               </tbody>
             </table>
-            <p>Other events are worth adding when you know what you are after. Gameleira counts them in the capture header but
+            <p>Other events are worth adding when you know what you are after. Ficus counts them in the capture header but
               does not draw them yet; read them with <a href="#guide/jq" onClick={e => { e.preventDefault(); goTo('jq'); }}>jq</a>.</p>
             <table className="gtable">
               <thead><tr><th>Event</th><th>Records</th></tr></thead>
@@ -319,7 +319,7 @@ export function GuideScreen({ section }: { section: string }) {
                 <tr><td><C>od_create_user</C>, <C>od_modify_password</C></td><td>Local accounts created or changed.</td></tr>
                 <tr><td><C>remote_thread_create</C>, <C>get_task</C></td><td>One process reaching into another: injection and
                   memory reading.</td></tr>
-                <tr><td><C>write</C>, <C>open</C>, <C>close</C></td><td>Every file access. Very noisy; Gameleira reads{' '}
+                <tr><td><C>write</C>, <C>open</C>, <C>close</C></td><td>Every file access. Very noisy; Ficus reads{' '}
                   <C>write</C> if it is there, but leave these out unless you need them.</td></tr>
               </tbody>
             </table>
@@ -342,7 +342,7 @@ export function GuideScreen({ section }: { section: string }) {
               <thead><tr><th>Field</th><th>Meaning</th><th>Use</th></tr></thead>
               <tbody>
                 <tr><td><C>audit_token.pid</C>, <C>.pidversion</C></td><td>The pid, and a counter that goes up each time that
-                  pid is reused or execs a new program.</td><td>Pids are reused, so never key on the pid alone. Gameleira
+                  pid is reused or execs a new program.</td><td>Pids are reused, so never key on the pid alone. Ficus
                   identifies a process by both.</td></tr>
                 <tr><td><C>ppid</C></td><td>The current parent.</td><td>Becomes 1 (launchd) when the parent exits: it can
                   lie.</td></tr>
@@ -380,7 +380,7 @@ export function GuideScreen({ section }: { section: string }) {
                 service and let launchd start it. The helper’s parent is launchd; the process that caused it is only visible
                 through the responsible process, or an <C>xpc_connect</C> event.</li>
             </ul>
-            <p>So Gameleira follows three roots for every process, and the Tree tab lets you pick which one to hang the tree
+            <p>So Ficus follows three roots for every process, and the Tree tab lets you pick which one to hang the tree
               from:</p>
             <dl className="groots">
               <div><dt><RootSwatch kind="original" />Original parent</dt><dd>Who forked it. Survives the parent’s exit. The
@@ -397,7 +397,7 @@ export function GuideScreen({ section }: { section: string }) {
           <Section id="look-for" n={6} title="What to look for">
             <p>Info-stealers are the most common macOS threat today: Atomic Stealer (AMOS), Poseidon, Banshee, Cuckoo and their
               relatives. They are worth learning first, because they follow a recognisable shape, and many other intrusions
-              reuse its parts. Here is that shape, stage by stage, with the Gameleira rules that catch each one:</p>
+              reuse its parts. Here is that shape, stage by stage, with the Ficus rules that catch each one:</p>
             <ol className="stages">
               {STAGES.map(s => (
                 <li key={s.name}>
@@ -431,7 +431,7 @@ export function GuideScreen({ section }: { section: string }) {
               running) and <C>Label</C>, which often imitates Apple: a <C>com.apple.…</C> label in a <em>user’s</em> folder is a
               red flag.</p>
 
-            <h3>Every rule Gameleira applies</h3>
+            <h3>Every rule Ficus applies</h3>
             <p>Severity is how strongly a finding suggests something worth your time; a flag is a lead, never a verdict. The
               full matching logic is in <C>src/rules/rules.ts</C>, and every finding in the app says which trigger it matched.</p>
             <ul className="grules">
@@ -450,7 +450,7 @@ export function GuideScreen({ section }: { section: string }) {
             </ul>
           </Section>
 
-          <Section id="gameleira" n={7} title="Working a capture here">
+          <Section id="ficus" n={7} title="Working a capture here">
             <ol className="gsteps">
               <li><strong>One session per investigation</strong>, usually one Mac. Verdicts, notes and routine marks are kept in
                 this browser; the capture is read here and never uploaded.</li>
@@ -532,7 +532,7 @@ export function GuideScreen({ section }: { section: string }) {
           </Section>
 
           <Section id="jq" n={9} title="Beyond the app: jq">
-            <p>Gameleira draws the tree; for everything else, a capture is a text file, and <C>jq</C> reads it. These work on
+            <p>Ficus draws the tree; for everything else, a capture is a text file, and <C>jq</C> reads it. These work on
               captures from macOS 13 onwards; if a field comes back <C>null</C>, look at one event with <C>head -1 … | jq .</C>
               and adjust the path. That adjustment is most of the skill.</p>
             <Snippet title="Which event types are in the capture">{`jq -r '.event | keys[]' capture.jsonl | sort | uniq -c | sort -rn`}</Snippet>
@@ -603,7 +603,7 @@ export function GuideScreen({ section }: { section: string }) {
               </section>
             </div>
           </Section>
-          <p className="gfoot muted small">Links open in a new tab. This page sends nothing anywhere: like the rest of Gameleira it
+          <p className="gfoot muted small">Links open in a new tab. This page sends nothing anywhere: like the rest of Ficus it
             runs entirely in your browser.</p>
         </article>
       </main>

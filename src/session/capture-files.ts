@@ -25,7 +25,7 @@ export const handlesSupported = (): boolean => typeof openPicker() === 'function
 export async function pickCaptureFiles(): Promise<Sourced[]> {
   let handles: CaptureFileHandle[];
   try {
-    handles = await openPicker()!({ multiple: true, id: 'gameleira-captures' });
+    handles = await openPicker()!({ multiple: true, id: 'ficus-captures' });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') return [];
     throw e;
@@ -75,6 +75,7 @@ export async function reopenCaptureFile(h: CaptureFileHandle): Promise<File> {
  * Kept in their own small database, not the sessions one, so the sessions schema stays as it is. Keyed by
  * [session id, capture fingerprint].
  */
+// Named before the app was renamed Ficus; kept so the capture files granted then are still found.
 const db = () => openDB('gameleira-capture-files', 1, { upgrade(d) { d.createObjectStore('handles'); } });
 const range = (sessionId: string) => IDBKeyRange.bound([sessionId], [sessionId, []]);
 

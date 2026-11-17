@@ -4,9 +4,12 @@ import type { FileOp, Image } from '../model/types';
 import type { CaptureRec, RoutineRec, Session, Store, Verdict, VerdictSnapshot } from './store';
 
 export type ExportImage = Omit<Image, 'env'> & { env?: string[] | null };
-/** The format name an export carries; the app was called eslogger viewer before it was Gameleira, and its files still import. */
-const FORMAT = 'gameleira-session';
-const LEGACY_FORMAT = 'eslogger-viewer-session';
+/**
+ * The format name an export carries. The app was called eslogger viewer, then Gameleira, before it was Ficus; files
+ * saved under either older name still import.
+ */
+const FORMAT = 'ficus-session';
+const LEGACY_FORMATS: readonly unknown[] = ['gameleira-session', 'eslogger-viewer-session'];
 
 export interface ProcessDetail extends VerdictSnapshot {
   images: ExportImage[]; fileOps: FileOp[]; ancestry: string[];
@@ -88,7 +91,7 @@ function rows(data: Record<string, unknown>, field: string, keys: string[], extr
 
 /** Throws a clear error unless `data` is a complete, readable session export. Writes nothing. */
 function validateExport(data: unknown): asserts data is SessionExport {
-  if (!isObj(data) || (data.format !== FORMAT && data.format !== LEGACY_FORMAT)) throw new Error('not a Gameleira session export');
+  if (!isObj(data) || (data.format !== FORMAT && !LEGACY_FORMATS.includes(data.format))) throw new Error('not a Ficus session export');
   if (data.version !== 1) throw new Error(`unsupported session export version ${String(data.version)} (this build reads version 1)`);
   if (!isObj(data.session) || typeof data.session.name !== 'string') throw new Error('invalid session export: "session" must have a name');
   rows(data, 'captures', ['fingerprint', 'fileName', 'added'], validCapture);
@@ -130,9 +133,11 @@ export function idHash(id: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-export const SAVE_SUFFIX = '.gameleira-session.json';
+export const SAVE_SUFFIX = '.ficus-session.json';
+/** What Save session called the file while the app was Gameleira; a saved copy under that name is still found. */
+export const LEGACY_SAVE_SUFFIX = '.gameleira-session.json';
 
-/** What Save session calls the file: `<name>.<id hash>.gameleira-session.json`. */
+/** What Save session calls the file: `<name>.<id hash>.ficus-session.json`. */
 export const saveFileName = (s: Pick<Session, 'id' | 'name'>): string => `${slug(s.name)}.${idHash(s.id)}${SAVE_SUFFIX}`;
 
 /** What reimporting would change, as counts and a yes/no: the file against what the browser holds for the session. */

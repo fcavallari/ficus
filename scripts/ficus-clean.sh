@@ -1,27 +1,27 @@
 #!/bin/bash
-# gameleira-clean.sh: pseudonymizes an eslogger capture before it leaves the Mac it was recorded on.
+# ficus-clean.sh: pseudonymizes an eslogger capture before it leaves the Mac it was recorded on.
 #
-#   scripts/gameleira-clean.sh clean  -i RAW [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE]
-#   scripts/gameleira-clean.sh record        [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE] [-t SECONDS]
-#   scripts/gameleira-clean.sh --help
+#   scripts/ficus-clean.sh clean  -i RAW [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE]
+#   scripts/ficus-clean.sh record        [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE] [-t SECONDS]
+#   scripts/ficus-clean.sh --help
 #
 # Names, hosts, accounts and credentials become placeholders; what the rules need to see stays. The real values go in a
 # key file on this Mac, so the cleaning can be undone here and nowhere else. record runs `sudo eslogger` and cleans its
 # stream as it comes: the raw capture only ever exists in a pipe.
 #
-# Test hooks (environment): GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1 leaves this Mac's names out; GAMELEIRA_CLEAN_KEY_DIR is the
-# default key folder; GAMELEIRA_CLEAN_FAKE_UID stands in for `id -u`, GAMELEIRA_CLEAN_FAKE_OS for `uname -s`;
-# GAMELEIRA_CLEAN_RECORDER is a bash command record runs, as you and without sudo, instead of eslogger;
-# GAMELEIRA_CLEAN_SOURCE_ONLY=1 defines the functions and runs nothing.
+# Test hooks (environment): FICUS_CLEAN_NO_LOCAL_SEEDS=1 leaves this Mac's names out; FICUS_CLEAN_KEY_DIR is the
+# default key folder; FICUS_CLEAN_FAKE_UID stands in for `id -u`, FICUS_CLEAN_FAKE_OS for `uname -s`;
+# FICUS_CLEAN_RECORDER is a bash command record runs, as you and without sudo, instead of eslogger;
+# FICUS_CLEAN_SOURCE_ONLY=1 defines the functions and runs nothing.
 #
-# Needs only what macOS has: bash 3.2, /usr/bin/jq (macOS 15 and later; GAMELEIRA_CLEAN_JQ names another), awk.
-# The program that does the cleaning is gameleira-clean.jq, next to this file.
+# Needs only what macOS has: bash 3.2, /usr/bin/jq (macOS 15 and later; FICUS_CLEAN_JQ names another), awk.
+# The program that does the cleaning is ficus-clean.jq, next to this file.
 
 export LC_ALL=C
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-CLEAN_PROGRAM=$HERE/gameleira-clean.jq
-JQ=${GAMELEIRA_CLEAN_JQ:-/usr/bin/jq}
+CLEAN_PROGRAM=$HERE/ficus-clean.jq
+JQ=${FICUS_CLEAN_JQ:-/usr/bin/jq}
 KINDS="user realname name volume host email seed data"
 KEY_HEADER=$'kind\tplaceholder\treal'
 # The recorder, with the event list from the README's Capturing section. It runs as root under STOP_WRAPPER, through
@@ -35,8 +35,8 @@ RAW_DIR=
 usage() {
   cat <<'EOF'
 Usage:
-  gameleira-clean.sh clean  -i RAW [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE]
-  gameleira-clean.sh record        [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE] [-t SECONDS]
+  ficus-clean.sh clean  -i RAW [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE]
+  ficus-clean.sh record        [-o FILE] [-k KEYFILE] [-D DOMAIN]... [-S SEEDFILE] [-t SECONDS]
 
 clean   Read the capture RAW (JSONL, a pretty-printed export or a JSON array) and write the cleaned capture as JSONL.
         RAW is never changed or deleted: remove it yourself once you are happy with the result.
@@ -51,7 +51,7 @@ platform UUID are cleaned wherever they appear, in both modes.
 
   -o FILE       The cleaned capture; - for standard output. Default: capture.cleaned.jsonl here. Made, with its folder, if missing.
   -k KEYFILE    Keep real values here. An existing key is loaded first, so captures of one Mac share placeholders.
-                Default: ~/Library/Application Support/Gameleira/keys/<name of FILE>.key.tsv, which must not exist yet.
+                Default: ~/Library/Application Support/Ficus/keys/<name of FILE>.key.tsv, which must not exist yet.
                 The key holds real names: keep it on this Mac. It is made readable by you only.
   -D DOMAIN     Your company's own domain, cleaned as an internal host. Repeat for more.
   -S SEEDFILE   More values to clean, one per line: kind, a tab, the value (kinds: user realname name volume host email seed data).
@@ -62,12 +62,12 @@ EOF
 }
 
 die() {
-  printf 'gameleira-clean: %s\n' "$*" >&2
+  printf 'ficus-clean: %s\n' "$*" >&2
   exit 1
 }
 
 usage_error() {
-  printf 'gameleira-clean: %s\n\n' "$*" >&2
+  printf 'ficus-clean: %s\n\n' "$*" >&2
   usage >&2
   exit 2
 }
@@ -83,7 +83,7 @@ cleanup() {
 
 # new_tmp: a private (0600) temporary file; its name is in TMP_OUT, and it is removed when the script ends.
 new_tmp() {
-  TMP_OUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/gameleira-clean.XXXXXX") || die "cannot make a temporary file"
+  TMP_OUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/ficus-clean.XXXXXX") || die "cannot make a temporary file"
   TMP_FILES[${#TMP_FILES[@]}]=$TMP_OUT
 }
 
@@ -157,7 +157,7 @@ write_config() {
 # What stands between jq's stderr and the world: a K line goes to the key file the moment it is read, the S line to the
 # stats file, anything else (jq's own complaints) to this script's stderr. It never prints to stdout: that is the capture.
 SPLIT_AWK='
-BEGIN { key = ENVIRON["GAMELEIRA_CLEAN_KEYFILE"]; stats = ENVIRON["GAMELEIRA_CLEAN_STATSFILE"] }
+BEGIN { key = ENVIRON["FICUS_CLEAN_KEYFILE"]; stats = ENVIRON["FICUS_CLEAN_STATSFILE"] }
 substr($0, 1, 2) == "K\t" { print substr($0, 3) >> key; close(key); next }
 substr($0, 1, 2) == "S\t" { print substr($0, 3) > stats; close(stats); next }
 { print > "/dev/stderr" }'
@@ -169,7 +169,7 @@ run_cleaner() {
   local config=$1 keyfile=$2 statsfile=$3 rc
   {
     "$JQ" -n -R -c --unbuffered --slurpfile cfg "$config" -f "$CLEAN_PROGRAM" 2>&1 1>&3 3>&- |
-      GAMELEIRA_CLEAN_KEYFILE=$keyfile GAMELEIRA_CLEAN_STATSFILE=$statsfile awk "$SPLIT_AWK"
+      FICUS_CLEAN_KEYFILE=$keyfile FICUS_CLEAN_STATSFILE=$statsfile awk "$SPLIT_AWK"
     rc=${PIPESTATUS[0]}
   } 3>&1
   return "$rc"
@@ -230,10 +230,10 @@ local_seeds() {
 
 # Whether a capture is of this Mac: the account names of the local seed file (the first file) against the home folders
 # (/Users/<name>/, not Shared) of the capture on stdin. Prints yes (one is a local account), no (none is) or none (the
-# capture names no home folder). It never prints a name. With GAMELEIRA_CLEAN_HOMES_FILE set (standard input, which is
+# capture names no home folder). It never prints a name. With FICUS_CLEAN_HOMES_FILE set (standard input, which is
 # read once) it passes every line through to stdout unchanged, checks the first 1000, and writes the answer to that file.
 HOMES_AWK='
-BEGIN { side = ENVIRON["GAMELEIRA_CLEAN_HOMES_FILE"] }
+BEGIN { side = ENVIRON["FICUS_CLEAN_HOMES_FILE"] }
 FILENAME == ARGV[1] { if (split($0, f, "\t") >= 2 && f[1] == "user") acct[tolower(f[2])] = 1; next }
 side != "" { print; fflush() }
 side != "" && (found || FNR > 1000) { next }
@@ -248,7 +248,7 @@ side != "" && (found || FNR > 1000) { next }
 END { r = (found ? "yes" : homes ? "no" : "none"); if (side != "") print r > side; else print r }'
 
 other_mac_warning() {
-  printf "gameleira-clean: this capture's home folders name no account of this Mac; names outside paths are only caught with -S\n" >&2
+  printf "ficus-clean: this capture's home folders name no account of this Mac; names outside paths are only caught with -S\n" >&2
 }
 
 # warn_if_other_mac IN LOCALSEEDS NORMALIZE: warns when the first 1000 events of the file IN name home folders, and none
@@ -310,7 +310,7 @@ exec "$@" </dev/null'
 # the last events are written rather than lost.
 start_recording() {
   local fifo ctl
-  RAW_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/gameleira-clean.XXXXXX") || die "cannot make a temporary folder"
+  RAW_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/ficus-clean.XXXXXX") || die "cannot make a temporary folder"
   fifo=$RAW_DIR/raw
   ctl=$RAW_DIR/stop
   mkfifo -m 600 "$fifo" "$ctl" || die "cannot make a pipe in $RAW_DIR"
@@ -476,17 +476,17 @@ main() {
 
   # Everything that can fail without touching a file comes first.
   if [ "$mode" = record ]; then
-    [ "${GAMELEIRA_CLEAN_FAKE_UID:-$(id -u)}" != 0 ] ||
+    [ "${FICUS_CLEAN_FAKE_UID:-$(id -u)}" != 0 ] ||
       die "run record as yourself, not as root (without sudo): it asks for your password for eslogger only"
-    [ "${GAMELEIRA_CLEAN_FAKE_OS:-$(uname -s)}" = Darwin ] || die "record runs only on macOS (eslogger is part of macOS); clean -i cleans a capture taken elsewhere"
-    if [ -n "${GAMELEIRA_CLEAN_RECORDER:-}" ]; then
-      RECORDER=(/bin/bash -c "$GAMELEIRA_CLEAN_RECORDER")
+    [ "${FICUS_CLEAN_FAKE_OS:-$(uname -s)}" = Darwin ] || die "record runs only on macOS (eslogger is part of macOS); clean -i cleans a capture taken elsewhere"
+    if [ -n "${FICUS_CLEAN_RECORDER:-}" ]; then
+      RECORDER=(/bin/bash -c "$FICUS_CLEAN_RECORDER")
       SUDO_CMD=
     else
       command -v eslogger >/dev/null || die "eslogger not found (it ships with macOS 13 and later)"
     fi
   fi
-  [ -x "$JQ" ] || die "no jq at $JQ (macOS 15 and later has /usr/bin/jq; GAMELEIRA_CLEAN_JQ names another)"
+  [ -x "$JQ" ] || die "no jq at $JQ (macOS 15 and later has /usr/bin/jq; FICUS_CLEAN_JQ names another)"
   case $("$JQ" --version 2>/dev/null) in
     jq-1.[7-9]*|jq-1.[1-9][0-9]*|jq-[2-9]*) ;;
     *) die "jq 1.7 or later is needed ($JQ is $("$JQ" --version 2>&1))" ;;
@@ -501,7 +501,7 @@ main() {
     name=stdout
     [ "$out" = - ] || name=${out##*/}
     [ -n "$name" ] && [ "$name" != . ] && [ "$name" != .. ] || usage_error "-o needs a file name"
-    keydir=${GAMELEIRA_CLEAN_KEY_DIR:-$HOME/Library/Application Support/Gameleira/keys}
+    keydir=${FICUS_CLEAN_KEY_DIR:-$HOME/Library/Application Support/Ficus/keys}
     key=$keydir/$name.key.tsv
     [ ! -e "$key" ] || die "a key already exists at $key; pass -k to reuse it (the same placeholders), or choose another -o"
   fi
@@ -509,7 +509,7 @@ main() {
   [ "$out" = - ] || ! same_file "$out" "$key" || die "-o and -k are the same file; the key would be written into the capture"
   [ "$mode" = record ] || [ "$in" = - ] || ! same_file "$in" "$key" || die "-k and -i are the same file; the capture would be written over"
   if [ -s "$key" ]; then
-    [ "$(head -n 1 < "$key")" = "$KEY_HEADER" ] || die "$key is not a Gameleira key file"
+    [ "$(head -n 1 < "$key")" = "$KEY_HEADER" ] || die "$key is not a Ficus key file"
     LOADED_KEY=$key
   fi
 
@@ -529,7 +529,7 @@ main() {
   new_tmp; stats=$TMP_OUT
   new_tmp; NORM_STATUS_FILE=$TMP_OUT
   # This Mac's names are seeds too, after the -S file's lines (so an error there still names its own line number).
-  if [ "${GAMELEIRA_CLEAN_NO_LOCAL_SEEDS:-}" != 1 ]; then
+  if [ "${FICUS_CLEAN_NO_LOCAL_SEEDS:-}" != 1 ]; then
     new_tmp; local_file=$TMP_OUT
     local_seeds "$local_file"
     new_tmp
@@ -580,18 +580,18 @@ main() {
     trap 'STOP=1; SIGNALS=$((SIGNALS + 1))' INT TERM HUP QUIT
     start_recording "$config" "$key" "$stats" "$out"
     if [ -n "$seconds" ]; then
-      printf 'gameleira-clean: recording for %s s; Ctrl-C stops it sooner.\n' "$seconds" >&2
+      printf 'ficus-clean: recording for %s s; Ctrl-C stops it sooner.\n' "$seconds" >&2
     else
-      printf 'gameleira-clean: recording; Ctrl-C stops it.\n' >&2
+      printf 'ficus-clean: recording; Ctrl-C stops it.\n' >&2
     fi
     record_until_stopped "$seconds" || stopped_by_itself=1
   elif [ "$in" = - ] && [ -n "$local_seeds" ]; then
     # Standard input is read once: the home-folder check runs in the stream, and only its answer is written down.
     new_tmp; homes_file=$TMP_OUT
     if [ "$out" = - ]; then
-      GAMELEIRA_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_seeds" - | run_cleaner "$config" "$key" "$stats"
+      FICUS_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_seeds" - | run_cleaner "$config" "$key" "$stats"
     else
-      GAMELEIRA_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_seeds" - | run_cleaner "$config" "$key" "$stats" > "$out"
+      FICUS_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_seeds" - | run_cleaner "$config" "$key" "$stats" > "$out"
     fi
   elif [ "$in" = - ]; then
     if [ "$out" = - ]; then run_cleaner "$config" "$key" "$stats"; else run_cleaner "$config" "$key" "$stats" > "$out"; fi
@@ -614,7 +614,7 @@ main() {
       [ "$out" = - ] || [ -s "$out" ] || rm -f "$out"
       die "eslogger stopped before recording anything (see above; does the terminal have Full Disk Access?)"
     fi
-    printf 'gameleira-clean: eslogger stopped by itself (see above)\n' >&2
+    printf 'ficus-clean: eslogger stopped by itself (see above)\n' >&2
   fi
   [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and $key holds only the placeholders made so far: pass -k $key to carry on from it, or remove it"
   print_summary "$stats"
@@ -632,6 +632,6 @@ main() {
   fi
 }
 
-[ -n "${GAMELEIRA_CLEAN_SOURCE_ONLY:-}" ] && return 0
+[ -n "${FICUS_CLEAN_SOURCE_ONLY:-}" ] && return 0
 
 main "$@"

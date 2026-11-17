@@ -41,7 +41,7 @@ test('escapes hostile capture text', () => {
   img.path = '/tmp/`weird` path\nnext';
   const md = reportMarkdown(r);
   const headings = md.split('\n').filter(l => l.startsWith('#'));
-  for (const h of headings) expect(h).toMatch(/^(# Gameleira report: |## |### \d+\. )/);
+  for (const h of headings) expect(h).toMatch(/^(# Ficus report: |## |### \d+\. )/);
   expect(md).not.toMatch(/(?<!\\)\]\(http/);
   expect(md).not.toMatch(/(?<![\\`])<script/);
   expect(md).not.toMatch(/(?<![\\`])<img/);

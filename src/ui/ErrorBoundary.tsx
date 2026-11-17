@@ -12,7 +12,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; onReload?: (
   static getDerivedStateFromError(): { failed: boolean } { return { failed: true }; }
 
   componentDidCatch(error: unknown, info: ErrorInfo): void {
-    console.error('Gameleira: a screen failed', error, info.componentStack);
+    console.error('Ficus: a screen failed', error, info.componentStack);
   }
 
   render(): ReactNode {

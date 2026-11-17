@@ -1,9 +1,9 @@
 #!/bin/bash
-# gameleira-lab.sh: writes an eslogger capture for learning Gameleira, with an answer key beside it.
+# ficus-lab.sh: writes an eslogger capture for learning Ficus, with an answer key beside it.
 #
-#   scripts/gameleira-lab.sh synthetic [-o FILE | --stdout | --answers]
-#   scripts/gameleira-lab.sh live      [-o FILE | --answers]
-#   scripts/gameleira-lab.sh --help
+#   scripts/ficus-lab.sh synthetic [-o FILE | --stdout | --answers]
+#   scripts/ficus-lab.sh live      [-o FILE | --answers]
+#   scripts/ficus-lab.sh --help
 #
 # synthetic  builds the capture by hand: invented user `learner` (uid 502), invented pids, tokens and team IDs, fixed
 #            times. No noise, the same bytes on every run, safe on any machine. Pure bash (3.2 or later).
@@ -12,33 +12,33 @@
 #
 # Either way the answer key (FILE with .jsonl replaced by .answers.tsv) lists, for each step, the rule it should set
 # off, the severity, how the row appears in the queue, a marker to find it by and a note on what the step imitates.
-# Default FILE: scratch/gameleira-lab-<mode>.jsonl in the repo (scratch/ is gitignored).
+# Default FILE: scratch/ficus-lab-<mode>.jsonl in the repo (scratch/ is gitignored).
 
 export LC_ALL=C
 
 usage() {
   cat <<'EOF'
 Usage:
-  gameleira-lab.sh synthetic [-o FILE | --stdout | --answers]
-  gameleira-lab.sh live      [-o FILE | --answers]
+  ficus-lab.sh synthetic [-o FILE | --stdout | --answers]
+  ficus-lab.sh live      [-o FILE | --answers]
 
-synthetic  Write a hand-built capture that sets off every Gameleira rule, with no noise.
+synthetic  Write a hand-built capture that sets off every Ficus rule, with no noise.
            --stdout prints the capture, --answers prints the answer key; -o FILE writes both
-           (FILE and FILE minus .jsonl plus .answers.tsv). Default: scratch/gameleira-lab-synthetic.jsonl.
+           (FILE and FILE minus .jsonl plus .answers.tsv). Default: scratch/ficus-lab-synthetic.jsonl.
 
 live       Run harmless versions of the attack steps on this Mac while `sudo eslogger` records.
            macOS only; run it as yourself, not with sudo (it asks for your password for eslogger only).
            It shows a dialog (type anything, or wait), macOS will likely show a "Background Items Added"
            notification for the lab's launch agent, and everything it creates is removed at the end, also on
            Ctrl-C. The capture holds every process's environment and your user name: review it before sharing.
-           --answers prints the answer key without running anything. Default: scratch/gameleira-lab-live.jsonl.
+           --answers prints the answer key without running anything. Default: scratch/ficus-lab-live.jsonl.
 
-Load the .jsonl into Gameleira and check what you find against the .answers.tsv.
+Load the .jsonl into Ficus and check what you find against the .answers.tsv.
 EOF
 }
 
 die() {
-  printf 'gameleira-lab: %s\n' "$*" >&2
+  printf 'ficus-lab: %s\n' "$*" >&2
   exit 1
 }
 
@@ -486,14 +486,14 @@ synthetic_story() {
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
-LIVE_LABEL=com.gameleira.lab
+LIVE_LABEL=com.ficus.lab
 
-# The answer key for a live capture. Markers match among the descendants of gameleira-lab.sh.
+# The answer key for a live capture. Markers match among the descendants of ficus-lab.sh.
 live_answers() {
   answer_header
   printf '%s\n' \
-    '# Live capture: search the Tree for "gameleira-lab.sh __steps": every step runs under that process, in a folder' \
-    '# /tmp/gameleira-lab.XXXXXX; match each marker against the command lines of its descendants. Everything else' \
+    '# Live capture: search the Tree for "ficus-lab.sh __steps": every step runs under that process, in a folder' \
+    '# /tmp/ficus-lab.XXXXXX; match each marker against the command lines of its descendants. Everything else' \
     '# in the capture is this Mac going about its business.' \
     '# The cp step: macOS names smd as the caller that registered the launch agent, and smd only relays requests,' \
     '# so the registration is credited to the process that wrote the plist: cp shows persistence-item. A plist' \
@@ -509,8 +509,8 @@ live_answers() {
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'
   answer pipe-whoami recon low in-chain whoami 'whoami under the piped bash: in a flagged chain.'
   answer prompt fake-prompt high queued 'with hidden answer' 'A dialog asking for hidden typed text, as a fake password prompt does.'
-  answer prompt-check dscl-authonly high queued 'gameleira-lab-nobody' 'A password check, against an account that does not exist.'
-  answer keychain keychain-access high queued 'Gameleira Lab Safe Storage' 'Asking for a "Safe Storage" key; this one does not exist, so nothing is read.'
+  answer prompt-check dscl-authonly high queued 'ficus-lab-nobody' 'A password check, against an account that does not exist.'
+  answer keychain keychain-access high queued 'Ficus Lab Safe Storage' 'Asking for a "Safe Storage" key; this one does not exist, so nothing is read.'
   answer sip security-setting-change high queued 'csrutil disable' 'Trying to turn System Integrity Protection off; refused outside Recovery.'
   answer quarantine quarantine-strip high queued '-d com.apple.quarantine' 'Removing the quarantine flag from a file the lab flagged itself.'
   answer decode payload-decode med queued 'base64 -d' 'Decoding data on the fly.'
@@ -518,7 +518,7 @@ live_answers() {
   answer script-file osascript-script med queued 'collect.applescript' 'osascript runs a script file from /tmp.'
   answer odd-binary odd-location-exec high queued '/agent --lab' 'An ad-hoc signed copy of /usr/bin/true running from /tmp.'
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
-  answer app-shell shell-under-app med queued 'echo gameleira-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
+  answer app-shell shell-under-app med queued 'echo ficus-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
   answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
@@ -551,7 +551,7 @@ stop_capture() {
       return 0
     fi
   done
-  printf 'gameleira-lab: eslogger is still recording. Stop it with: sudo kill %s\n' "$ES_PID" >&2
+  printf 'ficus-lab: eslogger is still recording. Stop it with: sudo kill %s\n' "$ES_PID" >&2
   return 1
 }
 
@@ -560,7 +560,7 @@ cleanup() {
   trap '' INT TERM HUP
   [ -z "$CLEANED" ] || return 0
   CLEANED=1
-  case $LAB in /tmp/gameleira-lab.?*) pkill -f "$LAB/" 2>/dev/null ;; esac   # a step still running (the applet)
+  case $LAB in /tmp/ficus-lab.?*) pkill -f "$LAB/" 2>/dev/null ;; esac   # a step still running (the applet)
   if [ -n "$PLIST" ]; then
     launchctl bootout "gui/$(id -u)/$LIVE_LABEL" 2>/dev/null
     rm -f "$PLIST"
@@ -569,7 +569,7 @@ cleanup() {
     sleep 2
     stop_capture
   fi
-  case $LAB in /tmp/gameleira-lab.?*) rm -rf "$LAB" ;; esac
+  case $LAB in /tmp/ficus-lab.?*) rm -rf "$LAB" ;; esac
   [ -z "$ES_ERR" ] || rm -f "$ES_ERR"
 }
 
@@ -581,7 +581,7 @@ step() {
   sleep 1
 }
 
-# The steps, run by `gameleira-lab.sh __steps LAB` once eslogger records, so the capture has that exec to search for.
+# The steps, run by `ficus-lab.sh __steps LAB` once eslogger records, so the capture has that exec to search for.
 # Programs by full path: a tool earlier on PATH (a pip-installed xattr) would not be the one the rules know.
 live_steps() {
   local plist_src="$LAB/agent-template.plist"
@@ -589,25 +589,25 @@ live_steps() {
   printf '  - %s\n' 'a script piped into bash' >&2
   ( cd "$LAB" && printf 'whoami\n' | /bin/bash -s ) >/dev/null 2>&1 || true
   sleep 1
-  step 'fake password prompt (type anything, or wait 8 s)' /usr/bin/osascript -e 'display dialog "Gameleira lab: a harmless demo of a fake password prompt. Type anything, or wait." default answer "" with hidden answer with title "Gameleira lab" giving up after 8'
-  step 'password check for an account that does not exist' /usr/bin/dscl . -authonly gameleira-lab-nobody not-a-password
+  step 'fake password prompt (type anything, or wait 8 s)' /usr/bin/osascript -e 'display dialog "Ficus lab: a harmless demo of a fake password prompt. Type anything, or wait." default answer "" with hidden answer with title "Ficus lab" giving up after 8'
+  step 'password check for an account that does not exist' /usr/bin/dscl . -authonly ficus-lab-nobody not-a-password
   # A keychain file that does not exist: nothing to unlock, so no prompt for the real login keychain.
-  step 'keychain lookup for an item that does not exist' /usr/bin/security find-generic-password -s 'Gameleira Lab Safe Storage' -w "$LAB/none.keychain-db"
+  step 'keychain lookup for an item that does not exist' /usr/bin/security find-generic-password -s 'Ficus Lab Safe Storage' -w "$LAB/none.keychain-db"
   step 'csrutil disable (refused outside Recovery)' /usr/bin/csrutil disable
   : > "$LAB/Installer.dmg"
-  /usr/bin/xattr -w com.apple.quarantine '0081;00000000;Gameleira;' "$LAB/Installer.dmg" 2>/dev/null
+  /usr/bin/xattr -w com.apple.quarantine '0081;00000000;Ficus;' "$LAB/Installer.dmg" 2>/dev/null
   step 'quarantine flag removed' /usr/bin/xattr -d com.apple.quarantine "$LAB/Installer.dmg"
   printf '  - %s\n' 'base64 -d' >&2
   ( cd "$LAB" && printf 'Z2FtZWxlaXJhIGxhYgo=\n' | /usr/bin/base64 -d ) >/dev/null 2>&1 || true
   sleep 1
   /bin/mkdir -p "$LAB/stage" && /bin/cp /etc/hosts "$LAB/stage/"
   step 'archive staged in /tmp' /usr/bin/ditto -c -k "$LAB/stage" "$LAB/stage.zip"
-  printf 'return "gameleira lab"\n' > "$LAB/collect.applescript"
+  printf 'return "ficus lab"\n' > "$LAB/collect.applescript"
   step 'osascript running a script file' /usr/bin/osascript "$LAB/collect.applescript"
   /bin/cp /usr/bin/true "$LAB/agent" && /usr/bin/codesign -f -s - "$LAB/agent" >/dev/null 2>&1
   step 'ad-hoc signed program in /tmp' "$LAB/agent" --lab
   # Compiled from a file, so only the applet's shell carries the marker on its command line.
-  printf 'do shell script "echo gameleira-lab-applet"\n' > "$LAB/applet.applescript"
+  printf 'do shell script "echo ficus-lab-applet"\n' > "$LAB/applet.applescript"
   if /usr/bin/osacompile -o "$LAB/Lab Helper.app" "$LAB/applet.applescript" >/dev/null 2>&1; then
     printf '  - %s\n' 'an applet running a shell' >&2
     ( cd "$LAB" && exec "$LAB/Lab Helper.app/Contents/MacOS/applet" ) >/dev/null 2>&1 &
@@ -629,12 +629,12 @@ live_steps() {
 }
 
 live_run() {
-  local out=$1 answers=$2 uid=${GAMELEIRA_LAB_FAKE_UID:-$(id -u)}
+  local out=$1 answers=$2 uid=${FICUS_LAB_FAKE_UID:-$(id -u)}
   [ "$(uname -s)" = Darwin ] || die "live mode runs only on macOS (eslogger is part of macOS). Use: $0 synthetic"
   [ "$uid" != 0 ] || die "run live mode as yourself, not as root (without sudo): it asks for your password for eslogger only."
   command -v eslogger >/dev/null || die "eslogger not found (it ships with macOS 13 and later)"
   cat >&2 <<EOF
-Gameleira lab, live mode. It will:
+Ficus lab, live mode. It will:
   - ask for your password, for sudo eslogger only; every other step runs as you;
   - show a dialog (type anything, or wait 8 s);
   - write a launch agent ($LIVE_LABEL) and remove it at the end: macOS will likely show a
@@ -648,8 +648,8 @@ EOF
   mkdir -p "$(dirname "$out")" "$(dirname "$answers")" || die "cannot create the folder for $out"
   trap cleanup EXIT
   trap 'exit 130' INT TERM HUP
-  LAB=$(mktemp -d /tmp/gameleira-lab.XXXXXX) || die "cannot create the lab folder"
-  ES_ERR=$(mktemp /tmp/gameleira-lab-eslogger.XXXXXX) || die "cannot create a temporary file"
+  LAB=$(mktemp -d /tmp/ficus-lab.XXXXXX) || die "cannot create the lab folder"
+  ES_ERR=$(mktemp /tmp/ficus-lab-eslogger.XXXXXX) || die "cannot create a temporary file"
   PLIST=$HOME/Library/LaunchAgents/$LIVE_LABEL.plist
   : > "$out"
   sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
@@ -673,7 +673,7 @@ EOF
   trap - EXIT INT TERM HUP
   [ -z "$ES_PID" ] || die "the capture in $out may still be growing"
   live_answers 4>"$answers"
-  printf '\nwrote %s (%s lines)\nanswer key %s\nLoad the capture into Gameleira and check the queue against the key.\n' \
+  printf '\nwrote %s (%s lines)\nanswer key %s\nLoad the capture into Ficus and check the queue against the key.\n' \
     "$out" "$(wc -l < "$out" | tr -d ' ')" "$answers" >&2
 }
 
@@ -681,7 +681,7 @@ EOF
 REPO=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)
 SELF=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/${0##*/}
 
-[ -n "${GAMELEIRA_LAB_SOURCE_ONLY:-}" ] && return 0
+[ -n "${FICUS_LAB_SOURCE_ONLY:-}" ] && return 0
 
 main() {
   local mode=${1:-} out='' to=files
@@ -690,7 +690,7 @@ main() {
     synthetic|live) shift ;;
     __steps)
       # Internal: the live steps, in a child process of live mode.
-      case ${2:-} in /tmp/gameleira-lab.?*) ;; *) die "__steps needs the lab folder live mode made (/tmp/gameleira-lab.XXXXXX)" ;; esac
+      case ${2:-} in /tmp/ficus-lab.?*) ;; *) die "__steps needs the lab folder live mode made (/tmp/ficus-lab.XXXXXX)" ;; esac
       [ -d "$2" ] || die "__steps: no lab folder $2"
       LAB=$2
       live_steps
@@ -706,7 +706,7 @@ main() {
       *) usage >&2; exit 2 ;;
     esac
   done
-  [ -n "$out" ] || out=$REPO/scratch/gameleira-lab-$mode.jsonl
+  [ -n "$out" ] || out=$REPO/scratch/ficus-lab-$mode.jsonl
   local answers=${out%.jsonl}.answers.tsv
   [ "$answers" != "$out" ] || answers=$out.answers.tsv
 

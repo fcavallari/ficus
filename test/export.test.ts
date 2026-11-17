@@ -45,7 +45,7 @@ test('export is deterministic and JSON-serializable', async () => {
   const a = JSON.stringify(await exportSession(store, s.id, { includeEnv: true }, loaded));
   const b = JSON.stringify(await exportSession(store, s.id, { includeEnv: true }, loaded));
   expect(a).toBe(b);
-  expect(JSON.parse(a).format).toBe('gameleira-session');
+  expect(JSON.parse(a).format).toBe('ficus-session');
 });
 test('import round-trips as a new session', async () => {
   const out = await exportSession(store, s.id, { includeEnv: false });
@@ -57,11 +57,12 @@ test('import round-trips as a new session', async () => {
   expect((await store.listVerdicts(s.id)).every(v => v.sessionId === s.id)).toBe(true);
 });
 test('import rejects foreign data', async () => {
-  await expect(importSession(store, { format: 'nope' } as never)).rejects.toThrow('not a Gameleira session export');
+  await expect(importSession(store, { format: 'nope' } as never)).rejects.toThrow('not a Ficus session export');
 });
-test('import still reads the format this app had before its rename', async () => {
+test.each(['eslogger-viewer-session', 'gameleira-session'])('import still reads %s, a format this app wrote before a rename', async (format) => {
   const out = await exportSession(store, s.id, { includeEnv: false });
-  const legacy = { ...out, format: 'eslogger-viewer-session' };   // what a pre-rename build wrote
+  expect(out.format).toBe('ficus-session');
+  const legacy = { ...out, format };   // what a pre-rename build wrote
   const s2 = await importSession(store, legacy as never);
   expect(s2.name).toBe('lab (imported)');
   expect(await store.listVerdicts(s2.id)).toHaveLength((await store.listVerdicts(s.id)).length);
@@ -191,7 +192,7 @@ test('redacting leaves the stored verdict alone', async () => {
 // --- saved files and reimport ------------------------------------------------------------------------------------
 
 test('a saved file is named after the session plus a hash of its id, so two sessions with one name do not collide', () => {
-  expect(saveFileName({ id: 'abc', name: 'finance MacBook / 12 Nov' })).toMatch(/^finance-MacBook-12-Nov\.[0-9a-f]{8}\.gameleira-session\.json$/);
+  expect(saveFileName({ id: 'abc', name: 'finance MacBook / 12 Nov' })).toMatch(/^finance-MacBook-12-Nov\.[0-9a-f]{8}\.ficus-session\.json$/);
   expect(idHash('abc')).toBe(idHash('abc'));
   expect(idHash('abc')).not.toBe(idHash('abd'));
   expect(saveFileName({ id: 'a', name: 'lab' })).not.toBe(saveFileName({ id: 'b', name: 'lab' }));
@@ -227,5 +228,5 @@ test('parseExport reads a saved file and rejects anything else', async () => {
   const out = await exportSession(store, s.id, { includeEnv: false });
   expect(parseExport(JSON.stringify(out)).session.id).toBe(s.id);
   expect(() => parseExport('{')).toThrow('Not a JSON file');
-  expect(() => parseExport('{"format":"x"}')).toThrow(/not a Gameleira session export/);
+  expect(() => parseExport('{"format":"x"}')).toThrow(/not a Ficus session export/);
 });

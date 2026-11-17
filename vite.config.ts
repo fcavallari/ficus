@@ -12,7 +12,7 @@ const CSP =
 // spliced in as raw text: Vite's tag serializer would entity-escape the quotes
 // (&#39;), which browsers decode but which makes the policy unreadable on disk.
 const cspPlugin = (): Plugin => ({
-  name: 'gameleira-csp',
+  name: 'ficus-csp',
   apply: 'build',
   transformIndexHtml: {
     order: 'post',

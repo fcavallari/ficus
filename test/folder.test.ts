@@ -27,8 +27,15 @@ test('finds the saved copy of a session by the id hash in its file name, and by 
   expect(copy!.data.session.id).toBe(s.id);
 
   // Renamed by hand, or saved by an older build without the hash: found by the session name.
-  const renamed = fakeFolder('cases', { 'lab.gameleira-session.json': await saved(s, 1) });
+  const renamed = fakeFolder('cases', { 'lab.ficus-session.json': await saved(s, 1) });
   expect((await findSavedCopy(renamed, s))?.byId).toBe(true);
+});
+
+test('finds a copy saved while the app was called Gameleira, under its old file name and format', async () => {
+  const old = await saved(s, 1);
+  old.text = JSON.stringify({ ...JSON.parse(old.text), format: 'gameleira-session' });
+  const dir = fakeFolder('cases', { 'lab.0badc0de.gameleira-session.json': old });
+  expect(await findSavedCopy(dir, s)).toMatchObject({ fileName: 'lab.0badc0de.gameleira-session.json', byId: true });
 });
 
 test('a file of this very session wins over a newer one from another session with the same name', async () => {
@@ -43,12 +50,12 @@ test('a file of this very session wins over a newer one from another session wit
 test('the newest of several copies wins; unrelated, broken and other sessions’ files are skipped', async () => {
   const other = await store.createSession('other');
   const dir = fakeFolder('cases', {
-    'lab.old.gameleira-session.json': await saved(s, 1),
-    'lab.new.gameleira-session.json': await saved(s, 3),
-    'lab.broken.gameleira-session.json': { text: '{', lastModified: 9 },
+    'lab.old.ficus-session.json': await saved(s, 1),
+    'lab.new.ficus-session.json': await saved(s, 3),
+    'lab.broken.ficus-session.json': { text: '{', lastModified: 9 },
     [saveFileName(other)]: await saved(other, 9),
   });
-  expect((await findSavedCopy(dir, s))?.fileName).toBe('lab.new.gameleira-session.json');
+  expect((await findSavedCopy(dir, s))?.fileName).toBe('lab.new.ficus-session.json');
   expect(await findSavedCopy(fakeFolder('empty'), s)).toBeNull();
 });
 

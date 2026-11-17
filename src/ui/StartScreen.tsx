@@ -10,7 +10,9 @@ import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
 /** Where the project lives, for the invitation to contribute. */
-const REPO_URL = 'https://github.com/fcavallari/gameleira';
+const REPO_URL = 'https://github.com/fcavallari/ficus';
+/** The tree the app is named after: the gameleira, a Brazilian fig. */
+const GAMELEIRA_URL = 'https://en.wikipedia.org/wiki/Ficus_gomelleira';
 
 const when = (iso: string): string => {
   const d = new Date(iso);
@@ -22,7 +24,7 @@ const when = (iso: string): string => {
 /**
  * The home page. A gameleira runs through it: the crown beside the introduction, one limb across the sheet, a root from
  * the limb's end down the session list (each session is a node on it), and on the right the roots that reached the
- * ground as the three trunks Gameleira follows. The drawing stays behind and beside the controls, never under them.
+ * ground as the three trunks Ficus follows. The drawing stays behind and beside the controls, never under them.
  */
 export function StartScreen() {
   const c = useSession();
@@ -110,7 +112,7 @@ export function StartScreen() {
         <div className="home-banner"><StoreErrorBanner /></div>
 
         <section className="intro" aria-labelledby="home-h">
-          <h1 id="home-h" className="home-title">Gameleira</h1>
+          <h1 id="home-h" className="home-title">Ficus</h1>
           <p className="tagline">Every root, not just the parent PID.</p>
           <p className="lede">Reconstruct macOS process lineage from eslogger captures. Follow original parents, responsible
             processes, XPC services and exec chains to discover where processes actually came from. Everything stays in
@@ -193,7 +195,7 @@ export function StartScreen() {
 
           <section className="howto" aria-labelledby="start-h">
             <h2 id="start-h">Start an investigation</h2>
-            <p className="muted">Gameleira reads captures made by Apple’s <span className="mono">eslogger</span>. The capture runs on the Mac
+            <p className="muted">Ficus reads captures made by Apple’s <span className="mono">eslogger</span>. The capture runs on the Mac
               you are investigating, which need not be the one you are reading this on. A trace exported from Mac Monitor also loads.</p>
             <ol className="steps">
               <li><strong>Capture on that Mac.</strong> Run the command below in its Terminal (it needs your admin password),
@@ -211,11 +213,11 @@ export function StartScreen() {
 
           <section className="howto contribute" aria-labelledby="contrib-h">
             <h2 id="contrib-h">Help it grow</h2>
-            <p className="muted">Gameleira is open source, under the MIT licence. If a rule misfires, a capture will not load, or you
+            <p className="muted">Ficus is open source, under the MIT licence. If a rule misfires, a capture will not load, or you
               know a technique it should catch, open an issue or send a pull request. New rules, fixes and better explanations
               are all welcome.</p>
             <p><a href={REPO_URL} target="_blank" rel="noreferrer noopener">
-              <span className="mono">github.com/fcavallari/gameleira</span></a></p>
+              <span className="mono">github.com/fcavallari/ficus</span></a></p>
           </section>
         </section>
 
@@ -230,8 +232,10 @@ export function StartScreen() {
                 </span>
               ))}
             </div>
-            <p className="caption"><i>Ficus</i> spp., the gameleira: aerial roots drop from its limbs, reach the ground and become
-              trunks. Gameleira follows the roots of every process, not only the one its parent PID names.</p>
+            <p className="caption">The name comes from the gameleira,{' '}
+              <a href={GAMELEIRA_URL} target="_blank" rel="noreferrer noopener"><i>Ficus gomelleira</i></a>, a Brazilian fig
+              whose aerial roots drop from its limbs, reach the ground and become trunks. Ficus follows the roots of every
+              process, not only the one its parent PID names.</p>
           </div>
         </div>
       </main>

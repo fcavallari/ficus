@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`snapshot of the lab report 1`] = `
-"# Gameleira report: lab
+"# Ficus report: lab
 
 Generated 2026-11-16T12:00:00.000Z. 17 flagged rows in 1 loaded capture: 8 high, 4 medium, 5 low.
 User's verdicts: 1 suspicious, 1 benign, 15 not reviewed. (Verdicts were set by the person who ran the capture, not by security staff.)

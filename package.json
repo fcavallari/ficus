@@ -1,5 +1,5 @@
 {
-  "name": "gameleira",
+  "name": "ficus",
   "version": "1.0.0",
   "description": "A macOS process tree viewer for eslogger captures that follows every root, not just the parent PID",
   "scripts": {

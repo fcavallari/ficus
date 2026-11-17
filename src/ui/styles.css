@@ -1,5 +1,5 @@
 /*
- * Gameleira's look: a tinted frame (the grey-green of fig bark) holding one white sheet, flat colour, hard edges.
+ * Ficus's look: a tinted frame (the grey-green of fig bark) holding one white sheet, flat colour, hard edges.
  * Colour is kept for meaning: the fig-leaf green marks the product and the selected state, red and ochre mark severity.
  * The brand face is Futura, which ships with macOS; the interface uses the system face, and code stays monospace.
  */
@@ -466,8 +466,8 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
 .steps li strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 2px; }
 .steps li::before { content: ''; position: absolute; top: -6px; left: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--node); }
 .howto .events { margin: 0; }
-.contribute a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
-.contribute a:hover { color: var(--text); }
+.contribute a, .caption a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.contribute a:hover, .caption a:hover { color: var(--text); }
 
 .cmdblock { border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--frame); overflow: hidden; }
 .cmdbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 4px 14px;
