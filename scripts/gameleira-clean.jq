@@ -245,7 +245,7 @@ def initial_state($cfg):
     ci: (reduce ($cfg.key[] | select(.kind == "user" or .kind == "realname" or .kind == "host" or .kind == "email")) as $k ({};
            .[$k.kind][$k.real | ascii_downcase] //= $k.placeholder)),
     # The -D domains, as a regex for internal_names and as the lower-case literals net_maybe looks for. nf: values
-    # net_maybe found nothing in (see clean_net).
+    # pre_test found nothing in; envk: environment names by class (see clean_env).
     domre: ($cfg.domains // [] | map(regex_escape) | join("|")),
     domlit: [$cfg.domains // [] | .[] | ascii_downcase] | unique, nf: {}, nfn: 0, envk: {}, envkn: 0,
     words: {}, multi: {}, nwords: 0, netc: {}, netn: 0, netp: false, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "", acctall: "", clear: {}, clearn: 0,
@@ -526,7 +526,8 @@ def kept_clean($n; $program):
 # A host or email placeholder (what net_shapes writes), and a name in a cleaned place holding one (backup-10.0.0.5
 # became backup-host1.internal.invalid): the placeholders stay, each run of letters and digits around them gets a
 # name placeholder (name5-host1.internal.invalid), a file extension after them stays. So no key row's real value holds
-# a placeholder, and the same name gives the same result in a field and an argument. Input: the state. Output: {v, s}.
+# a placeholder, and the same name gives the same result in a field and an argument. A redaction (REDACTED) in a name
+# stays the same way (/tmp/<redacted>.txt). Input: the state. Output: {v, s}.
 def PH_RE: "host[0-9]+\\.internal\\.invalid|person[0-9]+@example\\.invalid|\u0002";
 def ph_name($n):
   reduce ($n | [match("(?:" + PH_RE + ")|(?:(?!" + PH_RE + ")[\\s\\S])+"; "g") | .string])[] as $p ({v: "", s: .};
