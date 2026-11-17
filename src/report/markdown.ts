@@ -38,10 +38,10 @@ const who = (r: ProcRef): string => (r.pid >= 0 && !r.name.startsWith(`pid ${r.p
 const signature = (i: ReportImage): string =>
   i.signature === 'team-signed' && i.teamId ? `signed by team ${text(i.teamId)}` : SIG_WORDS[i.signature];
 
-/** The image a row describes: the latest one whose exec was captured (it has arguments), else the latest. */
-function mainImage(images: ReportImage[]): ReportImage | undefined {
+/** The latest image whose exec was captured, so it has arguments and a working directory; undefined when none was. */
+function lastExec(images: ReportImage[]): ReportImage | undefined {
   for (let i = images.length - 1; i >= 0; i--) if (images[i]!.args !== null) return images[i];
-  return images[images.length - 1];
+  return undefined;
 }
 
 function row(r: ReportRow, fileName: string): string[] {
@@ -57,13 +57,20 @@ function row(r: ReportRow, fileName: string): string[] {
   else if (r.keptReason) marks.push(`marked routine by the user, kept: ${text(r.keptReason)}`);
   out.push(`- **Capture:** ${marks.join(' · ')}`);
   if (p) {
-    const img = mainImage(p.images);
-    if (img?.args) out.push(`- **Command line:** ${code(argsLine(img.args))}`);
+    // The row is named after the latest program, so Program describes that one. The command line comes from the last
+    // exec the capture saw; when that was an earlier program (a later change had no exec event), it says which.
+    const img = p.images[p.images.length - 1];
+    const exec = lastExec(p.images);
+    if (exec?.args) {
+      const label = exec === img ? '**Command line:**'
+        : `**Command line** (of ${exec.path ? code(exec.path) : 'an earlier program'}, the last exec captured):`;
+      out.push(`- ${label} ${code(argsLine(exec.args))}`);
+    }
     if (img) out.push(`- **Program:** ${img.path ? code(img.path) : 'unknown'}, ${signature(img)}`);
     const others = p.images.filter(i => i !== img && !i.inherited && i.path !== null && i.path !== img?.path);
     if (others.length > 0) out.push(`- **Also ran:** ${others.map(i => code(i.path!)).join(', ')}`);
-    if (img?.cwd) out.push(`- **Working directory:** ${code(img.cwd)}`);
-    if (img?.script) out.push(`- **Script:** ${code(img.script)}`);
+    if (exec?.cwd) out.push(`- **Working directory:** ${code(exec.cwd)}`);
+    if (exec?.script) out.push(`- **Script:** ${code(exec.script)}`);
     out.push(`- **Started by:** ${[...p.ancestry].reverse().map(who).concat('this').join(' → ')}`);
     if (p.responsible) out.push(`- **Responsible:** ${who(p.responsible)}`);
     out.push(`- **Ran:** ${p.startTime ?? 'start not captured'} to ${p.exitTime ?? 'no exit captured'}`);

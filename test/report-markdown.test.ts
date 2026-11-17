@@ -84,3 +84,16 @@ test('redacted Markdown holds no secret: loaded, not loaded, and cut in half', (
 test('a process known only by its pid is named once, without the pid repeated', () => {
   expect(reportMarkdown(build())).not.toMatch(/pid (\d+)[^\n(]*\(pid \1\)/);
 });
+
+test('Program describes the program the row is named after; a command line from an earlier exec says so', () => {
+  const fresh = buildModel(readLines('synthetic-lab.jsonl'));
+  const p = procByPid(fresh, 7016);
+  const last = p.images[p.images.length - 1]!;
+  p.images.push({ ...last, path: '/tmp/evil', signingId: null, teamId: null, isPlatform: false, csFlags: 0, args: null,
+    cwd: null, env: null, script: null, stdinIsPipe: null, seq: last.seq + 1, inherited: false });
+  const md = reportMarkdown(build({ loaded: new Map([['fp', lab('fp', fresh)]]) }));
+  const section = md.slice(md.indexOf('evil (pid 7016)'));
+  const block = section.slice(0, section.indexOf('\n### '));
+  expect(block).toContain('- **Program:** `/tmp/evil`, unsigned');
+  expect(block).toContain('- **Command line** (of `/usr/bin/dscl`, the last exec captured): `dscl . -authonly labuser labpass-not-real`');
+});

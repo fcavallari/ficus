@@ -1,7 +1,7 @@
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, childrenIndex, displayName, registrant } from '../model/relations';
 import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { itemTypeName } from '../model/util';
+import { itemTypeName, resolvePath } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { cmdline, isAdhoc, isUnsigned, type Severity } from '../rules/rules';
 import { idHash, REDACTED, slug } from '../session/export';
@@ -156,7 +156,7 @@ class CaptureRows {
   /**
    * A finding as the report shows it. Redacting, its evidence loses the command line it quotes: first the exact
    * `cmdline` text of the finding's image (so a line the evidence limit cut short is matched as cut), then any other
-   * argument of the process that is not also a kept value.
+   * argument of the process, as typed or resolved against its working directory, that is not also a kept value.
    */
   finding(f: Finding, p: Process | undefined): ReportFinding {
     const out = reportFinding(f);
@@ -165,7 +165,9 @@ class CaptureRows {
     const img = f.imgIndex !== null ? p.images[f.imgIndex] : undefined;
     if (img?.args) e = e.split(cmdline(img)).join(cmdline({ ...img, args: redactArgv(img.args) }));
     this.kept ??= keptText(this.m);
-    const args = [...new Set(p.images.flatMap(i => i.args?.slice(1) ?? []))]
+    // An argument as typed, and as a rule may have resolved it against the working directory (osascript's script path).
+    const typed = p.images.flatMap(i => (i.args?.slice(1) ?? []).flatMap(a => [a, resolvePath(a, i.cwd)]));
+    const args = [...new Set(typed)]
       .filter(a => a.length >= MIN_REDACTED && a !== REDACTED && !this.kept!.includes(a))
       .sort((a, b) => b.length - a.length);
     for (const a of args) e = e.split(a).join(REDACTED);

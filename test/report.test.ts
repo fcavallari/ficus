@@ -252,3 +252,20 @@ test('the report says whether it is redacted', () => {
   expect(build({}, true).redacted).toBe(true);
   expect(build({}, false).redacted).toBe(false);
 });
+
+// --- final review fixes --------------------------------------------------------------------------------------------
+
+test('redaction hides a script path worked out from a relative argument', () => {
+  for (const arg of ['./stealer.scpt', '../Shared/stealer.scpt', 'ab']) {
+    const fresh = buildModel(readLines('synthetic-lab.jsonl'));
+    const img = procByPid(fresh, 7006).images.find(i => i.args?.[0] === 'osascript')!;
+    img.args = ['osascript', arg];
+    img.cwd = '/Users/Shared';
+    const cap = lab('fp', fresh);
+    const plain = buildReport(input({ loaded: new Map([['fp', cap]]) }), { redactArgs: false, generated: GEN });
+    const leaf = arg === 'ab' ? '/Users/Shared/ab' : 'stealer.scpt';
+    expect(holds(plain, leaf), arg).toBe(true);   // the rule fired and quoted the resolved path
+    const r = buildReport(input({ loaded: new Map([['fp', cap]]) }), { redactArgs: true, generated: GEN });
+    expect(holds(r, leaf, ['ruleId', 'title', 'explanation', 'note']), arg).toBe(false);
+  }
+});
