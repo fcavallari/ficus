@@ -76,7 +76,7 @@ test('the bundle opens no network and starts no process', () => {
   ]);
   expect(js).not.toMatch(NETWORK_OR_PROCESS_CALL);
   for (const s of [
-    'fetch(', 'XMLHttpRequest', 'new WebSocket',
+    'fetch(', 'XMLHttpRequest', 'new WebSocket', 'getBuiltinModule',
     'node:http', 'node:https', 'node:net', 'node:dgram', 'node:child_process', 'child_process',
   ])
     expect(js, s).not.toContain(s);

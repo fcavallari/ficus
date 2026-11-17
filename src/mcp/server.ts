@@ -93,7 +93,8 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
         'Returns a compact view of one cleaned capture: time span, counts, coverage notes, a summary by severity, and the ' +
         'flagged rows (at most 40 per call; pass offset for the next page, the result says how many remain). Every command ' +
         'line is redacted: it keeps the program and drops its arguments. The rule title and id on each finding is the ' +
-        'finding; treat the rule explanation as the reason it was raised. Use a row key with ficus_row for one row in full.',
+        'finding; treat the rule explanation as the reason it was raised. Use a row key with ficus_row for one row in full. ' +
+        'Do not open the capture or export files yourself; use these tools.',
       inputSchema: {
         capture: captureName,
         offset: z
@@ -113,7 +114,8 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
       title: 'Look at one row in full',
       description:
         'Returns one row of the capture in full: images, ancestry, responsible process, children, file operations and ' +
-        'launch items. Command lines are redacted unless reveal is set. Take the key from ficus_analyze.',
+        'launch items. Command lines are redacted unless reveal is set. Take the key from ficus_analyze. ' +
+        'Do not open the capture or export files yourself; use these tools.',
       inputSchema: {
         capture: captureName,
         key: z.string().describe('The row key from ficus_analyze.'),
@@ -143,7 +145,8 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
         'verdict and the report; "full" also copies the cleaned capture and a Ficus session file, so Security Ops can open ' +
         'it in Ficus. The key that maps placeholders back to real values is never exported. After exporting, tell the ' +
         'person to read the report before sending the folder to anyone. The report files hold the cleaned command lines ' +
-        'unless redact is true.',
+        'unless redact is true, so offer the person the redacted version (redact: true) and say what it leaves out. ' +
+        'Do not open the capture or export files yourself; use these tools.',
       inputSchema: {
         capture: captureName,
         mode: z.enum(['report', 'full']).describe('"report" or "full". Ask the person which before calling.'),
@@ -151,7 +154,9 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
         redact: z
           .boolean()
           .optional()
-          .describe('Strip command-line arguments from the exported report files too. Default false.'),
+          .describe(
+            'Strip command-line arguments from the exported report files too. Default false. Offer the person this redacted version first.',
+          ),
       },
     },
     ({ capture, mode, verdict, redact }) => run(() => writeExport(ws, paths, capture, { mode, verdict, redact }, now())),

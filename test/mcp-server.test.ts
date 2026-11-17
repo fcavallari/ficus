@@ -82,6 +82,17 @@ test('ficus_export describes asking which mode first and reading the report befo
   expect(d).toMatch(/read the report/i);
 });
 
+test('ficus_export tells the agent to offer the redacted version, since the report files hold command lines', async () => {
+  const t = await tool('ficus_export');
+  expect(t.description).toMatch(/offer the person the redacted version/i);
+  expect(t.description).toMatch(/redact: true/);
+  expect(t.inputSchema.properties.redact.description).toMatch(/offer/i);
+});
+
+test.each(['ficus_analyze', 'ficus_row', 'ficus_export'])('%s tells the agent not to open the capture or export files itself', async name => {
+  expect((await tool(name)).description).toContain('Do not open the capture or export files yourself; use these tools.');
+});
+
 test('ficus_record_command says it never runs anything', async () => {
   expect((await tool('ficus_record_command')).description).toMatch(/never runs/i);
 });
