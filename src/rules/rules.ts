@@ -4,7 +4,7 @@ import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { PASTE_WINDOW_MS, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
+import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore } from './credentials';
 import { fileLedger } from './ledger';
 import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
@@ -1126,7 +1126,13 @@ export const RULES: Rule[] = [
       if (imgIndex !== p.images.findIndex(i => !i.inherited)) return null;
       const found = riskyParent(m, p);
       if (found === null || !riskyChild(found.cls, img)) return null;
-      if (found.cls === 'developer' && (underAgentShell(m, p) || sourcesAgentSnapshot(img))) return null;
+      if (found.cls === 'developer') {
+        // An agent's own spawns are expected: an npm-installed agent (node or bun running it) runs osascript and shells
+        // itself, and an agent's snapshot shell counts only when its parent is that agent. The suspect's own command
+        // line is never evidence of who it is: a snapshot path in a comment would let any payload through.
+        const parent = originalParentImage(m, p);
+        if (agentRuntime(parent) !== null || sourcesAgentSnapshot(img, parent)) return null;
+      }
       const mitre = new Set<string>();
       if (found.cls === 'script') mitre.add('T1059.002');
       if (found.cls === 'office') mitre.add('T1204.002');

