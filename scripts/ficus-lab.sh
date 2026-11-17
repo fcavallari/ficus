@@ -550,7 +550,6 @@ live_answers() {
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
-    '#   dropped-then-executed: the lab will not download a program from the network and run it.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
@@ -566,6 +565,8 @@ live_answers() {
   answer script-file osascript-script med queued 'collect.applescript' 'osascript runs a script file from /tmp.'
   answer odd-binary odd-location-exec high queued '/agent --lab' 'An ad-hoc signed copy of /usr/bin/true running from /tmp.'
   answer odd-binary adhoc low queued '/agent --lab' 'Ad-hoc signed: no developer identity.'
+  answer odd-binary dropped-then-executed high queued '/agent --lab' 'cp wrote the program and codesign signed it a moment before it ran from /tmp, and it is ad-hoc signed.'
+  answer app-shell dropped-then-executed high queued 'Lab Helper.app/Contents/MacOS/applet' 'osacompile wrote the applet and the lab ran it at once from /tmp; it is ad-hoc signed (a row for the applet process itself, not its shell).'
   answer app-shell shell-under-app med queued 'echo ficus-lab-applet' 'An AppleScript applet (an app) runs a shell with do shell script.'
   answer app-shell risky-parent-spawn high queued 'echo ficus-lab-applet' 'The same applet shell, seen as an app that should not run commands.'
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
