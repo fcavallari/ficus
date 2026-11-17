@@ -78,12 +78,25 @@ function writerIsOdd(p: Process): boolean {
   return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
 }
 
-/** Apple's own code: a platform binary, or a `com.apple.*` signing ID backed by a real (not ad-hoc) signature. */
+/**
+ * Team IDs Apple signs its non-platform apps with. 59GAB85EFG is Apple's developer-tools team (unverified here: no
+ * Xcode on the machine it was checked on); the others were read with `codesign -dv` from Mac App Store apps: iWork
+ * (Keynote, Numbers, Pages), GarageBand and iMovie. Apple uses more than one team, so this is a list to extend.
+ */
+const APPLE_TEAM_IDS: ReadonlySet<string> = new Set(['59GAB85EFG', '74J34U3R6X', 'F3LWYJ7GM7', 'PTN9T2S29T']);
+const claimsApple = (img: Image): boolean => img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.');
+
+/**
+ * Apple's own code: a platform binary, or a `com.apple.*` signing ID with a real (not ad-hoc) signature that carries no
+ * team ID or one of Apple's. A signing ID is the signer's own choice, even under a Developer ID certificate, so under
+ * another team's certificate the name proves nothing.
+ */
 function isAppleSigned(img: Image): boolean {
-  return img.isPlatform || (img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.') && !isAdhoc(img));
+  if (img.isPlatform) return true;
+  return claimsApple(img) && !isAdhoc(img) && (!img.teamId || APPLE_TEAM_IDS.has(img.teamId));
 }
 
-const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself ad-hoc with a `com.apple.…` signing ID (Apple\'s own code is platform-signed, and anyone can pick any ad-hoc ID), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
+const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed, and anyone can pick a signing ID, ad-hoc or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 /** The original parent's image when this process was born (the parent may exec something else later). */
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
@@ -932,9 +945,12 @@ export const RULES: Rule[] = [
       const evidence: string[] = [];
       const mitre = new Set<string>();
       let severity: Severity = 'med';
-      // (a) Ad-hoc code that signs itself with an Apple signing ID: anyone can do it, and Apple never ships it.
-      if (img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.') && !img.isPlatform && isAdhoc(img)) {
-        evidence.push(`${img.path ?? 'a program'} is ad-hoc signed as ${img.signingId}`);
+      // (a) Code that signs itself with an Apple signing ID: anyone can pick one, with an ad-hoc signature or another
+      // team's certificate. Apple's own code is platform-signed, or carries no team ID or one of Apple's.
+      if (claimsApple(img) && !isAppleSigned(img)) {
+        evidence.push(isAdhoc(img)
+          ? `${img.path ?? 'a program'} is ad-hoc signed as ${img.signingId}`
+          : `${img.path ?? 'a program'} claims the signing ID ${img.signingId} but is signed by team ${img.teamId}`);
         mitre.add('T1036.005');
         severity = 'high';
       }

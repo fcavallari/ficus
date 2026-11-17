@@ -38,6 +38,19 @@ describe('apple-masquerade', () => {
     const x = img({ path: '/Applications/Xcode.app/Contents/MacOS/Xcode', signingId: 'com.apple.dt.Xcode', csFlags: 0, isPlatform: false });
     expect(hits(capture([proc('200:1', [x])]))).toHaveLength(0);
   });
+  test('a com.apple signing ID under another team\'s certificate is high', () => {
+    const m = capture([proc('200:1', [img({ path: '/tmp/x', signingId: 'com.apple.x', teamId: 'ABCDE12345', csFlags: 0 })])]);
+    const f = hits(m);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('high');
+    expect(f[0]!.mitre).toEqual(['T1036.005']);
+    expect(f[0]!.evidence).toBe('/tmp/x claims the signing ID com.apple.x but is signed by team ABCDE12345');
+  });
+  test('genuine non-platform Apple apps are not flagged: no team ID, or one of Apple\'s', () => {
+    for (const [signingId, teamId] of [['com.apple.dt.Xcode', null], ['com.apple.dt.Xcode', '59GAB85EFG'], ['com.apple.iWork.Pages', '74J34U3R6X'], ['com.apple.garageband10', 'F3LWYJ7GM7'], ['com.apple.iMovieApp', 'PTN9T2S29T'], ['com.apple.Safari', '']]) {
+      expect(hits(capture([proc('200:1', [img({ path: '/Applications/X.app/Contents/MacOS/x', signingId, teamId })])])), `${signingId} ${teamId}`).toHaveLength(0);
+    }
+  });
   test('a platform binary is not flagged', () => {
     expect(hits(capture([proc('200:1', [apple('/usr/bin/curl', ['curl', '-V'])])]))).toHaveLength(0);
   });
@@ -65,9 +78,19 @@ describe('apple-masquerade', () => {
     expect(hits(capture([p]))).toHaveLength(0);
   });
   test('a non-platform Apple-signed writer is not flagged', () => {
-    const w = img({ path: '/Applications/Xcode.app/Contents/MacOS/Xcode', signingId: 'com.apple.dt.Xcode', csFlags: 0 });
+    const w = img({ path: '/Applications/Xcode.app/Contents/MacOS/Xcode', signingId: 'com.apple.dt.Xcode', teamId: '59GAB85EFG', csFlags: 0 });
     const p = proc('200:1', [w], { fileOps: [op('create', '/Library/LaunchDaemons/com.apple.foo.plist')] });
     expect(hits(capture([p]))).toHaveLength(0);
+  });
+  test('a writer with a com.apple signing ID under another team\'s certificate is not exempt', () => {
+    const w = img({ path: '/Users/Shared/x/helper', signingId: 'com.apple.x', teamId: 'ABCDE12345', csFlags: 0 });
+    const p = proc('200:1', [w], { fileOps: [op('create', '/Library/LaunchDaemons/com.apple.foo.plist')] });
+    const f = hits(capture([p]));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('high');   // (a) and (b) both apply
+    expect(f[0]!.evidence).toContain('claims the signing ID com.apple.x');
+    expect(f[0]!.evidence).toContain('created /Library/LaunchDaemons/com.apple.foo.plist');
+    expect(f[0]!.mitre).toEqual(['T1036.005', 'T1543.004']);
   });
   test('a hidden com.apple plist name counts', () => {
     const w = img({ path: '/Applications/Tool.app/Contents/MacOS/tool', signingId: 'com.example.tool', teamId: 'ABCDE12345' });
