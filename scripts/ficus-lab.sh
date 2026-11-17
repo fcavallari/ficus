@@ -347,6 +347,7 @@ run() {
 #   50..53  a second shell runs sw_vers, uname -a, system_profiler: a recon burst
 #   80  zsh: cp of the login keychain into /tmp/lab
 #   85  zsh: an unsigned program from /Users/Shared writes a launch agent plist named com.apple.…
+#   90  a second shell: base64 -d, and a bash reading from a pipe a second later: a pasted command
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -499,6 +500,15 @@ synthetic_story() {
   ev_create 85.2 "$c" "$AGENTS/com.apple.softwareupdate.helper.plist"
   ev_exit 85.3 "$c"
   answer masquerade apple-masquerade high queued '--install com.apple.softwareupdate.helper' 'An unsigned program writes a launch agent plist named like Apple'"'"'s: the persistence looks like part of macOS.'
+
+  # 11. A pasted command in the second shell: a decoder, then a bash that reads from a pipe, a second apart.
+  ev_fork 90.0 "$ZSH2" 7630 9630; c=$LAST
+  ev_fork 90.0 "$ZSH2" 7631 9631; bash=$LAST
+  ev_exec 90.1 "$c" /usr/bin/base64 platform com.apple.base64 '' "$CWD" tty base64 -d -i /tmp/lab/paste.b64
+  ev_exit 90.4 "$c"
+  ev_exec 91.1 "$bash" /bin/bash platform com.apple.bash '' "$CWD" pipe bash -l -s
+  ev_exit 91.4 "$bash"
+  answer paste clickfix-paste-chain high queued 'bash -l -s' 'A decoder and a bash reading from a pipe, a second apart under one shell: the line a ClickFix page tells the user to paste.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -522,6 +532,7 @@ live_answers() {
     '#   keychain-access med and low: the lab makes one keychain call, for an item that does not exist.' \
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
+    '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'

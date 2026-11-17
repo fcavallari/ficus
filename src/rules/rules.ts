@@ -1,9 +1,10 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { basename, imageAt, normPath } from '../model/util';
+import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
+import { PASTE_WINDOW_MS, originalParentImage, siblings, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore } from './credentials';
 import { HOME, LOCATION_WORDS, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
@@ -97,12 +98,6 @@ function isAppleSigned(img: Image): boolean {
 }
 
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed, and anyone can pick a signing ID, ad-hoc or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
-
-/** The original parent's image when this process was born (the parent may exec something else later). */
-function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
-  const parent = p.originalParent !== null ? m.processes.get(p.originalParent) : undefined;
-  return parent ? imageAt(parent, p.firstSeq) : undefined;
-}
 
 function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
@@ -526,7 +521,7 @@ function plistBase(plists: string[]): string {
 // Pipes
 
 /** The language an exec'd image reads from a piped stdin, or null. */
-function pipeLang(img: Image): PipeLang | null {
+export function pipeLang(img: Image): PipeLang | null {
   if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
   const lang = PIPE_LANGS.find(([re]) => re.test(basename(img.path)))?.[1];
   return lang && readsStdin(lang, img.args) ? lang : null;
@@ -534,6 +529,36 @@ function pipeLang(img: Image): PipeLang | null {
 
 /** openssl digest commands, where -d means debug output rather than decode. */
 const OPENSSL_DIGESTS = /^(?:dgst|md4|md5|sha1|sha224|sha256|sha384|sha512|rmd160|ripemd160)$/;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pasted commands (ClickFix)
+
+const PASTE_CHAIN_EXPLANATION = 'A shell, interpreter or osascript read its commands from a pipe a moment after a sibling process (same parent, within 3 s) decoded data (base64 -d, openssl enc -d, xxd -r) or fetched it with a curl, nscurl or wget flag that skips certificate checks or sets a custom user agent. That is the line a ClickFix page tells the user to paste into Terminal: fetch or decode a payload and run it without a file on disk. A plain `curl -fsSL … | bash`, the installer pattern of Homebrew and many tools, does not match this rule (shell-from-pipe still flags it). AI coding agents decode and fetch through their own shell-snapshot shells, so those are ignored.';
+
+/** The first non-inherited image of a process: what it exec'd as soon as it was forked. */
+const firstExec = (p: Process): Image | undefined => p.images.find(i => !i.inherited);
+
+/** A process that runs commands read from a pipe: a shell or interpreter, or an osascript running its script from stdin. */
+function readsPastedCommands(img: Image): boolean {
+  if (pipeLang(img) !== null) return true;
+  return basename(img.path) === 'osascript' && img.stdinIsPipe === true && img.args !== null && osascriptArgs(rest(img)).source === 'stdin';
+}
+
+/** What a sibling's image does for a paste chain: decode data, or fetch it with a flag that hides the fetch from checks. */
+function pasteHelper(img: Image): 'decode' | 'fetch' | null {
+  if (!img.args) return null;
+  const n = basename(img.path);
+  const a = rest(img);
+  if (n === 'base64') return hasShortFlag(a, 'd') || hasShortFlag(a, 'D') || a.includes('--decode') ? 'decode' : null;
+  if (n === 'openssl') return a[0] === 'enc' && a.includes('-d') ? 'decode' : null;
+  if (n === 'xxd') return hasShortFlag(a, 'r') ? 'decode' : null;
+  if (n === 'curl' || n === 'nscurl') {
+    const o = parseOpts(a, CURL_SPEC);
+    return hasOpt(o, 'k', ['--insecure']) || hasOpt(o, 'A', ['--user-agent']) ? 'fetch' : null;
+  }
+  if (n === 'wget') return hasOpt(parseOpts(a, WGET_SPEC), null, ['--no-check-certificate']) ? 'fetch' : null;
+  return null;
+}
 
 export const RULES: Rule[] = [
   {
@@ -972,6 +997,34 @@ export const RULES: Rule[] = [
         }
       }
       return evidence.length === 0 ? null : { evidence: evidence.join('; '), severity, mitre: [...mitre].sort() };
+    },
+  },  {
+    id: 'clickfix-paste-chain', title: 'Pasted command: fetch, decode and run', severity: 'high',
+    explanation: PASTE_CHAIN_EXPLANATION,
+    mitre: ['T1204.004', 'T1059.004', 'T1140', 'T1105'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      if (!readsPastedCommands(img)) return null;
+      // Once per process: /bin/sh re-execs /bin/bash with the same arguments and the same pipe.
+      if (p.images.slice(0, imgIndex).some(i => !i.inherited && i.path !== null && readsPastedCommands(i))) return null;
+      const readerMs = timeMs(firstExec(p)?.time ?? null);
+      if (readerMs === null || underAgentShell(m, p)) return null;
+      const found: { how: 'decode' | 'fetch'; line: string }[] = [];
+      for (const s of siblings(m, p)) {
+        const ms = timeMs(firstExec(s)?.time ?? null);
+        if (ms === null || Math.abs(ms - readerMs) > PASTE_WINDOW_MS) continue;
+        for (const i of s.images) {
+          const how = i.inherited ? null : pasteHelper(i);
+          if (how !== null) { found.push({ how, line: cmdline(i) }); break; }
+        }
+      }
+      if (found.length === 0) return null;
+      const mitre = new Set(['T1204.004']);
+      if (pipeLang(img)?.mitre === 'T1059.004') mitre.add('T1059.004');
+      for (const f of found) mitre.add(f.how === 'decode' ? 'T1140' : 'T1105');
+      return {
+        evidence: `${cmdline(img)} reads a pipe within ${PASTE_WINDOW_MS / 1000} s of ${found.map(f => f.line).join(' and ')}`,
+        mitre: [...mitre].sort(),
+      };
     },
   },
 ];

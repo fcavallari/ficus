@@ -18,6 +18,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1105': 'Ingress Tool Transfer',
   'T1140': 'Deobfuscate/Decode Files or Information',
   'T1204.002': 'Malicious File',
+  'T1204.004': 'Malicious Copy and Paste',
   'T1518.001': 'Security Software Discovery',
   'T1543.001': 'Launch Agent',
   'T1543.004': 'Launch Daemon',
