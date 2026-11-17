@@ -89,16 +89,19 @@ const APPLE_TEAM_IDS: ReadonlySet<string> = new Set(['59GAB85EFG', '74J34U3R6X',
 const claimsApple = (img: Image): boolean => img.signingId !== null && img.signingId.toLowerCase().startsWith('com.apple.');
 
 /**
- * Apple's own code: a platform binary, or a `com.apple.*` signing ID with a real (not ad-hoc) signature that carries no
- * team ID or one of Apple's. A signing ID is the signer's own choice, even under a Developer ID certificate, so under
- * another team's certificate the name proves nothing.
+ * Apple's own code: a platform binary, or a `com.apple.*` signing ID with a real (not ad-hoc) signature from one of
+ * Apple's team IDs, or with no team ID at all and a path only Apple writes to. A signing ID is the signer's own choice,
+ * and a self-signed certificate carries no team ID, so neither the name nor a missing team ID proves anything on its
+ * own: under another team's certificate, or from /tmp, it is a spoof.
  */
 function isAppleSigned(img: Image): boolean {
   if (img.isPlatform) return true;
-  return claimsApple(img) && !isAdhoc(img) && (!img.teamId || APPLE_TEAM_IDS.has(img.teamId));
+  if (!claimsApple(img) || isAdhoc(img)) return false;
+  if (img.teamId) return APPLE_TEAM_IDS.has(img.teamId);
+  return img.path !== null && appleProgramPath(img.path, true);
 }
 
-const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed, and anyone can pick a signing ID, ad-hoc or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
+const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
@@ -350,11 +353,23 @@ function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLo
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/[^/]+\.plist$/i;
 /** A launch plist labelled as Apple's (`com.apple.…`, hidden or not) in a place only third parties write to. */
 export const APPLE_LABEL_PLIST = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/\.?com\.apple\.[^/]+\.plist$/i;
-/** Where Apple's own programs live. /usr/local is not Apple's: it is where third-party tools install. */
-const APPLE_PROGRAM_DIRS = /^\/(?:System|usr(?!\/local\/)|bin|sbin|Library\/Apple)\//;
+/** Where Apple's own programs live. /usr/local is not Apple's: it is where third-party tools install. The volume ignores letter case. */
+const APPLE_PROGRAM_DIRS = /^\/(?:System|usr(?!\/local\/)|bin|sbin|Library\/Apple)\//i;
+/** Where Apple's developer tools live: the Command Line Tools and Xcode ship tools that carry no team ID of their own. */
+const APPLE_TOOL_DIRS = /^\/(?:Library\/Developer|Applications\/Xcode[^/]*\.app)\//i;
+const DOT_SEGMENT = /(?:^|\/)\.{1,2}(?:\/|$)/;
+
+/** True when the path is somewhere only Apple's own programs live. A path with a `.` or `..` segment is never trusted: it can lead anywhere. */
+function appleProgramPath(path: string, withDeveloperTools = false): boolean {
+  const n = normPath(path);
+  if (DOT_SEGMENT.test(n)) return false;
+  return APPLE_PROGRAM_DIRS.test(n) || (withDeveloperTools && APPLE_TOOL_DIRS.test(n));
+}
 const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
 const ALL_USERS_AGENT_DIR = /^\/Library\/LaunchAgents\//i;
 const USER_AGENT_DIR = /^\/Users\/[^/]+\/Library\/LaunchAgents\//i;
+/** Platform tools that write whatever they are told to: copiers, shells, interpreters and a downloader. */
+const GENERAL_TOOL = /^(?:cp|mv|ditto|tee|cat|curl|sh|bash|zsh|dash|ksh|csh|tcsh|osascript|python[0-9.]*|perl[0-9.]*|ruby[0-9.]*)$/;
 
 type LaunchKind = 'agent' | 'daemon' | 'login' | 'app' | 'user' | null;
 /** The kind of launch item, from the btm item type (0 user item, 1 app, 2 login item, 3 agent, 4 daemon) or its plist directory. */
@@ -424,11 +439,11 @@ export function launchTarget(item: PersistenceItem): { path: string; isApp: bool
   return app !== null ? { path: app, isApp: true } : null;
 }
 
-/** True when a captured platform binary sits at the launch target (an app target: anywhere inside the bundle). */
-function platformAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
+/** True when a captured Apple-signed image sits at the launch target (an app target: anywhere inside the bundle). */
+function appleSignedAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
   const key = normPath(target.path).toLowerCase();
   return [...m.processes.values()].some(q => q.images.some(i => {
-    if (!i.isPlatform || i.path === null) return false;
+    if (!isAppleSigned(i) || i.path === null) return false;
     const ip = normPath(i.path).toLowerCase();
     return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
   }));
@@ -733,7 +748,7 @@ export const RULES: Rule[] = [
       const base = persistenceSeverity(target, m);
       // An Apple-named plist that runs something Apple did not ship is the masquerade `apple-masquerade` describes.
       const wearsApple = target !== null && item.plistPath !== null && APPLE_LABEL_PLIST.test(normPath(item.plistPath))
-        && !APPLE_PROGRAM_DIRS.test(normPath(target.path)) && !platformAt(m, target);
+        && !appleProgramPath(target.path) && !appleSignedAt(m, target);
       const note = wearsApple ? `Apple-named plist but runs ${target.path}` : null;
       const severity: Severity = wearsApple ? 'high' : base.severity;
       const reason = note === null ? base.reason : base.severity === 'high' ? `${base.reason}; ${note}` : note;
@@ -1060,16 +1075,19 @@ export const RULES: Rule[] = [
       const evidence: string[] = [];
       const mitre = new Set<string>();
       let severity: Severity = 'med';
-      // (a) Code that signs itself with an Apple signing ID: anyone can pick one, with an ad-hoc signature or another
-      // team's certificate. Apple's own code is platform-signed, or carries no team ID or one of Apple's.
+      // (a) Code that signs itself with an Apple signing ID: anyone can pick one, with an ad-hoc signature, a self-signed
+      // certificate (no team ID) or another team's certificate. Apple's own code is platform-signed, or carries one of
+      // Apple's team IDs, or sits in a place only Apple writes to.
       if (claimsApple(img) && !isAppleSigned(img)) {
-        evidence.push(isAdhoc(img)
-          ? `${img.path ?? 'a program'} is ad-hoc signed as ${img.signingId}`
-          : `${img.path ?? 'a program'} claims the signing ID ${img.signingId} but is signed by team ${img.teamId}`);
+        const who = img.path ?? 'a program';
+        evidence.push(isAdhoc(img) ? `${who} is ad-hoc signed as ${img.signingId}`
+          : img.teamId ? `${who} claims the signing ID ${img.signingId} but is signed by team ${img.teamId}`
+          : `${who} claims the signing ID ${img.signingId} but has no Apple team ID`);
         mitre.add('T1036.005');
         severity = 'high';
       }
-      // (b) A com.apple launch plist written by code that is not Apple's. The process's writes are judged once.
+      // (b) A com.apple launch plist written by code that is not Apple's. The process's writes are judged once, under its
+      // first exec'd image: a fork-only writer is skipped here because persistence-plist covers it.
       if (p.images.findIndex(i => !i.inherited) === imgIndex) {
         const seen = new Set<string>();
         for (const f of p.fileOps) {
@@ -1078,7 +1096,9 @@ export const RULES: Rule[] = [
           const n = normPath(target);
           if (!APPLE_LABEL_PLIST.test(n) || seen.has(n.toLowerCase())) continue;
           const writer = imageAt(p, f.seq);
-          if (writer === undefined || isAppleSigned(writer)) continue;
+          // Apple's installers write to /Library; in a user's own LaunchAgents a platform cp, tee, shell, osascript,
+          // interpreter or curl is only copying someone's plist into place, however Apple-signed the tool is.
+          if (writer === undefined || (isAppleSigned(writer) && !(USER_AGENT_DIR.test(n) && writer.isPlatform && GENERAL_TOOL.test(basename(writer.path))))) continue;
           seen.add(n.toLowerCase());
           evidence.push(`${writer.path ?? 'a program'} ${f.kind === 'create' ? 'created' : 'renamed to'} ${target}`);
           mitre.add('T1036.005');
@@ -1088,7 +1108,8 @@ export const RULES: Rule[] = [
       }
       return evidence.length === 0 ? null : { evidence: evidence.join('; '), severity, mitre: [...mitre].sort() };
     },
-  },  {
+  },
+  {
     id: 'clickfix-paste-chain', title: 'Pasted command: fetch, decode and run', severity: 'high',
     explanation: PASTE_CHAIN_EXPLANATION,
     mitre: ['T1204.004', 'T1059.004', 'T1140', 'T1105'], scope: 'image',

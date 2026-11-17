@@ -46,9 +46,36 @@ describe('apple-masquerade', () => {
     expect(f[0]!.mitre).toEqual(['T1036.005']);
     expect(f[0]!.evidence).toBe('/tmp/x claims the signing ID com.apple.x but is signed by team ABCDE12345');
   });
-  test('genuine non-platform Apple apps are not flagged: no team ID, or one of Apple\'s', () => {
-    for (const [signingId, teamId] of [['com.apple.dt.Xcode', null], ['com.apple.dt.Xcode', '59GAB85EFG'], ['com.apple.iWork.Pages', '74J34U3R6X'], ['com.apple.garageband10', 'F3LWYJ7GM7'], ['com.apple.iMovieApp', 'PTN9T2S29T'], ['com.apple.Safari', '']]) {
-      expect(hits(capture([proc('200:1', [img({ path: '/Applications/X.app/Contents/MacOS/x', signingId, teamId })])])), `${signingId} ${teamId}`).toHaveLength(0);
+  test('genuine non-platform Apple apps are not flagged: an Apple team ID, or no team ID under an Apple path', () => {
+    const cases: [string, string | null, string][] = [
+      ['com.apple.dt.Xcode', null, '/Applications/Xcode.app/Contents/MacOS/Xcode'],
+      ['com.apple.dt.Xcode', null, '/Applications/Xcode-beta.app/Contents/MacOS/Xcode'],
+      ['com.apple.dt.Xcode', '59GAB85EFG', '/Applications/X.app/Contents/MacOS/x'],
+      ['com.apple.iWork.Pages', '74J34U3R6X', '/Applications/X.app/Contents/MacOS/x'],
+      ['com.apple.garageband10', 'F3LWYJ7GM7', '/Applications/X.app/Contents/MacOS/x'],
+      ['com.apple.iMovieApp', 'PTN9T2S29T', '/Applications/X.app/Contents/MacOS/x'],
+      ['com.apple.Safari', '', '/System/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari'],
+      ['com.apple.x', null, '/usr/libexec/x'],
+      ['com.apple.x', null, '/Library/Apple/usr/libexec/x'],
+      ['com.apple.clang', null, '/Library/Developer/CommandLineTools/usr/bin/clang'],
+    ];
+    for (const [signingId, teamId, path] of cases) {
+      expect(hits(capture([proc('200:1', [img({ path, signingId, teamId })])])), `${signingId} ${teamId} ${path}`).toHaveLength(0);
+    }
+  });
+  // A2: a signing ID is the signer's choice and a self-signed certificate carries no team ID, so the missing team ID
+  // proves nothing outside the places only Apple writes to.
+  test.each([
+    ['/tmp/x'], ['/Users/u/Downloads/x'], ['/Applications/X.app/Contents/MacOS/x'], ['/usr/local/bin/x'], ['/Users/u/Library/x'],
+    ['/usr/Local/bin/x'], ['/USR/local/bin/x'], ['/usr/../tmp/x'], ['/System/../tmp/x'], ['/Applications/Xcode.app/../../tmp/x'],
+    ['/usr/./local/bin/x'], ['/Library/Developer/../../tmp/x'],
+  ])('a self-signed com.apple.x with no team ID at %s is high', (path) => {
+    for (const teamId of [null, '']) {
+      const f = hits(capture([proc('200:1', [img({ path, signingId: 'com.apple.x', teamId, csFlags: 0 })])]));
+      expect(f, `${path} ${teamId}`).toHaveLength(1);
+      expect(f[0]!.severity).toBe('high');
+      expect(f[0]!.mitre).toEqual(['T1036.005']);
+      expect(f[0]!.evidence).toBe(`${path} claims the signing ID com.apple.x but has no Apple team ID`);
     }
   });
   test('a platform binary is not flagged', () => {
@@ -63,6 +90,36 @@ describe('apple-masquerade', () => {
     expect(f[0]!.mitre).toEqual(['T1036.005', 'T1543.001']);
     expect(f[0]!.evidence).toContain('/Users/u/Library/LaunchAgents/com.apple.updater.plist');
     expect(f[0]!.evidence).toContain('/Users/Shared/x/helper');
+  });
+  // B6: a platform tool is Apple's, but `cp` copying a plist into a user's LaunchAgents is not Apple writing its own.
+  test.each([
+    ['cp', '/bin/cp'], ['mv', '/bin/mv'], ['ditto', '/usr/bin/ditto'], ['tee', '/usr/bin/tee'], ['cat', '/bin/cat'],
+    ['bash', '/bin/bash'], ['zsh', '/bin/zsh'], ['sh', '/bin/sh'], ['osascript', '/usr/bin/osascript'], ['python3', '/usr/bin/python3'],
+    ['python3.11', '/usr/bin/python3.11'], ['perl', '/usr/bin/perl'], ['perl5.34', '/usr/bin/perl5.34'], ['ruby', '/usr/bin/ruby'], ['curl', '/usr/bin/curl'],
+  ])('a platform %s writing a com.apple plist into a user\'s LaunchAgents is flagged', (name, path) => {
+    const p = proc('200:1', [apple(path, [name])], { fileOps: [op('create', '/Users/u/Library/LaunchAgents/com.apple.x.plist')] });
+    const f = hits(capture([p]));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('high');
+    expect(f[0]!.mitre).toEqual(['T1036.005', 'T1543.001']);
+    expect(f[0]!.evidence).toBe(`${path} created /Users/u/Library/LaunchAgents/com.apple.x.plist`);
+  });
+  test('the same platform tools writing under /Library are unchanged: not flagged', () => {
+    for (const path of ['/bin/cp', '/usr/bin/ditto', '/bin/bash', '/usr/bin/osascript', '/usr/bin/python3', '/usr/bin/curl']) {
+      for (const plist of ['/Library/LaunchDaemons/com.apple.x.plist', '/Library/LaunchAgents/com.apple.x.plist']) {
+        const p = proc('200:1', [apple(path, [path.split('/').pop()!])], { fileOps: [op('create', plist)] });
+        expect(hits(capture([p])), `${path} ${plist}`).toHaveLength(0);
+      }
+    }
+  });
+  test('a platform tool that is not a general-purpose one still may write a user\'s com.apple plist', () => {
+    const p = proc('200:1', [apple('/usr/libexec/xpcproxy', ['xpcproxy'])], { fileOps: [op('create', '/Users/u/Library/LaunchAgents/com.apple.x.plist')] });
+    expect(hits(capture([p]))).toHaveLength(0);
+  });
+  test('a non-platform Apple-signed writer in a user\'s LaunchAgents is still not flagged', () => {
+    const w = img({ path: '/Applications/Xcode.app/Contents/MacOS/Xcode', signingId: 'com.apple.dt.Xcode', teamId: '59GAB85EFG', args: ['Xcode'] });
+    const p = proc('200:1', [w], { fileOps: [op('create', '/Users/u/Library/LaunchAgents/com.apple.x.plist')] });
+    expect(hits(capture([p]))).toHaveLength(0);
   });
   test('a rename into place counts, and a daemon plist cites the daemon technique', () => {
     const w = img({ path: '/tmp/x', signingId: 'adhoc.x', csFlags: ADHOC });
@@ -155,6 +212,23 @@ describe('persistence-item with an Apple-named plist', () => {
   test('a captured platform binary at the target path keeps it as before', () => {
     const p = proc('200:1', [apple('/Library/Caches/sync', ['sync'])]);
     const f = run(capture([p], [item('/Library/LaunchDaemons/com.apple.sync.plist', '/Library/Caches/sync')]));
+    expect(f[0]!.severity).toBe('med');
+  });
+  test('a genuine Apple-signed non-platform item at the target keeps it as before', () => {
+    const x = img({ path: '/Library/Caches/sync', signingId: 'com.apple.sync', teamId: '59GAB85EFG', csFlags: 0, args: ['sync'] });
+    const f = run(capture([proc('200:1', [x])], [item('/Library/LaunchDaemons/com.apple.sync.plist', '/Library/Caches/sync')]));
+    expect(f[0]!.severity).toBe('med');
+    // A com.apple signing ID under another team's certificate does not earn it.
+    const spoof = img({ path: '/Library/Caches/sync', signingId: 'com.apple.sync', teamId: 'ABCDE12345', csFlags: 0, args: ['sync'] });
+    expect(run(capture([proc('200:1', [spoof])], [item('/Library/LaunchDaemons/com.apple.sync.plist', '/Library/Caches/sync')]))[0]!.severity).toBe('high');
+  });
+  test.each(['/usr/Local/bin/sync', '/USR/local/bin/sync', '/usr/../tmp/sync', '/System/../tmp/sync', '/usr/./local/sync'])('%s is not an Apple path', (exe) => {
+    const f = run(capture([], [item('/Library/LaunchDaemons/com.apple.sync.plist', exe)]));
+    expect(f[0]!.severity).toBe('high');
+    expect(f[0]!.evidence).toContain('Apple-named plist');
+  });
+  test('Apple paths are matched in any letter case', () => {
+    const f = run(capture([], [item('/Library/LaunchDaemons/com.apple.sync.plist', '/SYSTEM/Library/x')]));
     expect(f[0]!.severity).toBe('med');
   });
   test('a plist without an Apple label is judged by what it runs, as before', () => {
