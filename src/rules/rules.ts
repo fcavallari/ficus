@@ -1,11 +1,11 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { basename, imageAt, latestImage, normPath, timeMs } from '../model/util';
+import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
-import { COPY_TOOLS, credentialStore } from './credentials';
+import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
 import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
@@ -60,7 +60,7 @@ const CREDENTIAL_MITRE: Record<string, string> = {
   'login keychain': 'T1555.001', 'saved Wi-Fi/keychain data': 'T1555.001',
   'browser logins or cookies': 'T1555.003', 'Firefox logins': 'T1555.003',
 };
-const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
+const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
 
 /** The path an argument names: `--file=/x` is `/x`, an option alone names nothing. */
 function pathArgument(a: string): string | null {
@@ -70,7 +70,8 @@ function pathArgument(a: string): string | null {
 
 /** True when the path, or the folder it names, is in a strong place (a copy into `/tmp` or a hidden folder counts). */
 function inStrongPlace(path: string): boolean {
-  return oddLocation(path)?.strength === 'strong' || strongPlace(normPath(`${path}/`)) !== null;
+  const dir = path.replace(/\/+$/, '');
+  return oddLocation(path)?.strength === 'strong' || strongPlace(normPath(`${dir}/`)) !== null || oddLocation(`${dir}/x`)?.strength === 'strong';
 }
 
 /** The writer's judgment: unsigned, ad-hoc signed, or run from a strong odd place. */
@@ -587,17 +588,22 @@ const RISKY_PARENT_LABEL: Record<RiskyParent, string> = { script: 'Script Editor
 const SCRIPT_APP_SIGNING_ID = 'com.apple.ScriptEditor2';
 const OFFICE_APP = /\/Microsoft (?:Word|Excel|PowerPoint)\.app\//;
 const OFFICE_UPDATER = '/Microsoft AutoUpdate.app/';
+/** Microsoft's own Apple team ID: a folder name is anyone's to choose, so the updater is told by its signature. */
+const MICROSOFT_TEAM_ID = 'UBF8T346G9';
 const DEVELOPER_APP = /\/(?:Visual Studio Code|Cursor|Windsurf|Xcode)\.app\//;
 const DEVELOPER_PROGRAMS = new Set(['xcodebuild', 'XCBBuildService', 'dotnet', 'node', 'bun']);
 const SCRIPT_APP_CHILDREN = new Set(['curl', 'nscurl', 'osascript', 'codesign', 'xattr', 'chmod', 'launchctl']);
 const OFFICE_CHILDREN = new Set(['osascript', 'curl', 'chmod']);
 
-/** Which kind of risky parent this path or signing ID is, or null. A path inside Microsoft AutoUpdate is never one. */
+/** True when this image is Microsoft AutoUpdate: inside a bundle of that name and signed by Microsoft. */
+const isOfficeUpdater = (img: Image | undefined): boolean => img !== undefined && (img.path ?? '').includes(OFFICE_UPDATER) && img.teamId === MICROSOFT_TEAM_ID;
+
+/** Which kind of risky parent this path or signing ID is, or null. Microsoft AutoUpdate, as signed by Microsoft, is never one. */
 function riskyParentClass(img: Image | undefined): RiskyParent | null {
   if (img === undefined) return null;
   const path = img.path ?? '';
-  if (path.includes(OFFICE_UPDATER)) return null;
   if (img.signingId === SCRIPT_APP_SIGNING_ID || path.endsWith('/Contents/MacOS/applet') || path.includes('Automator Application Stub')) return 'script';
+  if (isOfficeUpdater(img)) return null;
   if (OFFICE_APP.test(path)) return 'office';
   const name = basename(path);
   return DEVELOPER_APP.test(path) || DEVELOPER_PROGRAMS.has(name) || name.startsWith('Code Helper') ? 'developer' : null;
@@ -614,8 +620,11 @@ function shellCommand(img: Image): string | null {
 function downloadAndRun(command: string): boolean {
   if (!/\b(?:curl|wget)\b/.test(command)) return false;
   if (/\bnohup\b/.test(command) || /(?<!\|)\|(?!\|)\s*(?:sudo\s+)?(?:\S*\/)?(?:sh|bash|zsh|node|python[0-9.]*)(?![\w./-])/.test(command)) return true;
-  // -k belongs to the fetch itself: `curl … && tar -xkf` or `du -sk` are not it.
-  return command.split(/&&|\|\||[;|&\n]/).some(part => /\b(?:curl|wget)\b/.test(part) && /(?:^|\s)-[A-Za-z]*k[A-Za-z]*(?=\s|$)|--insecure/.test(part));
+  // The flag that skips certificate checks belongs to the fetch itself and differs by tool: curl -k or --insecure, but
+  // wget --no-check-certificate (wget -k is --convert-links). `curl … && tar -xkf` or `du -sk` are not it.
+  return command.split(/&&|\|\||[;|&\n]/).some(part =>
+    (/\bcurl\b/.test(part) && /(?:^|\s)-[A-Za-z]*k[A-Za-z]*(?=\s|$)|--insecure/.test(part))
+    || (/\bwget\b/.test(part) && /--no-check-certificate/.test(part)));
 }
 
 /** Does this program, run by a parent of this class, count? A developer parent only counts for a download-and-run or osascript. */
@@ -637,12 +646,12 @@ function riskyChild(cls: RiskyParent, img: Image): boolean {
 function riskyParent(m: CaptureModel, p: Process): { cls: RiskyParent; path: string; how: string } | null {
   const parent = originalParentImage(m, p);
   const cls = riskyParentClass(parent);
-  if (cls !== null) return { cls, path: parent?.path ?? '', how: '' };
+  if (parent !== undefined && cls !== null) return { cls, path: parent.path ?? '', how: '' };
   const resp = p.responsible !== null ? m.processes.get(p.responsible) : undefined;
   const respImage = resp ? imageAt(resp, p.firstSeq) : undefined;
   // Office's own children are often launched through a plain shell: the responsible process is still the document's app.
   // Microsoft AutoUpdate anywhere in the chain is the updater, not a document.
-  if (riskyParentClass(respImage) === 'office' && !parent?.path?.includes(OFFICE_UPDATER)) return { cls: 'office', path: respImage?.path ?? '', how: ' (responsible process)' };
+  if (riskyParentClass(respImage) === 'office' && !isOfficeUpdater(parent)) return { cls: 'office', path: respImage?.path ?? '', how: ' (responsible process)' };
   return null;
 }
 
@@ -657,7 +666,10 @@ export const DELETE_WINDOW_MS = 60_000;
 const DROPPED_EXPLANATION = 'A file ran within 15 s of a process writing it, from a place a normal install does not run from (a temporary folder, Downloads, /Users/Shared, a mounted volume, a hidden folder) or under a hidden name in a home folder. Downloaded or unpacked code is staged and run right away: the `curl -o` then run pattern, which never passes Gatekeeper because curl sets no quarantine flag. High when the file is unsigned or ad-hoc signed, has a hidden name, or was deleted within 60 s of running (run and delete); med otherwise. Compilers and build tools run what they just built, so a toolchain as the writer is ignored, and so are Go\'s build folders.';
 
 /** Writers whose output is meant to be run at once: compilers, linkers, build systems and package managers. */
-const TOOLCHAIN = new Set(['go', 'cargo', 'rustc', 'swift', 'swiftc', 'clang', 'clang++', 'gcc', 'cc', 'ld', 'xcodebuild', 'make', 'cmake', 'ninja', 'brew']);
+const TOOLCHAIN = new Set([
+  'go', 'link', 'cargo', 'rustc', 'rust-lld', 'swift', 'swiftc', 'swift-frontend', 'clang', 'clang++', 'gcc', 'cc', 'ld', 'lld', 'ld64.lld', 'zig',
+  'xcodebuild', 'make', 'cmake', 'ninja', 'brew',
+]);
 
 /** A path worth checking for a drop: a strong odd place, or a hidden file name under home outside a build or tooling folder. */
 function dropCandidate(path: string): boolean {
@@ -1032,13 +1044,15 @@ export const RULES: Rule[] = [
       let staged = false;                 // a credential store landed in, or a copy tool names, a staging place
       let copyToPlace = false;            // a copy tool names a credential store and, apart from it, a strong place
       const seen = new Set<string>();
-      // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder.
+      // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder, by something other than a browser.
       for (const op of p.fileOps) {
         const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
         if (target === undefined) continue;
         const label = credentialStore(target);
         const where = oddLocation(target);
         if (label === null || where === null || where.strength !== 'strong' || !STAGING_KINDS.has(where.kind)) continue;
+        // A browser engine writing its own profile is not theft; automation does it in a temporary folder with an ad-hoc browser.
+        if (isBrowserEngine(imageAt(p, op.seq)?.path ?? null)) continue;
         const key = normPath(target).toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1160,7 +1174,7 @@ export const RULES: Rule[] = [
       if (img.path !== null && SHELLS.has(img.path)) mitre.add('T1059.004');
       if (basename(img.path) === 'osascript') mitre.add('T1059.002');
       return {
-        evidence: `${RISKY_PARENT_LABEL[found.cls]} ${found.path}${found.how} ran ${cmdline(img)}`,
+        evidence: `${RISKY_PARENT_LABEL[found.cls]}${found.path ? ` ${found.path}` : ''}${found.how} ran ${cmdline(img)}`,
         mitre: [...mitre].sort(),
       };
     },
@@ -1183,8 +1197,12 @@ export const RULES: Rule[] = [
       }
       if (drop === null) return null;
       const writerProc = m.processes.get(drop.writer);
-      const writer = basename(writerProc ? latestImage(writerProc)?.path ?? null : null);
-      if (TOOLCHAIN.has(writer)) return null;
+      // The writer is the image the process was running when it wrote. A toolchain name is only a name: a program that runs
+      // from a strong odd place or has no signature at all does not earn the exemption (an ad-hoc one does: Go's linker is).
+      const writerImage = writerProc ? imageAt(writerProc, drop.seq) : undefined;
+      const writer = basename(writerImage?.path ?? null);
+      const dubious = writerImage !== undefined && (isUnsigned(writerImage) || (writerImage.path !== null && oddLocation(writerImage.path)?.strength === 'strong'));
+      if (TOOLCHAIN.has(writer) && !dubious) return null;
       let deleteMs: number | null = null;
       for (const u of ledger.unlinks.get(key) ?? []) {
         if (u.ms === null || u.seq <= img.seq || u.ms < execMs || u.ms - execMs > DELETE_WINDOW_MS) continue;

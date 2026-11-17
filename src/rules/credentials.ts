@@ -25,9 +25,23 @@ export function credentialStore(path: string): string | null {
   const p = normPath(path).toLowerCase();
   const name = basename(p).replace(SQLITE_SIDE_FILE, '');
   if (Object.hasOwn(STORE_FILES, name)) return STORE_FILES[name]!;
-  if (p.includes('/library/keychains/')) return basename(p).startsWith('login.keychain') ? 'login keychain' : 'saved Wi-Fi/keychain data';
+  if (p.includes('/library/keychains/') || p.endsWith('/library/keychains')) return basename(p).startsWith('login.keychain') ? 'login keychain' : 'saved Wi-Fi/keychain data';
   if (p.includes('/local extension settings/')) return 'browser logins or cookies';
   return null;
+}
+
+/** A browser engine's own program: a Chromium-family or Firefox bundle, or a headless build that ships without one. */
+const BROWSER_BUNDLE = /\/(?:(?:Google Chrome|Microsoft Edge|Brave Browser|Firefox|Opera)[^/]*|Chromium|Arc|Vivaldi)\.app\//i;
+const BROWSER_PROGRAMS = new Set(['chrome-headless-shell', 'headless_shell', 'firefox']);
+
+/**
+ * True when this image is a browser engine writing its own profile: a path inside a Chromium-family or Firefox bundle,
+ * or a headless build. Automation drives a throwaway profile in a temporary folder with an ad-hoc signed browser, and
+ * the browser is the one program that is meant to write these files. It is judged by path, so a stealer placed inside a
+ * path that looks like a browser bundle is a known limit.
+ */
+export function isBrowserEngine(path: string | null): boolean {
+  return path !== null && (BROWSER_BUNDLE.test(path) || BROWSER_PROGRAMS.has(basename(path)));
 }
 
 /** Tools that copy, pack or read a file's contents; one of them naming a credential store is how it is staged or read. */

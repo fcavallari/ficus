@@ -93,6 +93,74 @@ describe('credential-store-copy', () => {
     });
     expect(hits(capture([p]))).toEqual([]);
   });
+  // A3: automation drives a browser with a throwaway profile in a temporary folder, and its helpers are often ad-hoc signed.
+  const PROFILE = '/var/folders/ab/cd/T/playwright_chromiumdev_profile-x/Default';
+  test.each([
+    ['chrome-headless-shell', '/Users/u/Library/Caches/ms-playwright/chromium_headless_shell-1169/chrome-headless-shell-mac-arm64/chrome-headless-shell'],
+    ['headless_shell', '/Users/u/Library/Caches/ms-playwright/chromium_headless_shell-1169/chrome-mac/headless_shell'],
+    ['Google Chrome for Testing', '/Users/u/Library/Caches/ms-playwright/chromium-1169/chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
+    ['a Chrome helper', '/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper'],
+    ['Chromium', '/Applications/Chromium.app/Contents/MacOS/Chromium'],
+    ['Edge', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
+    ['Brave', '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
+    ['Firefox', '/Applications/Firefox.app/Contents/MacOS/firefox'],
+    ['firefox on its own', '/opt/homebrew/bin/firefox'],
+    ['Arc', '/Applications/Arc.app/Contents/MacOS/Arc'],
+    ['Vivaldi', '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi'],
+    ['Opera', '/Applications/Opera.app/Contents/MacOS/Opera'],
+  ])('an ad-hoc %s writing its own throwaway profile is not flagged', (_, path) => {
+    const browser = img({ path, signingId: 'chromium-x', csFlags: 0x2, args: [path] });
+    const files = ['Cookies', 'Login Data', 'Web Data', 'Local State'].map(f => op('create', `${PROFILE}/${f}`));
+    expect(hits(capture([proc('200:1', [browser], { fileOps: [...files, op('rename', `${PROFILE}/Cookies-new`, 3, `${PROFILE}/Cookies`)] })]))).toEqual([]);
+  });
+  test('the same temporary profile created by cp, or by an unsigned program that is not a browser, is high', () => {
+    const cp = apple('/bin/cp', ['cp', '/Users/u/x', `${PROFILE}/Cookies`]);
+    expect(hits(capture([proc('200:1', [cp], { fileOps: [op('create', `${PROFILE}/Cookies`)] })])).map(f => f.severity)).toEqual(['med']);
+    const tool = img({ path: '/Users/u/bin/tool', signingId: null, args: ['tool'] });
+    expect(hits(capture([proc('200:1', [tool], { fileOps: [op('create', `${PROFILE}/Cookies`)] })])).map(f => f.severity)).toEqual(['high']);
+    const lookalike = img({ path: '/Applications/Archive Utility.app/Contents/MacOS/x', signingId: null, args: ['x'] });
+    expect(hits(capture([proc('200:1', [lookalike], { fileOps: [op('create', `${PROFILE}/Cookies`)] })])).map(f => f.severity)).toEqual(['high']);
+  });
+  test('the writer is the image running at the time: a browser that execs a stealer is judged as the stealer', () => {
+    const browser = img({ path: '/Applications/Firefox.app/Contents/MacOS/firefox', signingId: 'org.mozilla.firefox', teamId: '43AQ936H96', seq: 1 });
+    const stealer = img({ path: '/tmp/stealer', signingId: null, seq: 5, args: ['stealer'] });
+    const p = proc('200:1', [browser, stealer], { fileOps: [op('create', '/tmp/early/Cookies', 2), op('create', '/tmp/late/Cookies', 6)] });
+    const f = hits(capture([p]));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toContain('/tmp/late/Cookies');
+    expect(f[0]!.evidence).not.toContain('/tmp/early/Cookies');
+  });
+  // Known limit: part (a) trusts a writer by where it runs from, so a stealer placed inside a path that looks like a
+  // browser bundle is not seen creating a store. Part (b) is about the tool, not the writer, so a copy is still caught.
+  test('a stealer inside a Chromium-looking path passes part (a), but a cp of the real store is still flagged', () => {
+    const fake = img({ path: '/tmp/x/Chromium.app/Contents/MacOS/x', signingId: null, args: ['x'] });
+    expect(hits(capture([proc('200:1', [fake], { fileOps: [op('create', '/tmp/out/Login Data')] })]))).toEqual([]);
+    const cp = apple('/bin/cp', ['cp', '/Users/u/Library/Application Support/Google/Chrome/Default/Login Data', '/tmp/out/Login Data']);
+    const f = hits(capture([proc('201:1', [cp], { fileOps: [op('create', '/tmp/out/Login Data')] })]));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('high');
+  });
+  test('a copy tool run by a browser-named image is still judged on its arguments', () => {
+    const cp = apple('/bin/cp', ['cp', '/Users/u/Library/Keychains/login.keychain-db', '/tmp/kc']);
+    expect(hits(capture([proc('200:1', [cp], { fileOps: [op('create', '/tmp/kc')] })])).map(f => f.severity)).toEqual(['high']);
+  });
+  // C: a folder named without a trailing slash is still a place, and a bare Keychains folder is still the keychains.
+  test('a folder argument without a trailing slash counts as a staging place', () => {
+    const cp = apple('/bin/cp', ['cp', '-r', '/Users/u/Library/Keychains/login.keychain-db', '/Users/u/Documents/.k']);
+    expect(hits(capture([proc('200:1', [cp])])).map(f => f.severity)).toEqual(['high']);
+    const tmp = apple('/bin/cp', ['cp', '-r', '/Users/u/Library/Keychains/login.keychain-db', '/tmp/stage']);
+    expect(hits(capture([proc('201:1', [tmp])])).map(f => f.severity)).toEqual(['high']);
+  });
+  test('a bare Library/Keychains folder argument names the keychains', () => {
+    expect(credentialStore('/Users/u/Library/Keychains')).toBe('saved Wi-Fi/keychain data');
+    expect(credentialStore('/Library/Keychains')).toBe('saved Wi-Fi/keychain data');
+    const ditto = apple('/usr/bin/ditto', ['ditto', '/Users/u/Library/Keychains', '/Users/u/Documents/.k']);
+    const f = hits(capture([proc('200:1', [ditto])]));
+    expect(f.map(x => x.severity)).toEqual(['high']);
+    expect(f[0]!.mitre).toEqual(['T1005', 'T1074.001', 'T1555.001']);
+    expect(credentialStore('/Users/u/Library/KeychainsX')).toBeNull();
+    expect(credentialStore('/Users/u/MyLibrary/Keychains')).toBeNull();
+  });
   test('a backup volume is not flagged', () => {
     const p = proc('200:1', [img({ path: '/usr/local/bin/bak', signingId: null })], { fileOps: [op('create', '/Volumes/Backup/Login Data')] });
     expect(hits(capture([p]))).toEqual([]);

