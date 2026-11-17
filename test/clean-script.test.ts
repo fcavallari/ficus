@@ -1361,6 +1361,40 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     sameFindings(input, r.out);
   });
 
+  // curl's @ (and -F's <) says "send this file": the marker stays, and the file has the placeholder it has anywhere else.
+  test('a file curl sends keeps its @ or <, and the same placeholder as the file named elsewhere', () => {
+    const cwd = '/Users/jdoe/Documents';
+    const url = 'https://x.example.com/';
+    const input = [
+      run(640, '/usr/bin/curl', ['curl', '-d', '@Falcon.json', url], cwd, 1),
+      run(641, '/usr/bin/curl', ['curl', '-F', 'file=@Falcon.pdf', url], cwd, 2),
+      run(642, '/usr/bin/curl', ['curl', '-F', 'file=@/Users/jdoe/Documents/Falcon.pdf', url], cwd, 3),
+      run(643, '/usr/bin/curl', ['curl', '--upload-file', 'Falcon.pdf', url], cwd, 4),
+      run(644, '/usr/bin/curl', ['curl', '-d@Falcon.json', '-F', 'doc=<Falcon.pdf', url], cwd, 5),
+      run(645, '/bin/sh', ['sh', '-c', `curl -F file=@Falcon.pdf -d @Falcon.json -F 'doc=@Falcon Board.pdf' ${url}`], cwd, 6),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    const n = keyed(r.key, 'name');
+    const pdf = n.get('Falcon.pdf');
+    const json = n.get('Falcon.json');
+    const board = n.get('Falcon Board.pdf');
+    expect(pdf).toMatch(/^name\d+\.pdf$/);
+    expect(json).toMatch(/^name\d+\.json$/);
+    expect(board).toMatch(/^name\d+\.pdf$/);
+    const user = keyed(r.key, 'user').get('jdoe');
+    expect(args[0]).toEqual(['curl', '-d', `@${json}`, url]);
+    expect(args[1]).toEqual(['curl', '-F', `file=@${pdf}`, url]);
+    expect(args[2]).toEqual(['curl', '-F', `file=@/Users/${user}/Documents/${pdf}`, url]);
+    expect(args[3]).toEqual(['curl', '--upload-file', pdf, url]);
+    expect(args[4]).toEqual(['curl', `-d@${json}`, '-F', `doc=<${pdf}`, url]);
+    expect(args[5]![2]).toBe(`curl -F file=@${pdf} -d @${json} -F 'doc=@${board}' ${url}`);
+    for (const k of parseKey(r.key)) expect(k.real, k.placeholder).not.toMatch(/^[@<]|=[@<]/);
+    expect(r.out).not.toContain('Falcon');
+    sameFindings(input, r.out);
+  });
+
   // ssh's own options take single values (a key file, a config file); only what follows the host is the remote command.
   test('ssh option values are single values, and only what follows the host is shell code', () => {
     const argv = [

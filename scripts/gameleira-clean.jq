@@ -934,6 +934,11 @@ def rel_word($w):
 # An argument, or the value of --option=value or NAME=value: {pre: what stays, val: what may be a relative name}.
 def option_value($a):
   ([$a | capture("^(?<pre>--?[A-Za-z0-9][A-Za-z0-9_-]*=|[A-Za-z_][A-Za-z0-9_]*=)(?<val>.+)$")] | .[0]) // {pre: "", val: $a};
+# A file a program is told to read ({pre, val} from option_value or arg_value): curl -d @file, -F name=@file or
+# name=<file, a response file @args. The @ or < goes in pre, so the name has the placeholder it has anywhere else.
+def file_marker:
+  if (.val | test("^@[^@]")) or ((.pre | endswith("=")) and (.val | test("^<."))) then .pre += .val[:1] | .val |= .[1:]
+  else . end;
 
 # ---- relative names in shell code ------------------------------------------------------------------------------
 # Shell code run from a cleaned place (state.rel is the exec's cwd: sh -c behind any wrapper, su -c, an ssh remote
@@ -952,7 +957,9 @@ def GLOB: "[*?\\[]";
 # Input: the state.
 def shell_word_clean($w; $quoted):
   .rel as $dir
-  | (if $quoted then {pre: "", val: $w} else option_value($w) end) as $o
+  # A quoted word is one name, unless it names a file to send ('doc=@Board Minutes.pdf').
+  | (if $quoted then (option_value($w) | file_marker) as $m | if $m.pre | test("[@<]$") then $m else {pre: "", val: $w} | file_marker end
+     else option_value($w) | file_marker end) as $o
   | (if $quoted then $o.val else $o.val | unescape end) as $u
   | if $quoted and .sec and ($u | test(KEYCHAIN_PHRASES)) then null
     elif ($quoted | not) and ($u | test(GLOB)) then
@@ -1786,11 +1793,11 @@ def clean_event($state):
             | if $relc and $arg and ($kc | not)
                  and (if $p[3] == 0 then ($u | index("/")) != null
                       else ($code and ($cmd == null or ($u | test("\\s")))) | not end)
-                 and (arg_value($prog; $u) as $o
+                 and ((arg_value($prog; $u) | file_marker) as $o
                       | ($prog == "wget" and $o.pre == "" and $p[3] > 0 and ($o.val | file_like_host | not)
                          and (wget_value_option($args[$p[3] - 1] | if type == "string" then . else "" end) | not)) as $url_arg
                       | .s | relative_name($url_arg; $o.val)) then
-                arg_value($prog; $u) as $o
+                (arg_value($prog; $u) | file_marker) as $o
                 | (.s | clean_relative_arg($prog; $cwd; $o.val)) as $r
                 | .s = $r.s | ($r.s | replace_seeds($o.pre + $r.v | unrest_urls($prot)) | unmark) as $w | if $w != $v then .e |= setpath($p; $w) else . end
               else
