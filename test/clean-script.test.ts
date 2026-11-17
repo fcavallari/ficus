@@ -46,6 +46,14 @@ export interface CleanRun {
 }
 
 /**
+ * stderr as a failure message: the summary's short-names line is hidden, since with this Mac's names as seeds it can
+ * name a local account, and a failing test would print it.
+ */
+export function failureMessage(stderr: string): string {
+  return stderr.replace(/^short or common account names: .*$/gm, 'short or common account names: (hidden)');
+}
+
+/**
  * Runs the script in a fresh folder, with its own key folder unless `-k` is passed, and this Mac's accounts left out.
  * Without `-o` the capture goes to `out.jsonl` in that folder. `input` is written to a file and passed as `-i`, or
  * with `-i -` given on standard input.
@@ -76,7 +84,7 @@ export function runClean(args: string[], opts: { input?: string; env?: Record<st
   const keyFile = summary['key'];
   const key = keyFile && fs.existsSync(keyFile) ? fs.readFileSync(keyFile, 'utf8') : '';
   // An event the cleaner could not clean is dropped: a bug in the program would thin the capture without a word.
-  if (argv[0] === 'clean' && r.status === 0) expect(summary['events the cleaner could not clean'], stderr).toBe(String(opts.uncleaned ?? 0));
+  if (argv[0] === 'clean' && r.status === 0) expect(summary['events the cleaner could not clean'], failureMessage(stderr)).toBe(String(opts.uncleaned ?? 0));
   return { out, key, summary, stderr, status: r.status ?? -1 };
 }
 
@@ -91,6 +99,13 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     const noValue = runClean(['clean', '-o', '-', '-i']);
     expect(noValue.status).toBe(2);
     expect(noValue.stderr).toMatch(/-i needs a value/);
+  });
+
+  test("a failing run's message never shows the short-names line, which can name this Mac's account", () => {
+    const msg = failureMessage('events in: 1\nshort or common account names: zqxbob, zqxeve\nkey: /k\n');
+    expect(msg).not.toMatch(/zqx/);
+    expect(msg).toContain('events in: 1');
+    expect(msg).toContain('short or common account names: (hidden)');
   });
 
   test('clean without -i exits 2', () => {
