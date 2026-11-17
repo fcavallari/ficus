@@ -384,8 +384,8 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(e.status).toBe(1);
     expect(e.stderr).toMatch(/-k and -i are the same file/);
     expect(fs.readFileSync(empty, 'utf8')).toBe('');
-    // record checks it too, before recording.
-    const rec = runClean(['record', '-t', '1', '-o', out, '-k', out], { env: { FICUS_CLEAN_RECORDER: 'exit 0' } });
+    // record checks it too, before recording (as on macOS, so the check is reached on any test machine).
+    const rec = runClean(['record', '-t', '1', '-o', out, '-k', out], { env: { FICUS_CLEAN_RECORDER: 'exit 0', FICUS_CLEAN_FAKE_OS: 'Darwin' } });
     expect(rec.status).toBe(1);
     expect(rec.stderr).toMatch(/-o and -k are the same file/);
     expect(fs.existsSync(out)).toBe(false);
