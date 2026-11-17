@@ -316,10 +316,12 @@ start_recording() {
   mkfifo -m 600 "$fifo" "$ctl" || die "cannot make a pipe in $RAW_DIR"
   # Read and write: a FIFO opened only for writing would wait for the reader, sudo, which may never come.
   exec 4<>"$ctl" || die "cannot open $ctl"
+  # A script killed with SIGKILL cannot remove the stats the cleaner writes at the end, which can list short account
+  # names: the cleaner removes them itself when the script is gone (kill -0 sends no signal; a builtin, it runs nothing).
   if [ "$4" = - ]; then
-    ( trap '' INT HUP QUIT; run_cleaner "$1" "$2" "$3" < "$fifo" ) 4>&- 6<&- &
+    ( trap '' INT HUP QUIT; run_cleaner "$1" "$2" "$3" < "$fifo"; kill -0 $$ 2>/dev/null || rm -f "$3" ) 4>&- 6<&- &
   else
-    ( trap '' INT HUP QUIT; run_cleaner "$1" "$2" "$3" < "$fifo" > "$4" ) 4>&- 6<&- &
+    ( trap '' INT HUP QUIT; run_cleaner "$1" "$2" "$3" < "$fifo" > "$4"; kill -0 $$ 2>/dev/null || rm -f "$3" ) 4>&- 6<&- &
   fi
   CLEANER_PID=$!
   # The channel is opened here, as the user, for reading: fd 4 holds it for writing, so the open does not block.

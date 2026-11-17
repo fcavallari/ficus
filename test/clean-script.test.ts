@@ -3413,6 +3413,12 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     for (let i = 0; i < 120 && inGroup(run.pid) > 0; i++) await sleep(100);
     expect(inGroup(run.pid)).toBe(0);
     for (const l of lines(fs.readFileSync(out, 'utf8'))) expect(() => JSON.parse(l)).not.toThrow();
+    // A killed script cannot clean up: what it leaves (its pipes, empty files) holds nothing. The stats can list short
+    // account names, so the cleaner removes them when the script is gone.
+    const left = (fs.readdirSync(dir).filter(n => n.startsWith('gameleira-clean.')) as string[])
+      .flatMap(n => { const p = path.join(dir, n); return fs.lstatSync(p).isDirectory() ? fs.readdirSync(p).map(m => path.join(p, m)) : [p]; })
+      .filter(p => fs.lstatSync(p).isFile() && fs.lstatSync(p).size > 0);
+    expect(left.length, 'temporary files with content after the script was killed').toBe(0);
   }, 30000);
 
   // The root side opens nothing of the user's: the stop channel is handed to it as standard input, opened by this script
@@ -3519,8 +3525,9 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const text = fs.readFileSync(out, 'utf8');
     expect(text.endsWith('\n')).toBe(true);
     for (const l of lines(text)) expect(() => JSON.parse(l)).not.toThrow();
-    expect(stderr).toMatch(new RegExp(`^events out: ${lines(text).length}$`, 'm'));
-    expect(stderr).toMatch(/^events in: \d+$/m);
+    // Local seeds are on: stderr can name this Mac's account (the short-names line), so only its counts are matched.
+    expect(countsOnly(stderr)).toMatch(new RegExp(`(?:^|; )events out: ${lines(text).length}(?:;|$)`));
+    expect(countsOnly(stderr)).toMatch(/(?:^|; )events in: \d+(?:;|$)/);
     expect(parseKey(fs.readFileSync(path.join(dir, 'keys', 'out.jsonl.key.tsv'), 'utf8')).length).toBeGreaterThan(0);
     for (let i = 0; i < 20 && inGroup(rec.pid!) > 0; i++) await sleep(100);
     expect(inGroup(rec.pid!)).toBe(0);
