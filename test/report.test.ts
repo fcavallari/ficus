@@ -147,3 +147,47 @@ test('reportFileName follows the session save name', () => {
 test('the report is deterministic', () => {
   expect(JSON.stringify(build())).toBe(JSON.stringify(build()));
 });
+
+// --- Task 2: captures not loaded, and processes the user marked ---------------------------------------------------
+
+const gone = { ...input().capRecs[0]!, fingerprint: 'gone', fileName: 'gone.jsonl' };
+
+test('a capture that is not loaded is listed with its verdicts', () => {
+  const r = build({
+    capRecs: [...input().capRecs, gone],
+    verdicts: [verdict('gone', 'p1', 'confirmed', 'bad', { name: 'evil' }), verdict('gone', 'p2', 'unreviewed', '')],
+  });
+  const c = r.captures.find(x => x.fingerprint === 'gone')!;
+  expect(c.loaded).toBe(false);
+  expect(c.rows).toBeUndefined();
+  expect(c.notLoaded).toEqual([{ procKey: 'p1', status: 'confirmed', note: 'bad', snapshot: expect.objectContaining({ name: 'evil' }) }]);
+  expect(r.summary.capturesNotLoaded).toBe(1);
+});
+
+test('a verdict on a process the rules did not flag is reported as user-marked', () => {
+  const queuedIds = new Set(a.queue.map(q => q.procId));
+  const p = [...m.processes.values()].find(x => !queuedIds.has(x.id) && !x.ghost)!;
+  const r = build({ verdicts: [verdict('fp', p.id, 'confirmed', 'odd')] });
+  const marked = r.captures[0]!.userMarked!;
+  expect(marked).toHaveLength(1);
+  expect(marked[0]!.kind).toBe('user-marked');
+  expect(marked[0]!.severity).toBeNull();
+  expect(marked[0]!.verdict?.note).toBe('odd');
+  expect(marked[0]!.findings.map(f => f.ruleId)).toEqual((a.contextOnly.get(p.id) ?? []).map(f => f.ruleId));
+  expect(marked[0]!.process?.pid).toBe(p.pid);
+  expect(r.summary.userMarked).toBe(1);
+  expect(r.summary.rows).toBe(a.queue.length);
+});
+
+test('a verdict whose process is missing is reported from its snapshot', () => {
+  const r = build({ verdicts: [verdict('fp', 'nope', 'confirmed', '', { name: 'ghosty' })] });
+  const marked = r.captures[0]!.userMarked!;
+  expect(marked).toHaveLength(1);
+  expect(marked[0]!.name).toBe('ghosty');
+  expect(marked[0]!.process).toBeUndefined();
+});
+
+test('user-marked rows are numbered after every queue row', () => {
+  const r = build({ verdicts: [verdict('fp', 'nope', 'benign', '', { name: 'ghosty' })] });
+  expect(r.captures[0]!.userMarked![0]!.n).toBe(a.queue.length + 1);
+});

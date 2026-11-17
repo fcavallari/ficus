@@ -142,6 +142,18 @@ class CaptureRows {
     return out;
   }
 
+  /** A process the user gave a verdict although the rules did not queue it; named from its snapshot when it is gone. */
+  userMarkedRow(v: Verdict): ReportRow {
+    const proc = this.process(v.procKey);
+    return {
+      n: 0, key: v.procKey, kind: 'user-marked', name: proc ? displayName(this.m, v.procKey) : v.snapshot.name,
+      severity: null, verdict: userView(v), inFlaggedChain: false, reconBurst: false, hiddenAsRoutine: false, keptReason: null,
+      findings: (this.cap.analysis.contextOnly.get(v.procKey) ?? []).map(reportFinding),
+      ...(proc ? { process: proc } : {}),
+      launchItems: [],
+    };
+  }
+
   queueRow(q: QueueItem, verdict: Verdict | undefined, hidden: boolean, kept: string | null): ReportRow {
     return {
       n: 0, key: q.key, kind: q.kind, name: itemName(this.cap, q), severity: q.severity, verdict: userView(verdict),
@@ -165,11 +177,16 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
   const captures: ReportCapture[] = recs.map(rec => {
     const cap = input.loaded.get(rec.fingerprint);
     const base = { fingerprint: rec.fingerprint, fileName: rec.fileName, size: rec.size, events: rec.events, processes: rec.processes };
-    if (!cap) return { ...base, firstTime: null, lastTime: null, schemaVersions: [], loaded: false };
+    const stored = [...(byCapture.get(rec.fingerprint) ?? [])].filter(v => userView(v) !== null).sort((a, b) => cmp(a.procKey, b.procKey));
+    if (!cap) {
+      return { ...base, firstTime: null, lastTime: null, schemaVersions: [], loaded: false,
+        notLoaded: stored.map(({ procKey, status, note, snapshot }) => ({ procKey, status, note, snapshot })) };
+    }
     const m = cap.model;
     const verdicts = new Map((byCapture.get(rec.fingerprint) ?? []).map(v => [v.procKey, v]));
     const routine = applyRoutine(cap.analysis, m, input.routineKeys);
     const shown = new Set(routine.queue.map(q => q.key));
+    const queued = new Set(cap.analysis.queue.map(verdictKey));
     const build = new CaptureRows(cap);
     const contextOnly: Record<string, number> = {};
     for (const f of [...cap.analysis.contextOnly.values()].flat()) contextOnly[f.ruleId] = (contextOnly[f.ruleId] ?? 0) + 1;
@@ -181,6 +198,7 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
       contextOnly,
       rows: cap.analysis.queue.map(q =>
         build.queueRow(q, verdicts.get(verdictKey(q)), !shown.has(q.key), routine.kept.get(q.key) ?? null)),
+      userMarked: stored.filter(v => !queued.has(v.procKey)).map(v => build.userMarkedRow(v)),
     };
   });
 
@@ -189,6 +207,7 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
     .sort((a, b) => SEV_ORDER[a.row.severity!] - SEV_ORDER[b.row.severity!] || a.ci - b.ci || a.qi - b.qi);
   let n = 0;
   for (const { row } of ordered) row.n = ++n;
+  for (const c of captures) for (const row of c.userMarked ?? []) row.n = ++n;
 
   const all = captures.flatMap(c => c.rows ?? []);
   const bySeverity: Record<Severity, number> = { high: 0, med: 0, low: 0 };
@@ -202,7 +221,7 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
     session: { id: input.session.id, name: input.session.name }, redacted: opts.redactArgs,
     summary: {
       rows: all.length, bySeverity, byVerdict, hiddenAsRoutine: all.filter(r => r.hiddenAsRoutine).length,
-      userMarked: 0, capturesNotLoaded: captures.filter(c => !c.loaded).length,
+      userMarked: captures.reduce((k, c) => k + (c.userMarked?.length ?? 0), 0), capturesNotLoaded: captures.filter(c => !c.loaded).length,
     },
     captures,
   };
