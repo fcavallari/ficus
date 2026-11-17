@@ -4,25 +4,30 @@ import { buildReport, reportFileName } from '../report/report';
 import { downloadText } from './download';
 import { useSession } from './session-context';
 
+export interface ReportExport {
+  write(): void;
+  disabled: boolean;
+  /** What the last click downloaded, for a status line. */
+  done: string | null;
+  error: string | null;
+}
+
 /**
  * Writes the report for the security team: a Markdown file to read and a JSON file for their tools, with every flagged
- * row of the loaded captures, reviewed or not. In the header it is just the button; on the triage overview it comes with
- * what the files hold, the redaction choice (shared with Save session) and the captures it would leave out.
+ * row of the loaded captures, reviewed or not, redacted as Save session is.
  */
-export function ReportButton({ place }: { place: 'header' | 'overview' }) {
+export function useReportExport(): ReportExport {
   const c = useSession();
   const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const session = c.session!;
-  const { redactArgs } = c.exportOpts;
-  const missing = c.capRecs.filter(r => !c.captures.has(r.fingerprint));
-
   const write = () => {
     setDone(null); setError(null);
+    const session = c.session!;
+    const missing = c.capRecs.filter(r => !c.captures.has(r.fingerprint));
     try {
       const report = buildReport(
         { session, capRecs: c.capRecs, loaded: c.captures, verdicts: c.allVerdicts, routineKeys: c.routineKeys },
-        { redactArgs, generated: new Date().toISOString() },
+        { redactArgs: c.exportOpts.redactArgs, generated: new Date().toISOString() },
       );
       const md = reportFileName(session, 'md');
       const json = reportFileName(session, 'json');
@@ -31,29 +36,38 @@ export function ReportButton({ place }: { place: 'header' | 'overview' }) {
       setDone(`Downloaded ${md} and ${json}.${missing.length > 0 ? ` Left out, not loaded: ${missing.map(r => r.fileName).join(', ')}.` : ''}`);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
+  return { write, disabled: c.captures.size === 0, done, error };
+}
 
-  const disabled = c.captures.size === 0;
-  const status = (
+/** The header's button; its status lines go under the title row, beside Save session's. */
+export function ReportButton({ r }: { r: ReportExport }) {
+  return (
+    <button onClick={r.write} disabled={r.disabled}
+      title="Download a Markdown and a JSON report of every flagged row in the loaded captures, reviewed or not, for your security team.">
+      Report for security
+    </button>
+  );
+}
+
+export function ReportStatus({ r, className }: { r: ReportExport; className?: string }) {
+  return (
     <>
-      {done && <p role="status" className="small">{done}</p>}
-      {error && <p role="alert" className="error">{error}</p>}
+      {r.done && <p role="status" className={`small ${className ?? ''}`.trim()}>{r.done}</p>}
+      {r.error && <p role="alert" className="error">{r.error}</p>}
     </>
   );
-  if (place === 'header') {
-    return (
-      <span className="report-group">
-        <button onClick={write} disabled={disabled}
-          title="Download a Markdown and a JSON report of every flagged row in the loaded captures, reviewed or not, for your security team.">
-          Report for security
-        </button>
-        {status}
-      </span>
-    );
-  }
+}
+
+/** On the triage overview: the button with what the files hold, the redaction choice and the captures it would leave out. */
+export function ReportOffer() {
+  const c = useSession();
+  const r = useReportExport();
+  const { redactArgs } = c.exportOpts;
+  const missing = c.capRecs.filter(x => !c.captures.has(x.fingerprint));
   return (
     <section className="report-offer" aria-labelledby="ov-report">
       <h3 id="ov-report">For your security team</h3>
-      <button className="primary" onClick={write} disabled={disabled}>Report flagged processes for security</button>
+      <button className="primary" onClick={r.write} disabled={r.disabled}>Report flagged processes for security</button>
       <p className="muted small">Writes a Markdown file to read and a JSON file for security tools, with every flagged row, reviewed or not.</p>
       <label className="inline small">
         <input type="checkbox" checked={redactArgs} onChange={e => { c.setExportOpts({ redactArgs: e.target.checked }); }} /> Redact command-line arguments
@@ -62,10 +76,10 @@ export function ReportButton({ place }: { place: 'header' | 'overview' }) {
         {!redactArgs && <span className="warn">Command lines can hold secrets such as passwords. </span>}
         <span className="muted">Your notes are included as written.</span>
       </p>
-      {missing.map(r => (
-        <p key={r.fingerprint} className="warn small">{r.fileName} isn't loaded, so its flagged rows can't be included. Re-add it first, or export without it.</p>
+      {missing.map(x => (
+        <p key={x.fingerprint} className="warn small">{x.fileName} isn't loaded, so its flagged rows can't be included. Re-add it first, or export without it.</p>
       ))}
-      {status}
+      <ReportStatus r={r} />
     </section>
   );
 }

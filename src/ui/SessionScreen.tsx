@@ -8,7 +8,7 @@ import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
 import { captureInfo, checkTitles, coverage } from './triage-model';
-import { ReportButton } from './ReportButton';
+import { ReportButton, ReportStatus, useReportExport } from './ReportButton';
 
 // The command the capture screen tells the user to run: the events the rules and the tree need.
 const CAPTURE_CMD =
@@ -276,6 +276,7 @@ export function SessionScreen() {
   const depth = useRef(0);
   const saver = useSaveSession();
   const { save, error: saveError } = saver;
+  const report = useReportExport();
   const bigDrop = !c.capture && c.view !== 'confirmed';
   // The Suspicious tab imports sessions, so a file dropped there is not taken for a capture: only its own control takes it.
   const takesCaptures = c.view !== 'confirmed';
@@ -343,9 +344,10 @@ export function SessionScreen() {
               <SaveInfo saver={saver} />
             </span>
           )}
-          {c.view !== 'confirmed' && <ReportButton place="header" />}
+          {c.view !== 'confirmed' && <ReportButton r={report} />}
         </div>
         {c.view !== 'confirmed' && saver.done && <p role="status" className="save-note small">{saver.done}</p>}
+        {c.view !== 'confirmed' && <ReportStatus r={report} className="save-note" />}
         {saveError && <p role="alert" className="error">{saveError}</p>}
         <Counts />
         <CaptureInfo />
