@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "serve": "vite preview",
-    "pretest": "vite build",
+    "build:mcp": "vite build -c vite.mcp.config.ts",
+    "pretest": "vite build && npm run build:mcp",
     "test": "vitest run"
   },
   "license": "MIT",
