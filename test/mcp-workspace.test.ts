@@ -212,3 +212,13 @@ test('a refused capture rejects with CaptureRefused', async () => {
   fs.utimesSync(path.join(paths.captures, N), now, now);
   await expect(ws.analyze(N)).rejects.toBeInstanceOf(CaptureRefused);
 });
+
+test('a case variant of a capture name cannot reveal a row, so the reveal list is never split', async ({ skip }) => {
+  const variant = N.toUpperCase();
+  if (variant === N || !fs.existsSync(path.join(paths.captures, variant))) skip('this temp file system is case-sensitive: the variant does not exist');
+  const view = await ws.analyze(N);
+  const dscl = view.rows.find(r => r.name === 'dscl')!;
+  await expect(ws.row(variant, dscl.key, true)).rejects.toBeInstanceOf(CaptureRefused);
+  expect(ws.revealed(variant)).toEqual([]);
+  expect(ws.revealed(N)).toEqual([]);
+});

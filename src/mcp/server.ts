@@ -4,7 +4,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { writeExport } from './export';
-import { listCaptures, type FicusPaths } from './home';
+import { listCaptures, shortName, type FicusPaths } from './home';
 import { recordCommand } from './record';
 import { UnknownRow, Workspace } from './workspace';
 
@@ -129,7 +129,7 @@ export function createServer(opts: { paths: FicusPaths; scriptsDir: string; now?
     ({ capture, key, reveal }) =>
       run(
         () => ws.row(capture, key, reveal === true),
-        e => (e instanceof UnknownRow ? `No row ${key} in ${capture}. Call ficus_analyze for the row keys.` : undefined),
+        e => (e instanceof UnknownRow ? `No row ${shortName(key)} in ${shortName(capture)}. Call ficus_analyze for the row keys.` : undefined),
       ),
   );
 

@@ -169,6 +169,17 @@ test('an unknown row key is an error result that points to ficus_analyze', async
   expect((await raw('ficus_analyze', { capture: N })).isError).toBe(false);
 });
 
+test('a huge capture name or row key is echoed in at most 120 characters', async () => {
+  const long = 'x'.repeat(5000);
+  const a = await raw('ficus_analyze', { capture: long });
+  expect(a.isError).toBe(true);
+  expect(a.text.length).toBeLessThan(600);
+  const r = await raw('ficus_row', { capture: N, key: long });
+  expect(r.isError).toBe(true);
+  expect(r.text.length).toBeLessThan(600);
+  expect(r.text).toContain('x'.repeat(120) + '…');
+});
+
 test('a bad domain is an error result', async () => {
   const r = await raw('ficus_record_command', { domains: ['bad domain; rm -rf /'] });
   expect(r.isError).toBe(true);

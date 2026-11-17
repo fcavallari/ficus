@@ -7,13 +7,13 @@ import { loadCapture, type LoadedCapture } from '../ingest/load';
 import { buildReport, type Report, type ReportRow, type Signature } from '../report/report';
 import type { Severity } from '../rules/rules';
 import type { CaptureRec, Session } from '../session/store';
-import { cleanedCapturePath, type FicusPaths } from './home';
+import { cleanedCapturePath, shortName, type FicusPaths } from './home';
 
 export const PAGE_SIZE = 40;
 
 export class UnknownRow extends Error {
   constructor(key: string) {
-    super(`No row with key "${key}" in this capture. Take keys from ficus_analyze.`);
+    super(`No row with key "${shortName(key)}" in this capture. Take keys from ficus_analyze.`);
     this.name = 'UnknownRow';
   }
 }

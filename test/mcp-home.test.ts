@@ -102,3 +102,46 @@ test('listCaptures on a missing captures folder is empty', () => {
   fs.rmSync(p.captures, { recursive: true });
   expect(listCaptures(p, MTIME_MS)).toEqual([]);
 });
+
+// On a case-insensitive or normalization-insensitive file system (APFS by default) a variant spelling of a name opens
+// the same file. The consent audit is keyed by the name, so a variant must be refused, not accepted as a second name.
+function variantOpensSameFile(p: ReturnType<typeof freshHome>, variant: string, name: string): boolean {
+  return variant !== name && fs.existsSync(path.join(p.captures, variant));
+}
+
+test('a case variant of a capture name is refused', ({ skip }) => {
+  const p = freshHome();
+  writeCapture(p, 'lab.cleaned.jsonl');
+  if (!variantOpensSameFile(p, 'LAB.cleaned.jsonl', 'lab.cleaned.jsonl')) skip('this temp file system is case-sensitive: the variant does not even exist');
+  expect(cleanedCapturePath(p, 'lab.cleaned.jsonl', MTIME_MS + 60_000)).toBe(path.join(p.captures, 'lab.cleaned.jsonl'));
+  expect(() => cleanedCapturePath(p, 'LAB.cleaned.jsonl', MTIME_MS + 60_000)).toThrow(CaptureRefused);
+  expect(() => cleanedCapturePath(p, 'LAB.cleaned.jsonl', MTIME_MS + 60_000)).toThrow(/not in the Ficus captures folder/);
+});
+
+test('a Unicode-normalization variant of a capture name is refused', ({ skip }) => {
+  const p = freshHome();
+  const nfc = 'café.cleaned.jsonl';
+  const nfd = nfc.normalize('NFD');
+  writeCapture(p, nfc);
+  if (!variantOpensSameFile(p, nfd, nfc)) skip('this temp file system treats the two spellings as different names');
+  expect(() => cleanedCapturePath(p, nfd, MTIME_MS + 60_000)).toThrow(CaptureRefused);
+  expect(cleanedCapturePath(p, nfc, MTIME_MS + 60_000)).toBe(path.join(p.captures, nfc));
+});
+
+test('a refusal echoes at most 120 characters of the name, with an ellipsis', () => {
+  const p = freshHome();
+  const long = 'x'.repeat(5000);
+  for (const name of [long, `${long}/y`]) {
+    let message = '';
+    try {
+      cleanedCapturePath(p, name, MTIME_MS);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('x'.repeat(120) + '…');
+    expect(message).not.toContain('x'.repeat(121));
+    expect(message.length).toBeLessThan(500);
+  }
+  // a short name is echoed whole
+  expect(() => cleanedCapturePath(p, 'nope.jsonl', MTIME_MS)).toThrow('"nope.jsonl" is not in the Ficus captures folder');
+});

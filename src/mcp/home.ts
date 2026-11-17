@@ -34,6 +34,11 @@ export class CaptureRefused extends Error {
   }
 }
 
+/** A name from the agent as it is echoed back in a message: the first 120 characters, so a huge name stays small. */
+export function shortName(name: string): string {
+  return name.length > 120 ? `${name.slice(0, 120)}…` : name;
+}
+
 export const STILL_WRITING_MS = 10_000;
 
 const KEY_SUFFIX = '.key.tsv';
@@ -64,27 +69,40 @@ function hasKey(p: FicusPaths, name: string): boolean {
 export function cleanedCapturePath(p: FicusPaths, name: string, now: number = Date.now()): string {
   if (!isPlainFileName(name)) {
     throw new CaptureRefused(
-      `"${name}" is not a plain file name. Give only the name of a file in the Ficus captures folder, as ficus_list_captures shows it.`,
+      `"${shortName(name)}" is not a plain file name. Give only the name of a file in the Ficus captures folder, as ficus_list_captures shows it.`,
     );
   }
+  const notThere = new CaptureRefused(
+    `"${shortName(name)}" is not in the Ficus captures folder. Use ficus_list_captures to see what is there.`,
+  );
+  // The name must be an entry of the folder exactly as spelled. On a case- or normalization-insensitive file system
+  // (APFS) a variant spelling opens the same file, and the consent record is kept per name: one file, two names would
+  // split it.
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(p.captures);
+  } catch {
+    throw notThere;
+  }
+  if (!entries.includes(name)) throw notThere;
   const file = path.join(p.captures, name);
   let st: fs.Stats;
   try {
     st = fs.lstatSync(file); // lstat: a symlink pointing elsewhere is not a capture in this folder
   } catch {
-    throw new CaptureRefused(`"${name}" is not in the Ficus captures folder. Use ficus_list_captures to see what is there.`);
+    throw notThere;
   }
   if (!st.isFile()) {
-    throw new CaptureRefused(`"${name}" is not a regular file in the Ficus captures folder.`);
+    throw new CaptureRefused(`"${shortName(name)}" is not a regular file in the Ficus captures folder.`);
   }
   if (!hasKey(p, name)) {
     throw new CaptureRefused(
-      `"${name}" was not made by the Ficus cleaner (no key for it). Ask the person to record a new capture with the command from ficus_record_command. ` +
+      `"${shortName(name)}" was not made by the Ficus cleaner (no key for it). Ask the person to record a new capture with the command from ficus_record_command. ` +
         `To clean a capture they already have, see the README section 'Cleaning a capture before it leaves the Mac'.`,
     );
   }
   if (now - st.mtimeMs < STILL_WRITING_MS) {
-    throw new CaptureRefused(`"${name}" is still being recorded; wait until Terminal shows the summary.`);
+    throw new CaptureRefused(`"${shortName(name)}" is still being recorded; wait until Terminal shows the summary.`);
   }
   return file;
 }
