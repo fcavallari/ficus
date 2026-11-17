@@ -229,18 +229,26 @@ local_seeds() {
 
 # Whether a capture is of this Mac: the account names of the local seed file (the first file) against the home folders
 # (/Users/<name>/, not Shared) of the capture on stdin. Prints yes (one is a local account), no (none is) or none (the
-# capture names no home folder). It never prints a name.
+# capture names no home folder). It never prints a name. With GAMELEIRA_CLEAN_HOMES_FILE set (standard input, which is
+# read once) it passes every line through to stdout unchanged, checks the first 1000, and writes the answer to that file.
 HOMES_AWK='
+BEGIN { side = ENVIRON["GAMELEIRA_CLEAN_HOMES_FILE"] }
 FILENAME == ARGV[1] { if (split($0, f, "\t") >= 2 && f[1] == "user") acct[tolower(f[2])] = 1; next }
+side != "" { print; fflush() }
+side != "" && (found || FNR > 1000) { next }
 {
   s = $0
   gsub(/\\\//, "/", s)   # eslogger writes a slash as \/
   while (match(s, "/Users/[^/\"]+/")) {
     n = tolower(substr(s, RSTART + 7, RLENGTH - 8)); s = substr(s, RSTART + RLENGTH - 1)
-    if (n != "shared") { homes = 1; if (n in acct) { found = 1; exit } }
+    if (n != "shared") { homes = 1; if (n in acct) { found = 1; if (side == "") exit; break } }
   }
 }
-END { print (found ? "yes" : homes ? "no" : "none") }'
+END { r = (found ? "yes" : homes ? "no" : "none"); if (side != "") print r > side; else print r }'
+
+other_mac_warning() {
+  printf "gameleira-clean: this capture's home folders name no account of this Mac; names outside paths are only caught with -S\n" >&2
+}
 
 # warn_if_other_mac IN LOCALSEEDS NORMALIZE: warns when the first 1000 events of the file IN name home folders, and none
 # of them is an account of this Mac: then the capture is probably of another Mac, whose names outside paths only -S
@@ -252,8 +260,7 @@ warn_if_other_mac() {
   else
     seen=$(head -n 1000 < "$1" | awk "$HOMES_AWK" "$2" -)
   fi
-  [ "$seen" != no ] ||
-    printf "gameleira-clean: this capture's home folders name no account of this Mac; names outside paths are only caught with -S\n" >&2
+  [ "$seen" != no ] || other_mac_warning
 }
 
 # ---- recording ----------------------------------------------------------------------------------------------
@@ -494,7 +501,7 @@ main() {
   chmod 600 "$key"
   umask "$old_umask"
 
-  local stopped_by_itself=
+  local stopped_by_itself= homes_file= homes=
   if [ "$mode" = record ]; then
     # Ctrl-C, or the terminal closing, stops eslogger only; the cleaner then reads to the end of the pipe.
     STOP=
@@ -506,6 +513,14 @@ main() {
       printf 'gameleira-clean: recording; Ctrl-C stops it.\n' >&2
     fi
     record_until_stopped "$seconds" || stopped_by_itself=1
+  elif [ "$in" = - ] && [ -s "$local_file" ]; then
+    # Standard input is read once: the home-folder check runs in the stream, and only its answer is written down.
+    new_tmp; homes_file=$TMP_OUT
+    if [ "$out" = - ]; then
+      GAMELEIRA_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_file" - | run_cleaner "$config" "$key" "$stats"
+    else
+      GAMELEIRA_CLEAN_HOMES_FILE=$homes_file awk "$HOMES_AWK" "$local_file" - | run_cleaner "$config" "$key" "$stats" > "$out"
+    fi
   elif [ "$in" = - ]; then
     if [ "$out" = - ]; then run_cleaner "$config" "$key" "$stats"; else run_cleaner "$config" "$key" "$stats" > "$out"; fi
   elif [ -n "$normalize_input" ]; then
@@ -531,6 +546,10 @@ main() {
   fi
   [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and $key holds only the placeholders made so far: pass -k $key to carry on from it, or remove it"
   print_summary "$stats"
+  if [ -n "$homes_file" ]; then
+    read -r homes < "$homes_file"
+    [ "$homes" != no ] || other_mac_warning
+  fi
   if [ -n "$normalize_input" ]; then
     case $(cat "$NORM_STATUS_FILE") in 0) ;; *) echo 'input ended with a parse error: yes' >&2 ;; esac
   fi

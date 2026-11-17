@@ -3189,11 +3189,30 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
 
   test.runIf(darwin)('clean -i warns about a capture from another Mac', () => {
     const line = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1);
-    for (const l of [line, escapeSlashes(line)]) {
-      const r = runClean(['clean', '-o', '-'], { input: l + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+    for (const l of [line, escapeSlashes(line)]) for (const args of [['clean', '-o', '-'], ['clean', '-i', '-', '-o', '-']]) {
+      const r = runClean(args, { input: l + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
       expect(r.status).toBe(0);
-      expect(r.stderr.includes(WARNING), 'the other-Mac warning').toBe(true);
+      expect(r.stderr.includes(WARNING), `the other-Mac warning, ${args.join(' ')}`).toBe(true);
       expect(lines(r.out)).toHaveLength(1);
+    }
+  });
+
+  test.runIf(darwin)('clean -i - passes every line through the home-folder check unchanged, and warns only when it should', () => {
+    const me = os.userInfo().username;
+    const other = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1);
+    // Past the first 1000 events, a home folder of this Mac no longer counts.
+    const late = Array.from({ length: 1001 }, (_, i) => esCreate(zsh, { path: `/Users/nobody-here-xyz/Documents/n${i}.txt` }, i + 2));
+    const cases: [string[], boolean][] = [
+      [[other, escapeSlashes(esCreate(zsh, { path: `/Users/${me}/Documents/a.txt` }, 2))], false],
+      [[esCreate(zsh, { path: '/tmp/a.txt' }, 1)], false],
+      [[...late, esCreate(zsh, { path: `/Users/${me}/Documents/a.txt` }, 1100)], true],
+    ];
+    for (const [input, warns] of cases) {
+      const r = runClean(['clean', '-i', '-', '-o', '-'], { input: input.join('\n') + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+      expect(r.status).toBe(0);
+      expect(r.stderr.includes(WARNING), `warning expected: ${warns}`).toBe(warns);
+      expect(lines(r.out)).toHaveLength(input.length);
+      expect(r.summary['events in']).toBe(String(input.length));
     }
   });
 
