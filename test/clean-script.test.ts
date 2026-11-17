@@ -3311,8 +3311,8 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
   }, 30000);
 
   /** `record -o OUT` with a stand-in recorder, in a process group of its own; resolves its status and stderr on close. */
-  const startRecord = (dir: string, out: string, recorderCmd: string): { pid: number; closed: Promise<{ status: number | null; stderr: string }> } => {
-    const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out], {
+  const startRecord = (dir: string, out: string, recorderCmd: string, extra: string[] = []): { pid: number; closed: Promise<{ status: number | null; stderr: string }> } => {
+    const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out, ...extra], {
       cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
       // TMPDIR in the test folder: a script killed with SIGKILL cannot remove its temporary files.
       env: { ...process.env, TMPDIR: dir, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorderCmd },
@@ -3391,6 +3391,35 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     for (let i = 0; i < 120 && inGroup(child.pid!) > 0; i++) await sleep(100);
     expect(inGroup(child.pid!), 'processes left 12 s after the script was killed').toBe(0);
   }, 30000);
+
+  // The -t timer runs nothing and signals no pid: it waits on a pipe this script holds open, so it ends with the script.
+  test.runIf(darwin)('killing the script during record -t leaves no timer behind, and Ctrl-C still stops it', async () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const child = spawn('/bin/bash', [SCRIPT, 'record', '-t', '600', '-o', out], {
+      cwd: dir, detached: true, stdio: 'ignore',
+      env: { ...process.env, TMPDIR: dir, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+    });
+    groups.push(child.pid!);
+    const exited = new Promise<void>(res => child.on('exit', () => res()));
+    await linesIn(out, 3);
+    process.kill(child.pid!, 'SIGKILL');
+    await exited;
+    // The stand-in ignores SIGINT: it ends on the SIGTERM 5 s later.
+    for (let i = 0; i < 120 && inGroup(child.pid!) > 0; i++) await sleep(100);
+    expect(inGroup(child.pid!), 'processes left 12 s after the script was killed').toBe(0);
+    // Ctrl-C still stops a timed recording, and is not taken for the recorder stopping by itself.
+    const out2 = path.join(dir, 'out2.jsonl');
+    const run = startRecord(dir, out2, recorder(lineFile(dir)), ['-t', '600']);
+    await linesIn(out2, 3);
+    process.kill(-run.pid, 'SIGINT');
+    const { status, stderr } = await run.closed;
+    expect(status, stderr).toBe(0);
+    expect(stderr).toMatch(new RegExp(`^events out: ${lines(fs.readFileSync(out2, 'utf8')).length}$`, 'm'));
+    expect(stderr).not.toMatch(/stopped by itself/);
+    for (let i = 0; i < 20 && inGroup(run.pid) > 0; i++) await sleep(100);
+    expect(inGroup(run.pid)).toBe(0);
+  }, 40000);
 
   // Once the stop is under way, more Ctrl-C changes nothing: the recorder still gets SIGINT, SIGTERM and at last SIGKILL,
   // and the cleaner is waited for. The stand-in ignores SIGINT and SIGTERM.
@@ -3481,8 +3510,10 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(Date.now() - t0).toBeLessThan(15000);
     const runs = fs.existsSync(log) ? lines(fs.readFileSync(log, 'utf8')) : [];
     expect(runs.filter(x => x === 'ps')).toHaveLength(0);
-    // The script's one timer, for -t. (The root side's sleeps, while it stops eslogger, are /bin/sleep.)
-    expect(runs.filter(x => x === 'sleep').length).toBeLessThanOrEqual(1);
+    // The -t timer runs no sleep. (The root side's sleeps, while it stops eslogger, are /bin/sleep.)
+    expect(runs.filter(x => x === 'sleep')).toHaveLength(0);
+    // Time running out is not the recorder stopping by itself.
+    expect(r.stderr).not.toMatch(/stopped by itself/);
     expect(lines(r.out).length).toBeGreaterThan(0);
     expect(r.summary['events out']).toBe(String(lines(r.out).length));
     expect(r.summary['events the cleaner could not clean']).toBe('0');

@@ -321,29 +321,34 @@ start_recording() {
 }
 
 # wait_for PID SECONDS: waits, without polling, until the child PID ends (returns 0), SECONDS pass (1; empty: no limit)
-#   or Ctrl-C, TERM or HUP arrives (2; the trap counts them in SIGNALS). Never polls with ps or sleep: eslogger records
-#   every program this script runs, and ps is a recon tool the rules flag. A timer child signals USR1 when time is up;
-#   on TERM it kills its own sleep, so none is left behind: `stop` covers a TERM that comes before `s` is set (a trap
-#   runs between commands), one before the trap is set ends the timer before its sleep starts, and SIGKILL reaches a
-#   sleep that has not yet exec'd (a forked bash, which would take a TERM as its own trap's and then lose it). The
-#   timer does not keep the stop channel (fd 4) open.
+#   or Ctrl-C, Ctrl-\, TERM or HUP arrives (2; the trap counts them in SIGNALS). Never polls with ps or sleep: eslogger
+#   records every program this script runs, and ps is a recon tool the rules flag. For SECONDS a timer child waits with
+#   `read -t` on a FIFO (tick, in RAW_DIR) that only this script holds open for writing (fd 7). A line from this script
+#   cancels it (exit 0). Time running out, or end-of-file because this script is gone however it ended, makes it write
+#   `stop` on the stop channel (fd 4), as stop_capture does, and exit 1: the recorder is stopped and PID ends. The timer
+#   runs no program and signals no pid, so nothing is left behind and no reused pid is signalled.
 SIGNALS=0
 wait_for() {
-  local timer= before=$SIGNALS result=0
-  TIMED_OUT=
-  trap 'TIMED_OUT=1' USR1
+  local timer= tick before=$SIGNALS result=0 st=0
   if [ -n "$2" ]; then
-    ( s= stop=
-      trap 'stop=1; [ -z "$s" ] || kill -KILL "$s" 2>/dev/null' TERM
-      sleep "$2" & s=$!
-      [ -z "$stop" ] || kill -KILL "$s" 2>/dev/null
-      [ -n "$stop" ] || wait "$s" 2>/dev/null
-      [ -n "$stop" ] || kill -USR1 $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 4>&- &
+    tick=$RAW_DIR/tick
+    mkfifo -m 600 "$tick" || die "cannot make a pipe in $RAW_DIR"
+    exec 7<>"$tick" || die "cannot open $tick"
+    ( if read -r -t "$2" _; then exit 0; fi
+      printf 'stop\n' >&4
+      exit 1 ) < "$tick" >/dev/null 2>&1 5<&- 6<&- 7>&- &
     timer=$!
   fi
-  [ -n "$TIMED_OUT" ] || [ "$SIGNALS" != "$before" ] || wait "$1" 2>/dev/null
-  if [ -n "$TIMED_OUT" ]; then result=1; elif [ "$SIGNALS" != "$before" ]; then result=2; fi
-  if [ -n "$timer" ]; then kill -TERM "$timer" 2>/dev/null; wait "$timer" 2>/dev/null; fi
+  [ "$SIGNALS" != "$before" ] || wait "$1" 2>/dev/null
+  if [ -n "$timer" ]; then
+    printf 'cancel\n' >&7
+    # bash keeps the status of a child it has reaped already. A trapped signal ends `wait` early (a status over 128;
+    # the timer's own are 0 and 1, or over 128 if a signal ended it); kill -0 on this script's own child is a builtin.
+    wait "$timer"; st=$?
+    while [ "$st" -gt 128 ] && kill -0 "$timer" 2>/dev/null; do wait "$timer"; st=$?; done
+    exec 7>&-
+  fi
+  if [ "$st" = 1 ]; then result=1; elif [ "$SIGNALS" != "$before" ]; then result=2; fi
   return "$result"
 }
 
