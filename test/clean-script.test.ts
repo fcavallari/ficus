@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -99,11 +99,11 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(r.stderr).toMatch(/-i/);
   });
 
-  test('record is accepted and says it is not built yet', () => {
-    const r = runClean(['record', '-t', '5']);
-    expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/record mode is not built yet/);
+  test('record checks its arguments before anything else', () => {
+    // Argument errors only: a valid record command would ask for sudo (the record tests use a fake recorder).
     expect(runClean(['record', '--nope']).status).toBe(2);
+    expect(runClean(['record', '-t', 'soon']).status).toBe(2);
+    expect(runClean(['record', '-i', SYNTHETIC]).status).toBe(2);
   });
 
   test('every event comes out as JSON, one per line', () => {
@@ -2964,6 +2964,159 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       // Secret-named entries are recognised credentials and counted; other values are redacted by policy and are not.
       expect(r.summary['redacted']).toBe('6');
       sameFindings(input, r.out);
+    }
+  });
+});
+
+// Record mode runs `sudo eslogger`; these tests never do. GAMELEIRA_CLEAN_RECORDER names a stand-in recorder, run as the
+// user without sudo, and the sourced functions are driven with SUDO_CMD=''. The stand-in ignores SIGINT, as a recorder
+// that does not stop when asked would, so the SIGTERM that follows is tested too.
+describe.skipIf(!fs.existsSync(JQ))('record', () => {
+  const darwin = process.platform === 'darwin';
+  const ALICE = synthLines().find(l => l.includes('/Users/alice/'))!;
+  const recorder = (lineFile: string): string => `trap '' INT; while :; do cat '${lineFile}'; sleep 0.05; done`;
+  const lineFile = (dir: string): string => {
+    const f = path.join(dir, 'line.jsonl');
+    fs.writeFileSync(f, ALICE + '\n');
+    return f;
+  };
+  /** Every line of a finished capture is JSON, the last one included, and the key names every user placeholder. */
+  const complete = (out: string, key: string): void => {
+    expect(out.endsWith('\n')).toBe(true);
+    for (const l of lines(out)) expect(() => JSON.parse(l), l).not.toThrow();
+    const placeholders = new Set(parseKey(key).map(k => k.placeholder));
+    expect(keyed(key, 'user')).toEqual(new Map([['alice', 'user1']]));
+    for (const p of new Set(out.match(/\buser\d+\b/g) ?? [])) expect(placeholders.has(p), p).toBe(true);
+  };
+  const groups: number[] = [];
+  afterAll(() => {
+    for (const g of groups) try { process.kill(-g, 'SIGKILL'); } catch { /* gone, as it should be */ }
+  });
+  const inGroup = (pgid: number): number => {
+    const r = spawnSync('/usr/bin/pgrep', ['-g', String(pgid)]);
+    return lines(r.stdout.toString()).length;
+  };
+  const sleep = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms));
+
+  test('record refuses to run as root', () => {
+    const r = runClean(['record', '-t', '5'], { env: { GAMELEIRA_CLEAN_FAKE_UID: '0' } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/not as root|without sudo/);
+    expect(r.summary['key']).toBeUndefined();
+  });
+
+  test('stopping the recorder lets the cleaner finish', () => {
+    const dir = tmpDir();
+    const t0 = Date.now();
+    const res = spawnSync('/bin/bash', ['-c', [
+      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `SUDO_CMD=''`,
+      `RECORDER=(/bin/bash -c "${recorder(lineFile(dir))}")`,
+      'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
+      `write_config "${dir}/cfg"`,
+      `printf '%s\\n' "$KEY_HEADER" > "${dir}/key"`,
+      `start_recording "${dir}/cfg" "${dir}/key" "${dir}/stats" "${dir}/out"`,
+      'sleep 1',
+      'recorder=$ES_PID',
+      'stop_capture',
+      'wait "$CLEANER_PID"',
+      'if ps -p "$recorder" >/dev/null 2>&1; then echo alive; else echo stopped; fi',
+      'cleanup',
+    ].join('\n')], { timeout: 20000 });
+    expect(res.stdout.toString().trim().split('\n').at(-1), res.stderr.toString()).toBe('stopped');
+    expect(Date.now() - t0).toBeLessThan(15000);
+    const out = fs.readFileSync(path.join(dir, 'out'), 'utf8');
+    expect(lines(out).length).toBeGreaterThan(0);
+    complete(out, fs.readFileSync(path.join(dir, 'key'), 'utf8'));
+    const stats = JSON.parse(fs.readFileSync(path.join(dir, 'stats'), 'utf8')) as { eventsIn: number; eventsOut: number; unreadable: number };
+    expect(stats.eventsOut).toBe(lines(out).length);
+    expect(stats.unreadable).toBe(0);
+  }, 25000);
+
+  test.runIf(darwin)('Ctrl-C to the whole process group leaves complete output', async () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out], {
+      cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+    });
+    const pgid = child.pid!;
+    groups.push(pgid);
+    let stderr = '';
+    child.stderr!.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+    const closed = new Promise<number | null>(res => child.on('close', code => res(code)));
+    for (let i = 0; i < 100 && !(fs.existsSync(out) && lines(fs.readFileSync(out, 'utf8')).length >= 3); i++) await sleep(100);
+    // What a terminal does on Ctrl-C: SIGINT to every process of the foreground group, jq and awk included.
+    process.kill(-pgid, 'SIGINT');
+    const status = await closed;
+    expect(status, stderr).toBe(0);
+    const text = fs.readFileSync(out, 'utf8');
+    const summary = Object.fromEntries(lines(stderr).filter(l => l.includes(': ')).map(l => [l.slice(0, l.indexOf(': ')), l.slice(l.indexOf(': ') + 2)]));
+    expect(summary['events out'], stderr).toBe(String(lines(text).length));
+    expect(summary['events in']).toBe(summary['events out']);
+    expect(summary['unreadable lines dropped']).toBe('0');
+    expect(summary['capture']).toBe(out);
+    complete(text, fs.readFileSync(summary['key']!, 'utf8'));
+    expect(stderr).not.toMatch(/raw capture/);
+    // Nothing the run started is left behind.
+    for (let i = 0; i < 20 && inGroup(pgid) > 0; i++) await sleep(100);
+    expect(inGroup(pgid)).toBe(0);
+  }, 30000);
+
+  test.runIf(darwin)('record -t stops by itself and prints the summary', () => {
+    const dir = tmpDir();
+    const out = path.join(dir, 'out.jsonl');
+    const t0 = Date.now();
+    const r = runClean(['record', '-t', '1', '-o', out], { env: { GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(15000);
+    expect(lines(r.out).length).toBeGreaterThan(0);
+    expect(r.summary['events out']).toBe(String(lines(r.out).length));
+    expect(r.summary['events the cleaner could not clean']).toBe('0');
+    complete(r.out, r.key);
+  }, 20000);
+
+  test.runIf(darwin)('clean -i warns about a capture from another Mac', () => {
+    const input = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1) + '\n';
+    const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/this capture's home folders name no account of this Mac; names outside paths are only caught with -S/);
+    expect(lines(r.out)).toHaveLength(1);
+  });
+
+  // This Mac's own names: computed here and never printed, so a failure names the check, not the value.
+  test.runIf(darwin)('a capture of this Mac loses its local names, which reach jq through a private file only', () => {
+    const me = os.userInfo().username;
+    const computer = execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName']).toString('utf8').trim();
+    const serial = /"IOPlatformSerialNumber" = "([^"]+)"/.exec(execFileSync('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']).toString('utf8'))?.[1] ?? '';
+    expect(serial.length).toBeGreaterThan(0);
+    const dir = tmpDir();
+    const argvLog = path.join(dir, 'jq-argv');
+    const spyJq = path.join(dir, 'jq');
+    fs.writeFileSync(spyJq, `#!/bin/bash\nprintf '%s\\n' "$@" >> '${argvLog}'\nexec ${JQ} "$@"\n`, { mode: 0o755 });
+    const sh = esProc({ pid: 900, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+    const echo = esProc({ pid: 900, pidversion: 2900, path: '/bin/echo', platform: true, signingId: 'com.apple.echo', ppid: 300 });
+    const input = [
+      esCreate(zsh, { path: `/Users/${me}/Documents/notes.txt` }, 1),
+      esExec(sh, echo, { args: ['echo', `owner ${me} on ${computer}`, serial], cwd: `/Users/${me}`, env: [`HOME=/Users/${me}`], seq: 2 }),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '', GAMELEIRA_CLEAN_JQ: spyJq } });
+    expect(r.status).toBe(0);
+    expect(r.stderr.includes('name no account of this Mac'), 'warning on a capture of this Mac').toBe(false);
+    const low = r.out.toLowerCase();
+    expect(low.includes(`/users/${me.toLowerCase()}/`), 'account name in a path').toBe(false);
+    // A short or common account or computer name is replaced only where it cannot be another word (see the seeds tests).
+    if (me.length >= 4) expect(low.includes(me.toLowerCase()), 'account name').toBe(false);
+    if (computer.length >= 4) expect(low.includes(computer.toLowerCase()), 'computer name').toBe(false);
+    expect(low.includes(serial.toLowerCase()), 'serial number').toBe(false);
+    expect(Number(r.summary['placeholders user'])).toBeGreaterThanOrEqual(1);
+    expect(Number(r.summary['placeholders host'])).toBeGreaterThanOrEqual(1);
+    expect(Number(r.summary['placeholders seed'])).toBeGreaterThanOrEqual(2);
+    // The program's own path (-f) is in the repository, which may sit in the home folder.
+    const argv = fs.readFileSync(argvLog, 'utf8').split(path.dirname(SCRIPT)).join('');
+    expect(argv.length).toBeGreaterThan(0);
+    for (const [what, v] of [['account name', me], ['computer name', computer], ['serial number', serial]] as const) {
+      expect(argv.includes(v), `${what} in jq's arguments`).toBe(false);
     }
   });
 });

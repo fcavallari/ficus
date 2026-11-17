@@ -6,7 +6,12 @@
 #   scripts/gameleira-clean.sh --help
 #
 # Names, hosts, accounts and credentials become placeholders; what the rules need to see stays. The real values go in a
-# key file on this Mac, so the cleaning can be undone here and nowhere else.
+# key file on this Mac, so the cleaning can be undone here and nowhere else. record runs `sudo eslogger` and cleans its
+# stream as it comes: the raw capture only ever exists in a pipe.
+#
+# Test hooks (environment): GAMELEIRA_CLEAN_NO_LOCAL_SEEDS=1 leaves this Mac's names out; GAMELEIRA_CLEAN_KEY_DIR is the
+# default key folder; GAMELEIRA_CLEAN_FAKE_UID stands in for `id -u`; GAMELEIRA_CLEAN_RECORDER is a bash command record
+# runs, as you and without sudo, instead of eslogger; GAMELEIRA_CLEAN_SOURCE_ONLY=1 defines the functions and runs nothing.
 #
 # Needs only what macOS has: bash 3.2, /usr/bin/jq (macOS 15 and later; GAMELEIRA_CLEAN_JQ names another), awk.
 # The program that does the cleaning is gameleira-clean.jq, next to this file.
@@ -18,6 +23,12 @@ CLEAN_PROGRAM=$HERE/gameleira-clean.jq
 JQ=${GAMELEIRA_CLEAN_JQ:-/usr/bin/jq}
 KINDS="user realname name volume host email seed data"
 KEY_HEADER=$'kind\tplaceholder\treal'
+# The recorder, with the event list from the README's Capturing section, and how it is stopped (it runs as root).
+RECORDER=(sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove)
+SUDO_CMD=sudo    # plain sudo, which asks for the password again if the ticket ran out
+ES_PID=
+CLEANER_PID=
+RAW_DIR=
 
 usage() {
   cat <<'EOF'
@@ -29,7 +40,12 @@ clean   Read the capture RAW (JSONL, a pretty-printed export or a JSON array) an
         RAW is never changed or deleted: remove it yourself once you are happy with the result.
         With -i - the capture (JSONL) is read from standard input, in one pass: a program's name is then only known
         as one from the moment it runs, not from its first appearance as it is for a file.
-record  Record with eslogger and write the cleaned capture as it goes (not built yet).
+record  Record with eslogger and write the cleaned capture as it goes; the raw stream is never written to disk.
+        Run it as yourself: it asks for your password for sudo eslogger only. Ctrl-C (or -t) stops it, and the
+        events eslogger has already sent are cleaned and written before it ends.
+
+This Mac's account names (uid 500 and up) and full names, computer, local host and host names, serial number and
+platform UUID are cleaned wherever they appear, in both modes.
 
   -o FILE       The cleaned capture; - for standard output. Default: capture.cleaned.jsonl here. Made, with its folder, if missing.
   -k KEYFILE    Keep real values here. An existing key is loaded first, so captures of one Mac share placeholders.
@@ -58,7 +74,9 @@ usage_error() {
 TMP_FILES=()
 
 cleanup() {
+  [ -z "$ES_PID" ] || stop_capture   # the script is ending with eslogger still recording (an error, a signal)
   rm -f "${TMP_FILES[@]}"
+  [ -z "$RAW_DIR" ] || rm -rf "$RAW_DIR"
 }
 
 # new_tmp: a private (0600) temporary file; its name is in TMP_OUT, and it is removed when the script ends.
@@ -177,6 +195,129 @@ needs_normalizing() {
   [ "$first" = "{" ] || [ "${first#\[}" != "$first" ]
 }
 
+# ---- this Mac's own names -----------------------------------------------------------------------------------
+# Each tool's output is tagged by kind and read by one awk: the values go from a pipe to the seed file and are never any
+# process's arguments (eslogger records those). U: `dscl` name and uid; R: `dscl` name and full name; H: a host name;
+# S: the serial number or platform UUID. An account counts from uid 500, as macOS numbers people's accounts.
+LOCAL_SEEDS_AWK='
+function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+function emit(kind, v) {
+  v = trim(v); gsub(/\t/, " ", v)
+  if (v != "" && !((kind SUBSEP tolower(v)) in seen)) { seen[kind SUBSEP tolower(v)] = 1; print kind "\t" v }
+}
+{ tag = substr($0, 1, 1); line = substr($0, 3); name = line; sub(/[ \t].*$/, "", name); rest = trim(substr(line, length(name) + 1)) }
+tag == "U" && rest ~ /^[0-9]+$/ && rest + 0 >= 500 { acct[name] = 1; emit("user", name) }
+tag == "R" && (name in acct) && tolower(rest) != tolower(name) { emit("realname", rest) }
+tag == "H" { emit("host", line) }
+tag == "S" { emit("seed", line) }'
+
+# local_seeds FILE: this Mac's names as seed lines (kind, a tab, the value). A name a tool does not have (HostName is
+# often not set) is left out.
+local_seeds() {
+  local k v
+  {
+    dscl . -list /Users UniqueID 2>/dev/null | awk '{ print "U\t" $0 }'
+    dscl . -list /Users RealName 2>/dev/null | awk '{ print "R\t" $0 }'
+    for k in ComputerName LocalHostName HostName; do
+      v=$(scutil --get "$k" 2>/dev/null) && printf 'H\t%s\n' "$v"
+    done
+    ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null |
+      awk -F'"' '$2 == "IOPlatformSerialNumber" || $2 == "IOPlatformUUID" { print "S\t" $4 }'
+  } | awk "$LOCAL_SEEDS_AWK" > "$1"
+}
+
+# Whether a capture is of this Mac: the account names of the local seed file (the first file) against the home folders
+# (/Users/<name>/, not Shared) of the capture on stdin. Prints yes (one is a local account), no (none is) or none (the
+# capture names no home folder). It never prints a name.
+HOMES_AWK='
+FILENAME == ARGV[1] { if (split($0, f, "\t") >= 2 && f[1] == "user") acct[tolower(f[2])] = 1; next }
+{
+  s = $0
+  while (match(s, "/Users/[^/\"]+/")) {
+    n = tolower(substr(s, RSTART + 7, RLENGTH - 8)); s = substr(s, RSTART + RLENGTH - 1)
+    if (n != "shared") { homes = 1; if (n in acct) { found = 1; exit } }
+  }
+}
+END { print (found ? "yes" : homes ? "no" : "none") }'
+
+# warn_if_other_mac IN LOCALSEEDS NORMALIZE: warns when the first 1000 events of the file IN name home folders, and none
+# of them is an account of this Mac: then the capture is probably of another Mac, whose names outside paths only -S
+# can give.
+warn_if_other_mac() {
+  local seen
+  if [ -n "$3" ]; then
+    seen=$("$JQ" -c 'if type == "array" then .[] else . end' < "$1" 2>/dev/null | head -n 1000 | awk "$HOMES_AWK" "$2" -)
+  else
+    seen=$(head -n 1000 < "$1" | awk "$HOMES_AWK" "$2" -)
+  fi
+  [ "$seen" != no ] ||
+    printf "gameleira-clean: this capture's home folders name no account of this Mac; names outside paths are only caught with -S\n" >&2
+}
+
+# ---- recording ----------------------------------------------------------------------------------------------
+# start_recording CONFIG KEYFILE STATSFILE OUT: the recorder writes into a pipe (a FIFO in a private folder, so the raw
+# stream is never on disk) and the cleaner reads it into OUT (- for standard output). ES_PID is the recorder (the sudo
+# running eslogger), CLEANER_PID the cleaner. jq and awk start with SIGINT and SIGHUP ignored (ignored signals survive
+# exec): a terminal's Ctrl-C reaches the whole foreground group, and they must read to the end of the pipe once the
+# recorder has stopped, so the last events are written rather than lost.
+start_recording() {
+  local fifo
+  RAW_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/gameleira-clean.XXXXXX") || die "cannot make a temporary folder"
+  fifo=$RAW_DIR/raw
+  mkfifo -m 600 "$fifo" || die "cannot make a pipe in $RAW_DIR"
+  if [ "$4" = - ]; then
+    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" ) &
+  else
+    ( trap '' INT HUP; run_cleaner "$1" "$2" "$3" < "$fifo" > "$4" ) &
+  fi
+  CLEANER_PID=$!
+  "${RECORDER[@]}" > "$fifo" &
+  ES_PID=$!
+}
+
+# stop_capture: stop the recorder (ES_PID is the sudo running eslogger): SIGINT so eslogger flushes, then SIGTERM.
+#   Waits a few seconds for each; never blocks for good. ps, not kill -0: the process belongs to root. As in
+#   gameleira-lab.sh; only the recorder is signalled, the cleaner ends when the pipe closes.
+stop_capture() {
+  [ -n "$ES_PID" ] || return 0
+  local sig i
+  for sig in INT TERM; do
+    $SUDO_CMD kill "-$sig" "$ES_PID" 2>/dev/null
+    i=0
+    while ps -p "$ES_PID" >/dev/null 2>&1 && [ $i -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+    if ! ps -p "$ES_PID" >/dev/null 2>&1; then
+      wait "$ES_PID" 2>/dev/null
+      ES_PID=''
+      return 0
+    fi
+  done
+  printf 'gameleira-clean: eslogger is still recording. Stop it with: sudo kill %s\n' "$ES_PID" >&2
+  return 1
+}
+
+# record_until_stopped SECONDS: waits for Ctrl-C (STOP, set by the trap), SECONDS (none: no limit) or the recorder
+# ending by itself, then stops the recorder and waits for the cleaner to finish. Returns 1 when the recorder stopped by
+# itself.
+record_until_stopped() {
+  local started=$SECONDS by_itself=0
+  while [ -z "$STOP" ]; do
+    if ! ps -p "$ES_PID" >/dev/null 2>&1; then by_itself=1; break; fi
+    [ -z "$1" ] || [ $((SECONDS - started)) -lt "$1" ] || break
+    sleep 0.5
+  done
+  if [ "$by_itself" = 1 ]; then
+    wait "$ES_PID" 2>/dev/null
+    ES_PID=''
+  elif ! stop_capture; then
+    ES_PID=''
+    die "the capture may still be growing"
+  fi
+  # A trapped signal ends `wait` early: wait until the cleaner is really gone.
+  while kill -0 "$CLEANER_PID" 2>/dev/null; do wait "$CLEANER_PID"; done
+  CLEANER_PID=''
+  return "$by_itself"
+}
+
 # ---- the summary --------------------------------------------------------------------------------------------
 print_summary() {
   "$JQ" -r --arg kinds "$KINDS" '
@@ -224,17 +365,27 @@ main() {
   done
   [ "$mode" = record ] || [ -n "$in" ] || usage_error "clean needs -i RAW"
   [ -n "$out" ] || usage_error "-o needs a file name"
-  [ "$mode" = clean ] || die "record mode is not built yet"
 
   # Everything that can fail without touching a file comes first.
+  if [ "$mode" = record ]; then
+    [ "${GAMELEIRA_CLEAN_FAKE_UID:-$(id -u)}" != 0 ] ||
+      die "run record as yourself, not as root (without sudo): it asks for your password for eslogger only"
+    [ "$(uname -s)" = Darwin ] || die "record runs only on macOS (eslogger is part of macOS); clean -i cleans a capture taken elsewhere"
+    if [ -n "${GAMELEIRA_CLEAN_RECORDER:-}" ]; then
+      RECORDER=(/bin/bash -c "$GAMELEIRA_CLEAN_RECORDER")
+      SUDO_CMD=
+    else
+      command -v eslogger >/dev/null || die "eslogger not found (it ships with macOS 13 and later)"
+    fi
+  fi
   [ -x "$JQ" ] || die "no jq at $JQ (macOS 15 and later has /usr/bin/jq; GAMELEIRA_CLEAN_JQ names another)"
   case $("$JQ" --version 2>/dev/null) in
     jq-1.[7-9]*|jq-1.[1-9][0-9]*|jq-[2-9]*) ;;
     *) die "jq 1.7 or later is needed ($JQ is $("$JQ" --version 2>&1))" ;;
   esac
-  [ "$in" = - ] || { [ -f "$in" ] && [ -r "$in" ]; } || die "cannot read $in"
+  [ "$mode" = record ] || [ "$in" = - ] || { [ -f "$in" ] && [ -r "$in" ]; } || die "cannot read $in"
   [ -z "$SEED_FILE" ] || { [ -f "$SEED_FILE" ] && [ -r "$SEED_FILE" ]; } || die "cannot read the seed file $SEED_FILE"
-  if [ "$in" != - ] && [ "$out" != - ] && [ "$out" -ef "$in" ]; then die "-o and -i are the same file; the capture would be erased"; fi
+  if [ "$mode" = clean ] && [ "$in" != - ] && [ "$out" != - ] && [ "$out" -ef "$in" ]; then die "-o and -i are the same file; the capture would be erased"; fi
 
   # The key: found, or refused, before anything is created.
   local key=$keyarg
@@ -259,15 +410,24 @@ main() {
   if [ "$out" != - ]; then
     mkdir -p "$(dirname "$out")" || die "cannot make the folder for $out"
   fi
-  local old_umask config stats normalize_input=
+  local old_umask config stats normalize_input= local_file=
   old_umask=$(umask)
   umask 077
   new_tmp; config=$TMP_OUT
   new_tmp; stats=$TMP_OUT
   new_tmp; NORM_STATUS_FILE=$TMP_OUT
+  # This Mac's names are seeds too, after the -S file's lines (so an error there still names its own line number).
+  if [ "${GAMELEIRA_CLEAN_NO_LOCAL_SEEDS:-}" != 1 ]; then
+    new_tmp; local_file=$TMP_OUT
+    local_seeds "$local_file"
+    new_tmp
+    { [ -z "$SEED_FILE" ] || { cat "$SEED_FILE"; printf '\n'; }; cat "$local_file"; } > "$TMP_OUT" ||
+      die "cannot write a temporary file"
+    SEED_FILE=$TMP_OUT
+  fi
   # A file is read twice: first for the names of the programs it runs (from standard input there is one pass only).
   KEEP_FILE=
-  if [ "$in" != - ]; then
+  if [ "$mode" = clean ] && [ "$in" != - ]; then
     needs_normalizing "$in" && normalize_input=1
     printf '{"prescan":true}\n' > "$config"
     new_tmp; KEEP_FILE=$TMP_OUT
@@ -276,6 +436,10 @@ main() {
     else
       prescan "$config" < "$in" > "$KEEP_FILE"
     fi || die "cannot read the programs in $in"
+    [ ! -s "$local_file" ] || warn_if_other_mac "$in" "$local_file" "$normalize_input"
+  fi
+  if [ "$mode" = record ] && [ -n "$SUDO_CMD" ]; then
+    sudo -v || die "sudo is needed for eslogger"
   fi
   write_config "$config"
 
@@ -285,7 +449,19 @@ main() {
   chmod 600 "$key"
   umask "$old_umask"
 
-  if [ "$in" = - ]; then
+  local stopped_by_itself=
+  if [ "$mode" = record ]; then
+    # Ctrl-C, or the terminal closing, stops eslogger only; the cleaner then reads to the end of the pipe.
+    STOP=
+    trap 'STOP=1' INT TERM HUP
+    start_recording "$config" "$key" "$stats" "$out"
+    if [ -n "$seconds" ]; then
+      printf 'gameleira-clean: recording for %s s; Ctrl-C stops it sooner.\n' "$seconds" >&2
+    else
+      printf 'gameleira-clean: recording; Ctrl-C stops it.\n' >&2
+    fi
+    record_until_stopped "$seconds" || stopped_by_itself=1
+  elif [ "$in" = - ]; then
     if [ "$out" = - ]; then run_cleaner "$config" "$key" "$stats"; else run_cleaner "$config" "$key" "$stats" > "$out"; fi
   elif [ -n "$normalize_input" ]; then
     if [ "$out" = - ]; then
@@ -299,6 +475,9 @@ main() {
     run_cleaner "$config" "$key" "$stats" < "$in" > "$out"
   fi
 
+  if [ -n "$stopped_by_itself" ]; then
+    printf 'gameleira-clean: eslogger stopped by itself (see above; does the terminal have Full Disk Access?)\n' >&2
+  fi
   [ -s "$stats" ] || die "the cleaner stopped before the end of the capture (see above); the output is incomplete, and $key holds only the placeholders made so far: pass -k $key to carry on from it, or remove it"
   print_summary "$stats"
   if [ -n "$normalize_input" ]; then
@@ -306,7 +485,9 @@ main() {
   fi
   if [ "$out" = - ]; then echo 'capture: (standard output)' >&2; else echo "capture: $out" >&2; fi
   echo "key: $key" >&2
-  if [ "$in" = - ]; then echo 'raw capture, left as it was: (standard input)' >&2; else echo "raw capture, left as it was: $in" >&2; fi
+  if [ "$mode" = clean ]; then
+    if [ "$in" = - ]; then echo 'raw capture, left as it was: (standard input)' >&2; else echo "raw capture, left as it was: $in" >&2; fi
+  fi
 }
 
 [ -n "${GAMELEIRA_CLEAN_SOURCE_ONLY:-}" ] && return 0
