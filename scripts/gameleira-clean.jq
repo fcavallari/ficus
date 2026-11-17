@@ -1298,13 +1298,17 @@ def redact_shapes($str):
 # a dotted name (bundle ID, host), an option name or an email: it does not start or end next to a / . - @ or ~. It is
 # data when it is hex with digits and letters, or base64 with capitals, small letters and digits that change kind
 # often (a quarter of its characters), as random text does and words (AutofillServerCommunication2) do not. UUIDs have
-# dashes (no hex run) and one case of letters (no base64). Input: the run.
+# dashes (no hex run) and one case of letters (no base64). A run with a / may be a path (Application Support/Code/…,
+# Projects/Acme2Merger/Draft7): it is data only when no part between slashes is a word of 4 or more letters and the
+# kind changes on half its characters; random base64 changes on about two thirds. Input: the run.
 def ENTROPY_RUN: "(?<![A-Za-z0-9+/_.~@\\\\-])[A-Za-z0-9+_][A-Za-z0-9+/_-]{31,}={0,2}(?![A-Za-z0-9+/=_.@\\\\-])";
 def high_entropy:
   if test("^[0-9A-Fa-f]+$") then test("[0-9]") and test("[A-Fa-f]")
-  else test("[A-Z]") and test("[a-z]") and test("[0-9]")
-    and ((explode | map(if . >= 65 and . <= 90 then 0 elif . >= 97 and . <= 122 then 1 elif . >= 48 and . <= 57 then 2 else 3 end)
-          | . as $c | [range(1; length) | select($c[.] != $c[. - 1])] | length) * 4 >= length)
+  else (index("/") != null) as $sl
+    | test("[A-Z]") and test("[a-z]") and test("[0-9]")
+    and (($sl | not) or all(split("/")[]; test("^[A-Za-z]{4,}$") | not))
+    and ((gsub("/"; "") | explode | map(if . >= 65 and . <= 90 then 0 elif . >= 97 and . <= 122 then 1 elif . >= 48 and . <= 57 then 2 else 3 end)
+          | . as $c | [range(1; length) | select($c[.] != $c[. - 1])] | length) * (if $sl then 2 else 4 end) >= (gsub("/"; "") | length))
   end;
 def entropy_maybe: length >= 32 and any(match(ENTROPY_RUN; "g"); .string | high_entropy);
 # Every such run in $str a data placeholder; the text around it stays. Input: the state. Output: {v, s}.

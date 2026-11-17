@@ -2717,6 +2717,33 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
     }
   });
 
+  // Review round 1, I2: a path is never taken for an encoded run, whole or in part; a payload with a / still is one.
+  test('paths are not encoded runs', () => {
+    const ws = `/Users/jdoe/Library/Application Support/Code/User/workspaceStorage/${HEX40.slice(0, 32)}`;
+    const SLASHED = 'pGkGfK78by1XU6F2VD29NcaLxyn6hY8j/c68ThmaVEB6rlxI81DVAtR7+dY9EDgB';
+    const input = [
+      run(1840, '/bin/rm', ['rm', '-rf', ws], '/', 1, [...JDOE_ENV, `PWD=${ws}`]),
+      run(1841, '/bin/sh', ['sh', '-c', `rm -rf "${ws}"`], '/', 2),
+      run(1842, '/bin/cp', ['cp', 'x', 'Projects/Acme2Merger/BoardDeck3Final/Draft7', 'Acme2Merger/BoardDeck3Final/Draft7Version2'], '/Users/jdoe', 3),
+      run(1843, '/bin/sh', ['sh', '-c', `echo ${SLASHED} | base64 -d > /tmp/p`], '/', 4),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const args = ev.map(e => e.event.exec.args as string[]);
+      const cleaned = args[0]![2]!;
+      expect(cleaned).toMatch(/^\/Users\/user1\/Library\/Application Support\/Code\/name\d+\/name\d+\/name\d+$/);
+      expect(ev[0]!.event.exec.env).toContain(`PWD=${cleaned}`);
+      expect(args[1]![2]).toBe(`rm -rf "${cleaned}"`);
+      expect(args[2]![2]).toMatch(/^name\d+\/name\d+\/name\d+\/name\d+$/);
+      expect(args[2]![3]).toMatch(/^name\d+\/name\d+\/name\d+$/);
+      const d = keyed(r.key, 'data');
+      expect([...d.keys()]).toEqual([SLASHED]);
+      expect(args[3]![2]).toBe(`echo ${d.get(SLASHED)} | base64 -d > /tmp/${keyed(r.key, 'name').get('p')}`);
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
   test('environment values are redacted, except the useful ones', () => {
     const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
       'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
