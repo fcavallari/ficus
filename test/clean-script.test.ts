@@ -3367,6 +3367,31 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     for (const l of lines(fs.readFileSync(out, 'utf8'))) expect(() => JSON.parse(l)).not.toThrow();
   }, 30000);
 
+  // The root side opens nothing of the user's: the stop channel is handed to it as standard input, opened by this script
+  // before sudo starts. Before, the wrapper opened the channel itself, and a script killed before that open left the
+  // open (and a root sh) waiting for good. The window is widened here by a sleep in front of the wrapper.
+  test.runIf(darwin)('a script killed as the recording starts leaves nothing running', async () => {
+    const dir = tmpDir();
+    // Not `detached`: what is left behind would hold its output open, and the run would never close.
+    const child = spawn('/bin/bash', ['-c', [
+      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `TMPDIR="${dir}/"`,
+      `SUDO_CMD=''`,
+      'RECORDER=(/bin/bash -c "exec /bin/sleep 61")',
+      'STOP_WRAPPER="/bin/sleep 2; $STOP_WRAPPER"',
+      'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
+      `write_config "${dir}/cfg"`,
+      `printf '%s\\n' "$KEY_HEADER" > "${dir}/key"`,
+      `start_recording "${dir}/cfg" "${dir}/key" "${dir}/stats" "${dir}/out"`,
+      'kill -KILL $$',
+    ].join('\n')], { detached: true, stdio: 'ignore' });
+    groups.push(child.pid!);
+    const signal = await new Promise<string | null>(res => child.on('exit', (_code, sig) => res(sig)));
+    expect(signal).toBe('SIGKILL');
+    for (let i = 0; i < 120 && inGroup(child.pid!) > 0; i++) await sleep(100);
+    expect(inGroup(child.pid!), 'processes left 12 s after the script was killed').toBe(0);
+  }, 30000);
+
   // Once the stop is under way, more Ctrl-C changes nothing: the recorder still gets SIGINT, SIGTERM and at last SIGKILL,
   // and the cleaner is waited for. The stand-in ignores SIGINT and SIGTERM.
   test.runIf(darwin)('more Ctrl-C during the stop still ends with every event and the summary', async () => {
