@@ -4,6 +4,7 @@ import path from 'node:path';
 import { beforeEach, expect, test } from 'vitest';
 import { loadCapture } from '../src/ingest/load';
 import { CaptureRefused, ficusPaths, type FicusPaths } from '../src/mcp/home';
+import { displayName } from '../src/model/relations';
 import { PAGE_SIZE, UnknownRow, Workspace } from '../src/mcp/workspace';
 import { buildReport } from '../src/report/report';
 import { fixture } from './fixtures';
@@ -67,6 +68,59 @@ test('nothing the agent sees by default holds the dscl password', async () => {
   const rows = await Promise.all(view.rows.map(r => ws.row(N, r.key)));
   const text = JSON.stringify(view) + JSON.stringify(rows) + JSON.stringify(await ws.report(N, true));
   expect(text).not.toContain(PASSWORD);
+});
+
+// Not one string: every argument after argv[0], of every process in the synthetic lab, that is not also a value the
+// capture records in a field of its own (what the report keeps as evidence; mirrors keptText in src/report/report.ts).
+async function secretArgs(): Promise<string[]> {
+  const m = (await ws.load(N)).model;
+  const kept: string[] = [];
+  for (const p of m.processes.values()) {
+    kept.push(displayName(m, p.id));
+    for (const i of p.images) kept.push(i.path ?? '', i.cwd ?? '', i.script ?? '');
+    for (const f of p.fileOps) kept.push(f.path, f.toPath ?? '');
+  }
+  for (const i of m.persistence) kept.push(i.plistPath ?? '', i.executablePath ?? '', i.appPath ?? '');
+  const keptText = kept.join('\n');
+  const found = new Set<string>();
+  for (const p of m.processes.values()) {
+    for (const i of p.images) {
+      for (const a of (i.args ?? []).slice(1)) {
+        // A bare option name (-authonly, --quiet) is the tool's vocabulary, the same words the rules use in their ids and
+        // explanations, not a value someone typed: it is not what redaction hides.
+        if (a.length >= 3 && !keptText.includes(a) && !/^--?[A-Za-z][A-Za-z-]*$/.test(a)) found.add(a);
+      }
+    }
+  }
+  return [...found];
+}
+
+test('no argument of any process leaks into analyze, an unrevealed row, or a finding explanation', async () => {
+  const secrets = await secretArgs();
+  // the check is only worth something if the fixture has arguments to hide
+  expect(secrets.length).toBeGreaterThanOrEqual(8);
+  expect(secrets).toContain(PASSWORD);
+
+  // every page, as the tool would serve them
+  const pages = [];
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const page = await ws.analyze(N, offset);
+    pages.push(page);
+    if (page.truncated === null) break;
+  }
+  const analyzed = JSON.stringify(pages);
+  const rowKeys = pages.flatMap(pg => pg.rows.map(r => r.key));
+  expect(rowKeys.length).toBe(17);
+  const rows = JSON.stringify(await Promise.all(rowKeys.map(k => ws.row(N, k))));
+  const report = await ws.report(N, true);
+  const explanations = JSON.stringify(report.captures[0]!.rows!.flatMap(r => r.findings.map(f => [f.title, f.explanation, f.evidence])));
+  const rules = JSON.stringify(pages.map(pg => pg.rules));
+
+  const leaks: string[] = [];
+  for (const [where, text] of [['ficus_analyze', analyzed], ['ficus_row', rows], ['finding text', explanations], ['rules', rules]] as const) {
+    for (const s of secrets) if (text.includes(s)) leaks.push(`${where}: ${JSON.stringify(s)}`);
+  }
+  expect(leaks).toEqual([]);
 });
 
 test('reveal shows that one row unredacted and is remembered', async () => {
