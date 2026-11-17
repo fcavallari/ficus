@@ -4,7 +4,8 @@ import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { HOME, LOCATION_WORDS, oddLocation, resolvePath, type LocationKind, type OddLocation } from './locations';
+import { COPY_TOOLS, credentialStore } from './credentials';
+import { HOME, LOCATION_WORDS, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
@@ -47,6 +48,35 @@ function rest(img: Image): string[] {
 export const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
 /** No signature at all; an empty signing ID counts as none. */
 export const isUnsigned = (img: Image): boolean => !img.isPlatform && !img.signingId;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Credential stores
+
+/** Where a credential store is staged: a normal install never keeps one in these places. A volume is a backup. */
+const STAGING_KINDS: ReadonlySet<LocationKind> = new Set<LocationKind>(['temp', 'shared', 'downloads', 'hidden']);
+const CREDENTIAL_MITRE: Record<string, string> = {
+  'login keychain': 'T1555.001', 'saved Wi-Fi/keychain data': 'T1555.001',
+  'browser logins or cookies': 'T1555.003', 'Firefox logins': 'T1555.003',
+};
+const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
+
+/** The path an argument names: `--file=/x` is `/x`, an option alone names nothing. */
+function pathArgument(a: string): string | null {
+  if (!a.startsWith('-')) return a;
+  return a.startsWith('--') && a.includes('=') ? a.slice(a.indexOf('=') + 1) : null;
+}
+
+/** True when the path, or the folder it names, is in a strong place (a copy into `/tmp` or a hidden folder counts). */
+function inStrongPlace(path: string): boolean {
+  return oddLocation(path)?.strength === 'strong' || strongPlace(normPath(`${path}/`)) !== null;
+}
+
+/** The writer's judgment: unsigned, ad-hoc signed, or run from a strong odd place. */
+function writerIsOdd(p: Process): boolean {
+  const last = [...p.images].reverse().find(i => !i.inherited);
+  if (!last) return false;
+  return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
+}
 
 /** The original parent's image when this process was born (the parent may exec something else later). */
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
@@ -820,6 +850,51 @@ export const RULES: Rule[] = [
       if (kind === null) return null;
       const { mitre, what } = RECON_KINDS[kind];
       return { evidence: cmdline(img), mitre: [mitre], explanation: `${what}${RECON_TAIL}` };
+    },
+  },
+  {
+    id: 'credential-store-copy', title: 'Credential store copied', severity: 'med',
+    explanation: CREDENTIAL_COPY_EXPLANATION,
+    mitre: ['T1555.001', 'T1555.003', 'T1005', 'T1074.001'], scope: 'process',
+    matchProcess: (p) => {
+      const evidence: string[] = [];
+      const labels = new Set<string>();
+      let staged = false;                 // a credential store landed in, or a copy tool names, a staging place
+      let copyToPlace = false;            // a copy tool names a credential store and, apart from it, a strong place
+      const seen = new Set<string>();
+      // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder.
+      for (const op of p.fileOps) {
+        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        if (target === undefined) continue;
+        const label = credentialStore(target);
+        const where = oddLocation(target);
+        if (label === null || where === null || where.strength !== 'strong' || !STAGING_KINDS.has(where.kind)) continue;
+        const key = normPath(target).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
+        labels.add(label);
+        staged = true;
+      }
+      // (b) A copy tool with a credential store among its arguments.
+      for (const img of p.images) {
+        if (img.inherited || !COPY_TOOLS.has(basename(img.path)) || !img.args) continue;
+        const named = img.args.slice(1).flatMap(a => { const x = pathArgument(a); return x === null ? [] : [resolvePath(x, img.cwd)]; });
+        const found = named.flatMap((x, i) => { const l = credentialStore(x); return l === null ? [] : [{ i, l }]; });
+        if (found.length === 0) continue;
+        for (const { l } of found) labels.add(l);
+        evidence.push(`${cmdline(img)} (${found[0]!.l})`);
+        // Another argument in a strong place: the copy goes to, or comes from, a staging place.
+        if (found.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) { staged = true; copyToPlace = true; }
+      }
+      if (evidence.length === 0) return null;
+      const mitre = new Set(['T1005']);
+      for (const l of labels) if (CREDENTIAL_MITRE[l]) mitre.add(CREDENTIAL_MITRE[l]!);
+      if (staged) mitre.add('T1074.001');
+      return {
+        evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
+        mitre: [...mitre].sort(),
+      };
     },
   },
 ];

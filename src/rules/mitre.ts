@@ -1,5 +1,6 @@
 /** Technique names for the MITRE ATT&CK IDs the rules cite, so the learner sees a word next to the number. */
 export const MITRE_NAMES: Record<string, string> = {
+  'T1005': 'Data from Local System',
   'T1016': 'System Network Configuration Discovery',
   'T1016.002': 'Wi-Fi Discovery',
   'T1033': 'System Owner/User Discovery',
@@ -11,6 +12,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1059.004': 'Unix Shell',
   'T1059.006': 'Python',
   'T1059.007': 'JavaScript',
+  'T1074.001': 'Local Data Staging',
   'T1082': 'System Information Discovery',
   'T1105': 'Ingress Tool Transfer',
   'T1140': 'Deobfuscate/Decode Files or Information',
@@ -25,6 +27,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1553.001': 'Gatekeeper Bypass',
   'T1553.004': 'Install Root Certificate',
   'T1555.001': 'Keychain',
+  'T1555.003': 'Credentials from Web Browsers',
   'T1557': 'Adversary-in-the-Middle',
   'T1560.001': 'Archive via Utility',
   'T1562.001': 'Disable or Modify Tools',

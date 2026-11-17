@@ -345,6 +345,7 @@ run() {
 #   45  launchd starts a vendor daemon that runs as root with the user's effective id: dropped privileges, context
 #   46  a standalone launch agent for an updater app, no process tied to it
 #   50..53  a second shell runs sw_vers, uname -a, system_profiler: a recon burst
+#   80  zsh: cp of the login keychain into /tmp/lab
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -483,6 +484,13 @@ synthetic_story() {
   ev_exit 60.0 "$bash"
   ev_exit 70.0 "$sl"
   answer orphan orphaned low queued 'sleep 600' 'Its parent exited, so it now sits under launchd: the double fork that detaches a process.'
+
+  # 9. The learner's shell copies the login keychain into the staging folder.
+  ev_fork 80.0 "$ZSH" 7610 9610; c=$LAST
+  ev_exec 80.1 "$c" /bin/cp platform com.apple.cp '' "$CWD" tty cp /Users/learner/Library/Keychains/login.keychain-db /tmp/lab/login.keychain-db
+  ev_create 80.2 "$c" "$LAB/login.keychain-db"
+  ev_exit 80.3 "$c"
+  answer keychain-copy credential-store-copy high queued 'Keychains/login.keychain-db' 'The login keychain copied into a temporary folder: stealers stage it there before uploading.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -504,6 +512,7 @@ live_answers() {
     '#   security-setting-change med, and the spctl, networksetup and certificate forms: an admin account may' \
     '#     succeed, or get a password prompt. Only csrutil, which refuses outside Recovery, runs.' \
     '#   keychain-access med and low: the lab makes one keychain call, for an item that does not exist.' \
+    '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'

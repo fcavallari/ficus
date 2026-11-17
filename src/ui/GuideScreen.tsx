@@ -61,7 +61,7 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Discovery and collection',
     what: <>A few quick questions about the machine (<C>whoami</C>, <C>sw_vers</C>, <C>system_profiler</C>), then browser
       profiles, keychains, wallets, Notes and documents copied into a temporary folder and packed into an archive.</>,
-    rules: ['recon', 'archive-staging'],
+    rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
     name: 'Persistence',
