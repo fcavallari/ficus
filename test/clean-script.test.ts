@@ -1707,8 +1707,9 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     expect(r.status, r.stderr).toBe(0);
     const ev = events(r.out);
     expect(ev[0]!.event.exec.args).toEqual(['echo', 'Person 1', '$HOME', `\${HOME}/${keyed(r.key, 'name').get('x')}`, 'user1', 'user1', 'homework', 'user2_backup', 'user2-laptop', 'JDOE2', '--home=/tmp', 'x=user2']);
-    // Only HOME's value is still cleaned; the others are redacted, their names kept.
-    expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=<redacted>', 'HOME_DIR=<redacted>', 'NOTE=<redacted>']);
+    // Only HOME's value is still cleaned; the others are redacted. Environment names keep their standard names (HOME, USER),
+    // but lose account names in other names (Task 6 review ruling I7): HOME_DIR is user1_DIR.
+    expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=<redacted>', 'user1_DIR=<redacted>', 'NOTE=<redacted>']);
     // A seed written with escaped spaces in shell code is replaced, and its placeholder keeps the escapes.
     expect(ev[1]!.event.exec.args[2]).toBe(`cp ~/Library/Application\\ Support/Person\\ 2\\ Sync/${keyed(r.key, 'name').get('a.db')} /tmp/ && echo Person\\ 2`);
     expect(ev[2]!.event.exec.args[1]).toBe('/Library/Application Support/Person 2 Sync');
@@ -2805,6 +2806,20 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(args[2]).toEqual(['arch', '-arch', 'x86_64', 'curl', '-u', R, E]);
       expect(args[3]![2]).toBe(`builtin command caffeinate -w 42 curl -u ${R} ${E}`);
       expect(r.out).not.toMatch(/pwMM|ARCHPW|pwXX|pwYY/);
+      sameFindings(input, r.out);
+    }
+  });
+
+  // Review round 1, I7 (ruling): variable names are kept, but account names and seeds in them are replaced as parts.
+  test('account names in environment variable names are replaced', () => {
+    const env = ['HOME=/Users/jdoe', 'JDOE=1', 'jdoe_cache=2', 'MY_JDOE_TOKEN=x', 'LC_JDOE=en_US', 'JDOE2=keep'];
+    const input = [run(1870, '/usr/bin/true', ['true'], '/', 1, env), run(1871, '/usr/bin/true', ['true'], '/', 2, env)].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const R = '<redacted>';
+      expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', `user1=${R}`, `user1_cache=${R}`, `MY_user1_TOKEN=${R}`, 'LC_user1=en_US', `JDOE2=${R}`]);
+      expect(ev[1]!.event.exec.env).toEqual(ev[0]!.event.exec.env);
+      expect(r.out).not.toMatch(/jdoe(?!2)/i);
       sameFindings(input, r.out);
     }
   });

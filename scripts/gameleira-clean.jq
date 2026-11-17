@@ -216,7 +216,7 @@ def add_acct($real; $ph):
       | .acctany = (.acctl | map(regex_escape) | join("|"))
       | .acctre = (.acctl | map(seed_regex + (if length < 4 or protected_word(.) then "@" else "" end)) | join("|"))
       | .acctall = (.acctl | map(seed_regex) | join("|"))
-      | .clear = {} | .clearn = 0
+      | .clear = {} | .clearn = 0 | .envk = {} | .envkn = 0
     end;
 
 # The placeholder `real` already has, or a new one numbered on from `next` (which a loaded key has moved on). An account
@@ -1609,12 +1609,15 @@ def code_secrets($str0):
     end
   end;
 
-# The environment (exec.env), in place: names kept; a value redacted, except those of the useful variables (PATH,
-# SHELL, TMPDIR, HOME, PWD, OLDPWD, LANG, LC_*, TERM*, __CF*, DYLD_*: injection evidence), which are cleaned like any
-# other value; a secret-looking name (SECRET_NAME) always redacted. An entry without =, or whose name is not a
-# variable's (/Users/jdoe/Board minutes=1), is redacted whole; an empty value stays empty. Only secret-looking names count as redacted credentials; the other values are redacted by policy.
-# Names come back in every exec, so each name's class is remembered (state.envk: "k" keep, "r" redact, "s" secret, "x" not a name; at
-# most 4096). Input: the state. Output: {v: the environment, keep: [true at the indices still to clean], s}.
+# The environment (exec.env), in place: names kept, with account names and seeds in them replaced as parts (JDOE_HOME
+# becomes user1_HOME), except the standard names (SAFE_ENV, USER, LOGNAME: an account called home leaves HOME alone); a value redacted, except those of the useful variables (PATH, SHELL, TMPDIR, HOME, PWD, OLDPWD,
+# LANG, LC_*, TERM*, __CF*, DYLD_*: injection evidence), which are cleaned like any other value; a secret-looking name
+# (SECRET_NAME) always redacted. An entry without =, or whose name is not a variable's (/Users/jdoe/Board minutes=1),
+# is redacted whole; an empty value stays empty. Only secret-looking names count as redacted credentials; the other
+# values are redacted by policy. Names come back in every exec, so each name's class and cleaned form are remembered
+# (state.envk: {c: "k" keep, "r" redact, "s" secret, "x" not a name; n: the name cleaned}; at most 4096, emptied when
+# an account name or seed is added). Input: the state. Output: {v: the environment, keep: [true at the indices still
+# to clean], s}.
 def SAFE_ENV: {"PATH": true, "SHELL": true, "TMPDIR": true, "HOME": true, "PWD": true, "OLDPWD": true, "LANG": true};
 def env_class:
   if test("^[A-Za-z_][A-Za-z0-9_]*$") | not then "x"
@@ -1628,12 +1631,13 @@ def clean_env($env):
       else ($x | index("=")) as $q
         | if $q == null then .v[$i] = "<redacted>"
           else $x[:$q] as $n
-            | (.s.envk[$n] // ($n | env_class)) as $c
-            | (if .s.envk[$n] == null then .s |= ((if .envkn >= 4096 then .envk = {} | .envkn = 0 else . end) | .envk[$n] = $c | .envkn += 1) else . end)
+            | (.s.envk[$n] // {c: ($n | env_class), n: (if SAFE_ENV[$n] or $n == "USER" or $n == "LOGNAME" then $n else .s | replace_seeds($n) end)}) as $k
+            | (if .s.envk[$n] == null then .s |= ((if .envkn >= 4096 then .envk = {} | .envkn = 0 else . end) | .envk[$n] = $k | .envkn += 1) else . end)
+            | $k.c as $c | $k.n as $cn
             | if $c == "x" then .v[$i] = "<redacted>"
-              elif $q == ($x | length) - 1 then .
-              elif $c == "k" then .keep[$i] = true
-              else .v[$i] = $n + "=<redacted>" | if $c == "s" then .s.stats.redacted += 1 else . end end
+              elif $q == ($x | length) - 1 then (if $cn != $n then .v[$i] = $cn + "=" else . end)
+              elif $c == "k" then .keep[$i] = true | (if $cn != $n then .v[$i] = $cn + $x[$q:] else . end)
+              else .v[$i] = $cn + "=<redacted>" | if $c == "s" then .s.stats.redacted += 1 else . end end
           end
       end)
   | {v: .v, keep: .keep, s: .s};
