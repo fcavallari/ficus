@@ -1692,8 +1692,15 @@ def clean_authority($m):
   | (if $c.ui == REDACTED then . else .stats.redacted += 1 end)
   | clean_url("x://" + $c.h + $c.rest) | .v = "//" + REDACTED + "@" + .v[4:];
 
+# git's user@host:path (scp form) with a relative path: a repository named as its URL names it, so the path is cleaned
+# as a URL's (clean_url), and both forms of one remote agree. net_shapes has cleaned the host by then. An absolute
+# path, and any path of ssh's family (scp, rsync), stays a path on that machine, read by the later steps.
+def GIT_SCP_RE:
+  "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*):(?<p>[^/~\\s\"'`;|&<>()][^\\s\"'`;|&<>()]*)";
+
 # The steps of clean_net_m, in this order: scheme URLs; authorities without a scheme; in shell code ($code), curl and
-# wget's URL arguments; then net_shapes. Input: the state. Output: {v, s, prot} (prot: see code_urls).
+# wget's URL arguments; net_shapes; then git's scp form (GIT_SCP_RE), in an argument of git ($login "colon") or after a
+# git command in shell code. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
   | .v as $s0 | .s
@@ -1701,7 +1708,14 @@ def net_steps($str; $code; $login):
   | .v as $s1 | .s
   | (if $code and ($s1 | contains("curl") or contains("wget")) then code_urls($s1) else {v: $s1, s: ., prot: []} end)
   | .v as $s2 | .prot as $prot | .s
-  | net_shapes($s2; $code; $login) | .prot = $prot;
+  | net_shapes($s2; $code; $login)
+  | (if ($login == "colon" or ($code and (.v | contains("git")))) and (.v | contains("@") and contains(":")) then
+       .v as $s3 | .s | net_sub($s3; GIT_SCP_RE; .t[:.m.offset] as $b | .m as $m
+         | if $code and ($b | test(COMMAND_BEFORE("git")) | not) then {v: $m.string, s: .s}
+           else ($m.captures[0].string) as $p
+             | .s | clean_path("file:///Users/Shared/" + $p) | {v: ($m.string[:($m.string | length) - ($p | length)] + .v[21:]), s: .s} end)
+     else . end)
+  | .prot = $prot;
 
 # Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), when $m (the cheap
 # test net_maybe, as pre_test remembers it) says it may hold one. What it made of a value outside code and logins is

