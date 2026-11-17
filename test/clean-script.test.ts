@@ -54,11 +54,20 @@ export function failureMessage(stderr: string): string {
 }
 
 /**
+ * stderr reduced to its `name: number` summary lines. For runs on real captures: jq's own complaints can quote the
+ * capture, so nothing else of stderr may reach a failure message.
+ */
+export function countsOnly(stderr: string): string {
+  return stderr.split('\n').filter(l => /^[a-z ]+: \d+$/.test(l)).join('; ');
+}
+
+/**
  * Runs the script in a fresh folder, with its own key folder unless `-k` is passed, and this Mac's accounts left out.
- * Without `-o` the capture goes to `out.jsonl` in that folder. `input` is written to a file and passed as `-i`, or
+ * Without `-o` the capture goes to `out.jsonl` in that folder. `countsOnly`: a failure message carries only the summary's
+ * numbers (runs on real captures). `input` is written to a file and passed as `-i`, or
  * with `-i -` given on standard input.
  */
-export function runClean(args: string[], opts: { input?: string; env?: Record<string, string>; uncleaned?: number } = {}): CleanRun {
+export function runClean(args: string[], opts: { input?: string; env?: Record<string, string>; uncleaned?: number; countsOnly?: boolean } = {}): CleanRun {
   const dir = tmpDir();
   const argv = [...args];
   const fromStdin = argv[argv.indexOf('-i') + 1] === '-' && argv.includes('-i');
@@ -84,7 +93,7 @@ export function runClean(args: string[], opts: { input?: string; env?: Record<st
   const keyFile = summary['key'];
   const key = keyFile && fs.existsSync(keyFile) ? fs.readFileSync(keyFile, 'utf8') : '';
   // An event the cleaner could not clean is dropped: a bug in the program would thin the capture without a word.
-  if (argv[0] === 'clean' && r.status === 0) expect(summary['events the cleaner could not clean'], failureMessage(stderr)).toBe(String(opts.uncleaned ?? 0));
+  if (argv[0] === 'clean' && r.status === 0) expect(summary['events the cleaner could not clean'], opts.countsOnly ? countsOnly(stderr) : failureMessage(stderr)).toBe(String(opts.uncleaned ?? 0));
   return { out, key, summary, stderr, status: r.status ?? -1 };
 }
 
@@ -3287,6 +3296,17 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
   });
 });
 
+/**
+ * The processes whose findings differ between a raw capture and its cleaned text, and how many have any. Process ids
+ * and rule ids only, never a real value, so the ids may be named in a failure.
+ */
+function differingFindings(rawLines: string[], cleanedText: string): { ids: string[]; total: number } {
+  const raw = findingSignature(buildModel(rawLines));
+  const out = findingSignature(buildModel(lines(cleanedText)));
+  const all = [...new Set([...raw.keys(), ...out.keys()])];
+  return { total: raw.size, ids: all.filter(id => JSON.stringify(raw.get(id) ?? null) !== JSON.stringify(out.get(id) ?? null)) };
+}
+
 // The real captures, run through the cleaner for real. They are not in the repository (see fixtures.ts), so this block
 // skips without them. Nothing here may print a real value: a failing assertion gives a count and a kind, never the
 // value, the key row or the cleaned output.
@@ -3296,8 +3316,9 @@ describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
   const cleanedCapture = (name: RealFixtureName): CleanRun => {
     let r = cleaned.get(name);
     if (!r) {
-      r = runClean(['clean', '-i', fixture(name)]);
-      expect(r.status, `${name}: exit status\n${failureMessage(r.stderr)}`).toBe(0);
+      r = runClean(['clean', '-i', fixture(name)], { countsOnly: true });
+      // Never stderr: jq's complaints can quote the capture. The summary's numbers are enough to tell a run apart.
+      expect(r.status, `${name}: exit status (${countsOnly(r.stderr)})`).toBe(0);
       cleaned.set(name, r);
     }
     return r;
@@ -3322,13 +3343,9 @@ describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
       const rawLines = readLines(name);
       expect(r.summary['events in'], `${name}: events in`).toBe(String(rawLines.length));
       expect(r.summary['events out'], `${name}: events out`).toBe(String(rawLines.length));
-      const raw = findingSignature(buildModel(rawLines));
-      const out = findingSignature(buildModel(lines(r.out)));
-      expect(raw.size, `${name}: processes with findings`).toBeGreaterThan(0);
-      // A process id and the rules it matched, never a real value, so the differing ids may be named.
-      const differing = [...new Set([...raw.keys(), ...out.keys()])]
-        .filter(id => JSON.stringify(raw.get(id) ?? null) !== JSON.stringify(out.get(id) ?? null));
-      expect(differing.slice(0, 10), `${name}: processes whose findings differ (${differing.length})`).toEqual([]);
+      const differing = differingFindings(rawLines, r.out);
+      expect(differing.total, `${name}: processes with findings`).toBeGreaterThan(0);
+      expect(differing.ids.slice(0, 10), `${name}: processes whose findings differ (${differing.ids.length})`).toEqual([]);
     }, 120_000);
 
     test(`${name}: no account, host, email, volume or data value from the key is left in the cleaned capture`, () => {
@@ -3351,4 +3368,29 @@ describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
       for (const kind of Object.keys(leaks)) expect(leaks[kind], `${name}: ${kind} values left in the cleaned capture (of ${checked[kind]} checked)`).toBe(0);
     }, 120_000);
   }
+});
+
+// The closest test to real use: the live lab capture was recorded on this Mac, so this Mac's own names (read as seeds,
+// local seeds on) are in it. Skips without the capture, off macOS, or when the cleaner says the capture is from another
+// Mac. Counts and kinds only in every message: never a value, never the cleaner's stderr.
+const LIVE_LAB = path.resolve(__dirname, '..', 'scratch', 'gameleira-lab-live.jsonl');
+describe.skipIf(!fs.existsSync(JQ) || !fs.existsSync(LIVE_LAB) || process.platform !== 'darwin')('this Mac\'s own names in a live capture', () => {
+  test('the live lab capture, cleaned with local seeds on, holds none of the key\'s account, name, host or seed values, and keeps its findings', (ctx) => {
+    const r = runClean(['clean', '-i', LIVE_LAB], { env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' }, countsOnly: true });
+    expect(r.status, `exit status (${countsOnly(r.stderr)})`).toBe(0);
+    if (r.stderr.includes('names outside paths are only caught with -S')) ctx.skip();   // recorded on another Mac
+    const rows = parseKey(r.key);
+    const text = r.out.toLowerCase();
+    const leaks: Record<string, number> = { seed: 0, user: 0, realname: 0, host: 0 };
+    const checked: Record<string, number> = { seed: 0, user: 0, realname: 0, host: 0 };
+    for (const row of rows) {
+      if (!(row.kind in leaks) || row.real.length < 4) continue;
+      checked[row.kind]!++;
+      if (text.includes(JSON.stringify(row.real).slice(1, -1).toLowerCase())) leaks[row.kind]!++;
+    }
+    expect(checked['seed']! + checked['user']! + checked['host']!, 'local values checked (seed, user, host)').toBeGreaterThan(0);
+    for (const kind of Object.keys(leaks)) expect(leaks[kind], `${kind} values left in the cleaned capture (of ${checked[kind]} checked)`).toBe(0);
+    const differing = differingFindings(fs.readFileSync(LIVE_LAB, 'utf8').split('\n').filter(l => l !== ''), r.out);
+    expect(differing.ids.slice(0, 10), `processes whose findings differ (${differing.ids.length})`).toEqual([]);
+  }, 120_000);
 });
