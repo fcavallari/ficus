@@ -33,13 +33,12 @@ export function siblings(m: CaptureModel, p: Process): Process[] {
 }
 
 /** The AI coding agents Ficus knows by name. */
-export type Agent = 'claude' | 'codex' | 'cursor' | 'gemini';
+export type Agent = 'claude' | 'codex' | 'gemini';
 
-/** The shell-snapshot folder each agent's shells source (Gemini CLI has none). */
+/** The shell-snapshot folder each agent's shells source (Gemini CLI has none, and Cursor is deliberately not here: see agentOf). */
 const AGENT_SNAPSHOTS: [Agent, RegExp][] = [
   ['claude', /\.claude\/shell-snapshots\//],
   ['codex', /\.codex\/shell_snapshots\//],
-  ['cursor', /\.cursor\/shell-snapshots\//],
 ];
 
 /**
@@ -58,15 +57,17 @@ export function agentRuntime(img: Image | undefined): Agent | null {
 
 /**
  * Which agent this image is, from what it is rather than what it says: Claude Code's `claude` executable (also under
- * `/claude-code/` or `/share/claude/versions/`), Codex's `codex`, anything inside Cursor.app, or an npm-installed agent
- * running under node or bun.
+ * `/claude-code/` or `/share/claude/versions/`), Codex's `codex`, or an npm-installed agent
+ * running under node or bun. Cursor is deliberately NOT an exempt agent: its helpers run a workspace's tasks.json
+ * commands as well as the agent's shells, so a path under Cursor.app does not say whose command it is, and the
+ * `.cursor/shell-snapshots/` text in that command (anyone can write it) must never suppress anything. Revisit once a
+ * Cursor-specific identity has been verified on a Mac with Cursor.
  */
 export function agentOf(img: Image | undefined): Agent | null {
   if (img === undefined) return null;
   const path = img.path ?? '';
   if (basename(path) === 'claude' || path.includes('/claude-code/') || path.includes('/share/claude/versions/')) return 'claude';
   if (basename(path) === 'codex') return 'codex';
-  if (path.includes('/Cursor.app/')) return 'cursor';
   return agentRuntime(img);
 }
 
