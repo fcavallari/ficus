@@ -1,10 +1,10 @@
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, childrenIndex, displayName, registrant } from '../model/relations';
-import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId } from '../model/types';
+import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { itemTypeName } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
-import { isAdhoc, isUnsigned, type Severity } from '../rules/rules';
-import { idHash, slug } from '../session/export';
+import { cmdline, isAdhoc, isUnsigned, type Severity } from '../rules/rules';
+import { idHash, REDACTED, slug } from '../session/export';
 import { applyRoutine } from '../session/routine';
 import type { CaptureRec, Session, Status, Verdict, VerdictSnapshot } from '../session/store';
 import { coverage, itemName, verdictKey } from '../ui/triage-model';
@@ -93,6 +93,28 @@ const ref = (m: CaptureModel, id: ProcId): ProcRef => ({ name: displayName(m, id
 const reportFinding = ({ ruleId, severity, title, explanation, mitre, evidence, trait }: Finding): ReportFinding =>
   ({ ruleId, severity, title, explanation, mitre, evidence, trait });
 
+/** Every argument after argv[0] becomes "[redacted]". */
+const redactArgv = (args: string[] | null): string[] | null => (args === null ? null : args.map((a, i) => (i === 0 ? a : REDACTED)));
+
+/** Shortest argument redaction looks for in free text: one- and two-letter flags (-c, -w) occur in ordinary words. */
+const MIN_REDACTED = 3;
+
+/**
+ * Every value the capture records in a field of its own (program and script paths, process names, working directories,
+ * file-event paths, launch item paths), joined for substring search. Redaction keeps these: they are evidence, and when
+ * an argument repeats one of them it is not a secret typed on a command line.
+ */
+function keptText(m: CaptureModel): string {
+  const out: string[] = [];
+  for (const p of m.processes.values()) {
+    out.push(displayName(m, p.id));
+    for (const i of p.images) out.push(i.path ?? '', i.cwd ?? '', i.script ?? '');
+    for (const f of p.fileOps) out.push(f.path, f.toPath ?? '');
+  }
+  for (const i of m.persistence) out.push(i.plistPath ?? '', i.executablePath ?? '', i.appPath ?? '');
+  return out.join('\n');
+}
+
 function launchItem(m: CaptureModel, item: PersistenceItem): ReportLaunchItem {
   const who = registrant(m, item);
   return {
@@ -107,7 +129,8 @@ class CaptureRows {
   private readonly m: CaptureModel;
   private readonly children: Map<ProcId | null, ProcId[]>;
   private readonly items: Map<string, PersistenceItem>;
-  constructor(readonly cap: LoadedCapture) {
+  private kept: string | null = null;
+  constructor(readonly cap: LoadedCapture, private readonly redact: boolean) {
     this.m = cap.model;
     this.children = childrenIndex(this.m, 'original');
     this.items = new Map(this.m.persistence.map(i => [i.id, i]));
@@ -120,7 +143,7 @@ class CaptureRows {
     return {
       procId: p.id, pid: p.pid, startTime: p.startTime, exitTime: p.exitTime,
       images: p.images.map(i => ({
-        path: i.path, args: i.args, cwd: i.cwd, signingId: i.signingId, teamId: i.teamId, isPlatform: i.isPlatform,
+        path: i.path, args: this.redact ? redactArgv(i.args) : i.args, cwd: i.cwd, signingId: i.signingId, teamId: i.teamId, isPlatform: i.isPlatform,
         signature: signatureOf(i), script: i.script, stdinIsPipe: i.stdinIsPipe, time: i.time, inherited: i.inherited,
       })),
       ancestry: ancestry(m, p.id, 'original').map(a => ref(m, a)),
@@ -128,6 +151,25 @@ class CaptureRows {
       children: this.children.get(p.id)?.length ?? 0,
       fileOps: { total: p.fileOps.length, shown: p.fileOps.slice(0, FILE_OPS_SHOWN) },
     };
+  }
+
+  /**
+   * A finding as the report shows it. Redacting, its evidence loses the command line it quotes: first the exact
+   * `cmdline` text of the finding's image (so a line the evidence limit cut short is matched as cut), then any other
+   * argument of the process that is not also a kept value.
+   */
+  finding(f: Finding, p: Process | undefined): ReportFinding {
+    const out = reportFinding(f);
+    if (!this.redact || !p) return out;
+    let e = out.evidence;
+    const img = f.imgIndex !== null ? p.images[f.imgIndex] : undefined;
+    if (img?.args) e = e.split(cmdline(img)).join(cmdline({ ...img, args: redactArgv(img.args) }));
+    this.kept ??= keptText(this.m);
+    const args = [...new Set(p.images.flatMap(i => i.args?.slice(1) ?? []))]
+      .filter(a => a.length >= MIN_REDACTED && a !== REDACTED && !this.kept!.includes(a))
+      .sort((a, b) => b.length - a.length);
+    for (const a of args) e = e.split(a).join(REDACTED);
+    return { ...out, evidence: e };
   }
 
   launchItems(ids: (string | null)[]): ReportLaunchItem[] {
@@ -148,7 +190,7 @@ class CaptureRows {
     return {
       n: 0, key: v.procKey, kind: 'user-marked', name: proc ? displayName(this.m, v.procKey) : v.snapshot.name,
       severity: null, verdict: userView(v), inFlaggedChain: false, reconBurst: false, hiddenAsRoutine: false, keptReason: null,
-      findings: (this.cap.analysis.contextOnly.get(v.procKey) ?? []).map(reportFinding),
+      findings: (this.cap.analysis.contextOnly.get(v.procKey) ?? []).map(f => this.finding(f, this.m.processes.get(v.procKey))),
       ...(proc ? { process: proc } : {}),
       launchItems: [],
     };
@@ -158,7 +200,7 @@ class CaptureRows {
     return {
       n: 0, key: q.key, kind: q.kind, name: itemName(this.cap, q), severity: q.severity, verdict: userView(verdict),
       inFlaggedChain: q.inFlaggedChain, reconBurst: q.reconBurst, hiddenAsRoutine: hidden, keptReason: kept,
-      findings: q.findings.map(reportFinding),
+      findings: q.findings.map(f => this.finding(f, q.procId !== null ? this.m.processes.get(q.procId) : undefined)),
       ...(q.procId !== null ? { process: this.process(q.procId) } : {}),
       launchItems: this.launchItems(q.kind === 'persistence' ? [q.persistenceId] : q.findings.map(f => f.persistenceId)),
     };
@@ -180,14 +222,15 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
     const stored = [...(byCapture.get(rec.fingerprint) ?? [])].filter(v => userView(v) !== null).sort((a, b) => cmp(a.procKey, b.procKey));
     if (!cap) {
       return { ...base, firstTime: null, lastTime: null, schemaVersions: [], loaded: false,
-        notLoaded: stored.map(({ procKey, status, note, snapshot }) => ({ procKey, status, note, snapshot })) };
+        notLoaded: stored.map(({ procKey, status, note, snapshot }) =>
+          ({ procKey, status, note, snapshot: opts.redactArgs ? { ...snapshot, args: redactArgv(snapshot.args) } : snapshot })) };
     }
     const m = cap.model;
     const verdicts = new Map((byCapture.get(rec.fingerprint) ?? []).map(v => [v.procKey, v]));
     const routine = applyRoutine(cap.analysis, m, input.routineKeys);
     const shown = new Set(routine.queue.map(q => q.key));
     const queued = new Set(cap.analysis.queue.map(verdictKey));
-    const build = new CaptureRows(cap);
+    const build = new CaptureRows(cap, opts.redactArgs);
     const contextOnly: Record<string, number> = {};
     for (const f of [...cap.analysis.contextOnly.values()].flat()) contextOnly[f.ruleId] = (contextOnly[f.ruleId] ?? 0) + 1;
     return {

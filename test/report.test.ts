@@ -8,7 +8,7 @@ import { keepReason, programKey } from '../src/session/routine';
 import { coverage } from '../src/ui/triage-model';
 import { readLines } from './fixtures';
 import { procByPid, queued } from './helpers';
-import { GEN, input, lab, verdict } from './report-fixture';
+import { GEN, input, lab, strings, verdict } from './report-fixture';
 
 const build = (over: Parameters<typeof input>[0] = {}, redactArgs = false): Report =>
   buildReport(input(over), { redactArgs, generated: GEN });
@@ -190,4 +190,65 @@ test('a verdict whose process is missing is reported from its snapshot', () => {
 test('user-marked rows are numbered after every queue row', () => {
   const r = build({ verdicts: [verdict('fp', 'nope', 'benign', '', { name: 'ghosty' })] });
   expect(r.captures[0]!.userMarked![0]!.n).toBe(a.queue.length + 1);
+});
+
+// --- Task 3: redaction --------------------------------------------------------------------------------------------
+
+const values = (r: Report, skip: string[] = []): string[] => strings(r).filter(s => !skip.includes(s.key)).map(s => s.value);
+const holds = (r: Report, needle: string, skip: string[] = []): boolean => values(r, skip).some(v => v.includes(needle));
+
+test('redaction hides the dscl password everywhere', () => {
+  expect(holds(build({}, true), 'labpass-not-real')).toBe(false);
+  expect(holds(build({}, false), 'labpass-not-real')).toBe(true);
+  const imgs = rowOf(build({}, true), 7016).process!.images;
+  expect(imgs[imgs.length - 1]!.args).toEqual(['dscl', '[redacted]', '[redacted]', '[redacted]', '[redacted]']);
+});
+
+test('redaction reaches captures that are not loaded', () => {
+  const over = { capRecs: [...input().capRecs, gone],
+    verdicts: [verdict('gone', 'p1', 'confirmed', '', { args: ['dscl', '.', '-authonly', 'labuser', 'labpass-not-real'] })] };
+  expect(holds(build(over, true), 'labpass-not-real')).toBe(false);
+  expect(holds(build(over, false), 'labpass-not-real')).toBe(true);
+});
+
+/** Every value the capture records in a field of its own, which redaction keeps; joined for substring search. */
+function keptText(model: CaptureModel): string {
+  const out: string[] = [];
+  for (const p of model.processes.values()) {
+    out.push(displayName(model, p.id));
+    for (const i of p.images) out.push(i.path ?? '', i.cwd ?? '', i.script ?? '');
+    for (const f of p.fileOps) out.push(f.path, f.toPath ?? '');
+  }
+  for (const i of model.persistence) out.push(i.plistPath ?? '', i.executablePath ?? '', i.appPath ?? '');
+  return out.join('\n');
+}
+
+test('no argument survives redaction outside kept fields', () => {
+  const kept = keptText(m);
+  const args = new Set<string>();
+  for (const p of m.processes.values()) for (const i of p.images) for (const x of i.args?.slice(1) ?? []) if (x.length >= 3 && !kept.includes(x)) args.add(x);
+  expect([...args].some(x => x.includes('display dialog'))).toBe(true);
+  const r = build({}, true);
+  const leaked = [...args].filter(x => holds(r, x, ['ruleId', 'title', 'explanation', 'note']));
+  expect(leaked).toEqual([]);
+});
+
+test('redacts a secret that the evidence limit cuts in half', () => {
+  const fresh = buildModel(readLines('synthetic-lab.jsonl'));
+  const p = procByPid(fresh, 7016);
+  const img = p.images.find(i => i.args?.[0] === 'dscl')!;
+  img.args = ['dscl', '.', '-authonly', 'labuser', 'x'.repeat(280) + 'SECRETSECRETSECRET'];
+  const r = build({ loaded: new Map([['fp', lab('fp', fresh)]]) }, true);
+  expect(holds(r, 'xxxxxxxxxx')).toBe(false);
+  expect(holds(r, 'SECRET')).toBe(false);
+});
+
+test('notes are not redacted', () => {
+  const r = build({ verdicts: [verdict('fp', procByPid(m, 7006).id, 'confirmed', 'pw is hunter22')] }, true);
+  expect(holds(r, 'pw is hunter22')).toBe(true);
+});
+
+test('the report says whether it is redacted', () => {
+  expect(build({}, true).redacted).toBe(true);
+  expect(build({}, false).redacted).toBe(false);
 });
