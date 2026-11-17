@@ -33,7 +33,7 @@ import { exportSession, saveFileName } from '../src/session/export';
 import type { DirHandle } from '../src/session/folder';
 import { fakeFolder } from './fake-folder';
 import { GUIDE_SECTIONS, STAGES } from '../src/ui/GuideScreen';
-import { RULES } from '../src/rules/rules';
+import { RULES, ruleLevels } from '../src/rules/rules';
 
 // The real runLoad starts an inline Worker, which jsdom lacks; delegate to loadCapture instead.
 vi.mock('../src/ingest/run', () => ({ runLoad: vi.fn() }));
@@ -2238,6 +2238,56 @@ test('opening the guide from a session and coming back keeps the session, its ca
 
 test('the guide places every rule in exactly one stage of an intrusion', () => {
   expect(STAGES.flatMap(s => s.rules).sort()).toEqual(RULES.map(r => r.id).sort());
+});
+
+const ruleRows = () => [...document.querySelectorAll('.grules li[id^="g-rule-"]')].map(li => li.id.slice('g-rule-'.length));
+
+test('the guide\'s rule list filters by the severities a rule can reach, and says how many it shows', async () => {
+  history.replaceState(null, '', '#guide/look-for');
+  render(<App />);
+  const sev = await screen.findByRole('group', { name: 'Severity' });
+  expect(screen.getByText(`All ${RULES.length} rules`)).toBeInTheDocument();
+  await user.click(within(sev).getByRole('checkbox', { name: 'High' }));
+  await user.click(within(sev).getByRole('checkbox', { name: 'Medium' }));
+  const low = RULES.filter(r => ruleLevels(r).includes('low')).map(r => r.id);
+  expect(ruleRows().sort()).toEqual([...low].sort());
+  expect(ruleRows()).toContain('odd-location-exec');            // usually med, but it can be low
+  expect(screen.getByText(`${low.length} of ${RULES.length} rules`)).toBeInTheDocument();
+  expect(within(document.getElementById('g-rule-odd-location-exec')!).getByLabelText('Severity: high, med or low')).toBeInTheDocument();
+  await user.click(within(sev).getByRole('checkbox', { name: 'Low' }));
+  expect(ruleRows()).toEqual([]);
+  expect(screen.getByText('No rule matches: tick a severity.')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'show all' }));
+  expect(ruleRows()).toHaveLength(RULES.length);
+});
+
+test('the guide\'s rule list sorts by severity, stage or name, with the stages named', async () => {
+  history.replaceState(null, '', '#guide/look-for');
+  render(<App />);
+  const order = await screen.findByRole('radiogroup', { name: 'Sort by' });
+  expect(within(order).getByRole('radio', { name: 'Severity' })).toBeChecked();
+  expect(ruleLevels(RULES.find(r => r.id === ruleRows()[0])!)[0]).toBe('high');
+  expect(ruleRows().at(-1)).toMatch(/^(adhoc|orphaned|recon)$/);    // always low
+  await user.click(within(order).getByRole('radio', { name: 'Stage' }));
+  expect(ruleRows()).toEqual(STAGES.flatMap(s => s.rules));
+  for (const s of STAGES) expect(screen.getByRole('heading', { level: 4, name: s.name })).toBeInTheDocument();
+  await user.click(within(order).getByRole('radio', { name: 'Name' }));
+  const titles = ruleRows().map(id => RULES.find(r => r.id === id)!.title);
+  expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
+  expect(screen.queryByRole('heading', { level: 4, name: STAGES[0]!.name })).not.toBeInTheDocument();
+});
+
+test('a link to a rule the filter hides brings the rule back before going to it', async () => {
+  history.replaceState(null, '', '#guide/look-for');
+  render(<App />);
+  const sev = await screen.findByRole('group', { name: 'Severity' });
+  await user.click(within(sev).getByRole('checkbox', { name: 'High' }));
+  await user.click(within(sev).getByRole('checkbox', { name: 'Medium' }));
+  expect(document.getElementById('g-rule-download')).toBeNull();      // always med
+  await user.click(screen.getAllByRole('link', { name: 'download' })[0]!);
+  expect(document.getElementById('g-rule-download')).not.toBeNull();
+  expect(screen.getByText(`All ${RULES.length} rules`)).toBeInTheDocument();
+  expect(location.hash).toBe('#guide/rule-download');
 });
 
 // "What happened nearby": other processes' events within a window of one event, inferred from timing alone.

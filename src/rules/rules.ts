@@ -11,11 +11,18 @@ import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath,
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
+/** The severities a rule's findings can have, highest first. */
+export const ruleLevels = (r: Pick<Rule, 'severity' | 'levels'>): Severity[] => r.levels ?? [r.severity];
 export interface RuleCtx { m: CaptureModel; p: Process; img: Image; imgIndex: number }
 /** What a match reports. `mitre`, `title` and `explanation` override the rule's own for this finding. */
 export interface MatchResult { evidence: string; severity?: Severity; mitre?: string[]; title?: string; explanation?: string }
 export interface Rule {
   id: string; title: string; severity: Severity; explanation: string;
+  /**
+   * Every severity a finding of this rule can have, highest first, for a rule whose matches set their own. Omitted when
+   * every finding has `severity`. The README's rules table states the same ranges, and a test keeps the two in step.
+   */
+  levels?: Severity[];
   /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. Empty only for a trait rule. */
   mitre: string[];
   /** A trait of the binary (unsigned, ad-hoc) rather than a technique: it cites no MITRE ID. */
@@ -724,7 +731,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'keychain-access', title: 'Keychain read with security', severity: 'high', gated: 'when-low',
+    id: 'keychain-access', title: 'Keychain read with security', severity: 'high', levels: ['high', 'med', 'low'], gated: 'when-low',
     explanation: 'Ran `security` against the macOS keychain. High when it prints an app\'s Safe Storage key (Chromium-based browsers and Electron apps) or a crypto wallet entry (find-generic-password / find-internet-password with -g or -w), or dumps every secret (dump-keychain -d); med when it prints any other saved password; low (context only) for attribute lookups, unlock-keychain, export and dump-keychain without -d.',
     mitre: ['T1555.001'], scope: 'image',
     match: ({ img }) => {
@@ -734,7 +741,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'security-setting-change', title: 'Security setting changed', severity: 'high',
+    id: 'security-setting-change', title: 'Security setting changed', severity: 'high', levels: ['high', 'med'],
     explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off, change a Gatekeeper rule, or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off in whole or part (csrutil disable, csrutil authenticated-root disable, csrutil enable --without), trust a root certificate or change the trust settings of a certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
     mitre: ['T1562.001', 'T1553.001', 'T1553.004', 'T1553', 'T1548', 'T1557'], scope: 'image',
     match: ({ img }) => settingChange(basename(img.path), rest(img), cmdline(img)),
@@ -747,7 +754,7 @@ export const RULES: Rule[] = [
       basename(img.path) === 'dscl' && rest(img).some(a => a === '-authonly' || a === 'authonly') ? { evidence: cmdline(img) } : null,
   },
   {
-    id: 'persistence-item', title: 'Launch item registered', severity: 'high',
+    id: 'persistence-item', title: 'Launch item registered', severity: 'high', levels: ['high', 'med'],
     explanation: PERSISTENCE_EXPLANATION,
     mitre: ['T1543.001', 'T1543.004', 'T1547.015'], scope: 'persistence',
     matchItem: (item, m) => {
@@ -911,7 +918,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'archive-staging', title: 'Files packed into an archive', severity: 'med',
+    id: 'archive-staging', title: 'Files packed into an archive', severity: 'med', levels: ['high', 'med'],
     explanation: 'Packed files into an archive. Stealers stage collected data this way before sending it out.',
     mitre: ['T1560.001'], scope: 'image',
     match: ({ img }) => {
@@ -928,7 +935,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med', gated: 'when-low',
+    id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med', levels: ['high', 'med', 'low'], gated: 'when-low',
     explanation: 'Ran a program or script from a temporary folder, Downloads, /Users/Shared, a mounted volume, a translocated app or a hidden folder, not from /Applications or a system folder.',
     mitre: ['T1204.002'], scope: 'image',
     match: ({ img }) => {
@@ -985,7 +992,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'uid-mismatch', title: 'Running with borrowed privileges', severity: 'high', gated: 'when-low',
+    id: 'uid-mismatch', title: 'Running with borrowed privileges', severity: 'high', levels: ['high', 'med', 'low'], gated: 'when-low',
     explanation: UID_MISMATCH_EXPLANATION,
     mitre: ['T1548.001'], scope: 'process',
     matchProcess: (p) => {
@@ -1039,7 +1046,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'credential-store-copy', title: 'Credential store copied', severity: 'med',
+    id: 'credential-store-copy', title: 'Credential store copied', severity: 'med', levels: ['high', 'med'],
     explanation: CREDENTIAL_COPY_EXPLANATION,
     mitre: ['T1555.001', 'T1555.003', 'T1005', 'T1074.001'], scope: 'process',
     matchProcess: (p) => {
@@ -1086,7 +1093,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'apple-masquerade', title: 'Pretends to be Apple', severity: 'high',
+    id: 'apple-masquerade', title: 'Pretends to be Apple', severity: 'high', levels: ['high', 'med'],
     explanation: APPLE_MASQUERADE_EXPLANATION,
     mitre: ['T1036.005', 'T1543.001', 'T1543.004'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
@@ -1184,7 +1191,7 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'dropped-then-executed', title: 'Ran a file written just before', severity: 'med',
+    id: 'dropped-then-executed', title: 'Ran a file written just before', severity: 'med', levels: ['high', 'med'],
     explanation: DROPPED_EXPLANATION,
     mitre: ['T1105', 'T1204.002', 'T1070.004', 'T1564.001'], scope: 'image',
     match: ({ m, img }) => {
