@@ -2260,10 +2260,12 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       expect(args[0]).toEqual(['echo', 'person1@example.invalid', h.get('wiki.acme.corp')]);
       expect(created[0]).toBe('/Library/Application Support/Vendor/person1@example.invalid/db');
       expect(created[1]).toBe(`/Library/Preferences/${h.get('wiki.acme.corp')}.plist`);
-      const mailOut = `/Users/user1/Library/Mail/${n.get('V10')}/${n.get('IMAP-jane.doe@acme.com')}/${n.get('x.emlx')}`;
+      // The host step reads IMAP-jane.doe@acme.com as an address (AT_RE), in the field and in the argument alike.
+      const mailOut = `/Users/user1/Library/Mail/${n.get('V10')}/${keyed(r.key, 'email').get('IMAP-jane.doe@acme.com')}/${n.get('x.emlx')}`;
       expect(created[2]).toBe(mailOut);
       expect(args[1]).toEqual(['ls', mailOut]);
-      const backup = `/Users/user1/${n.get('backup-10.0.0.5')}/${n.get('x')}`;
+      // The address keeps its host placeholder inside the name, and what is around it gets a name placeholder.
+      const backup = `/Users/user1/${n.get('backup')}-${h.get('10.0.0.5')}/${n.get('x')}`;
       expect(created[3]).toBe(backup);
       expect(args[2]).toEqual(['ls', backup]);
       expect(args[3]![2]).toBe(`cat /Library/Preferences/${h.get('wiki.acme.corp')}.plist ${backup}`);
@@ -2288,5 +2290,32 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(r.summary['redacted']).toBe('1');
     expect(r.key).not.toMatch(/bob|w0rd|"p"/);
     expect(r.out).not.toMatch(/bob|w0rd/);
+  });
+
+  // Round 2, N1: a host or email in a relative word, after a / or before one, is the host step's: nothing else would
+  // clean it. The same text in a field, an argument and shell code gives the same placeholders.
+  test('internal hosts and emails in relative words are cleaned, in arguments and in shell code', () => {
+    const input = [
+      run(1230, '/usr/local/bin/docker', ['docker', 'pull', 'registry.acme.corp/team/img:latest'], '/', 1),
+      run(1231, '/bin/sh', ['sh', '-c', 'docker pull registry.acme.corp/team/img:latest; echo wiki.acme.corp/x'], '/', 2),
+      run(1232, '/bin/echo', ['echo', 'x/jane.doe@acme.com'], '/', 3),
+      run(1233, '/bin/sh', ['sh', '-c', 'echo x/jane.doe@acme.com'], '/', 4),
+      run(1234, '/usr/local/bin/docker', ['docker', 'pull', 'registry.acme.corp/team/img:latest'], '/Users/jdoe/Documents', 5),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-D', 'acme.com'] : ['clean', '-o', '-', '-D', 'acme.com'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const args = events(r.out).map(e => e.event.exec.args as string[]);
+      const h = keyed(r.key, 'host');
+      const reg = `${h.get('registry.acme.corp')}/team/img:latest`;
+      expect(args[0]).toEqual(['docker', 'pull', reg]);
+      expect(args[1]![2]).toBe(`docker pull ${reg}; echo ${h.get('wiki.acme.corp')}/x`);
+      expect(args[2]).toEqual(['echo', 'x/person1@example.invalid']);
+      expect(args[3]![2]).toBe('echo x/person1@example.invalid');
+      expect(args[4]).toEqual(['docker', 'pull', reg]);
+      for (const k of parseKey(r.key)) expect(k.real, k.placeholder).not.toMatch(/(?:name|host|data|user)\d+|internal\.invalid|example\.invalid/);
+      expect(r.out).not.toMatch(/acme|jane/);
+      sameFindings(input, r.out);
+    }
   });
 });
