@@ -3353,6 +3353,54 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     complete(fs.readFileSync(path.join(dir, 'out'), 'utf8'), fs.readFileSync(path.join(dir, 'key'), 'utf8'));
   }, 25000);
 
+  // The root side waits for the recorder to end on a pipe the recorder holds (fd 9), with one bounded `read -t` per
+  // signal instead of polling with /bin/sleep: each poll was an exec and an exit at the end of every capture. A
+  // recorder that closes that pipe early must not be taken for one that ended: it still gets 5 s after SIGINT.
+  /** Seconds stop_capture takes for the stand-in recorder COMMAND, and how many /bin/sleep the root side ran. */
+  const stopTime = async (command: string): Promise<{ took: number; sleeps: number; dir: string }> => {
+    const dir = tmpDir();
+    const log = path.join(dir, 'execs');
+    const res = await detached(['-c', [
+      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `SUDO_CMD=''`,
+      `RECORDER=(/bin/bash -c "${command.replace(/["$`]/g, '\\$&')}")`,
+      // Each /bin/sleep the wrapper runs, counted: the wrapper is shell code, so its path can be swapped here.
+      `STOP_WRAPPER=\${STOP_WRAPPER//\\/bin\\/sleep 0.5/'{ echo s >> "${log}"; /bin/sleep 0.5; }'}`,
+      'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
+      `write_config "${dir}/cfg"`,
+      `printf '%s\\n' "$KEY_HEADER" > "${dir}/key"`,
+      `start_recording "${dir}/cfg" "${dir}/key" "${dir}/stats" "${dir}/out"`,
+      '/bin/sleep 1',
+      't0=$(/usr/bin/perl -MTime::HiRes=time -e "print time")',
+      'stop_capture',
+      '/usr/bin/perl -MTime::HiRes=time -e "printf qq(%.2f\\n), time - $t0"',
+      'wait "$CLEANER_PID"',
+      'cleanup',
+    ].join('\n')]);
+    for (let i = 0; i < 20 && inGroup(res.pid) > 0; i++) await sleep(100);
+    expect(inGroup(res.pid)).toBe(0);
+    complete(fs.readFileSync(path.join(dir, 'out'), 'utf8'), fs.readFileSync(path.join(dir, 'key'), 'utf8'));
+    return { took: Number(res.stdout.trim().split('\n').at(-1)), sleeps: fs.existsSync(log) ? lines(fs.readFileSync(log, 'utf8')).length : 0, dir };
+  };
+  test.runIf(darwin)('the root side waits for the recorder without polling, and gives one that closes its pipe the full 5 s', async () => {
+    const dir = tmpDir();
+    const loop = `trap '' INT; while :; do cat '${lineFile(dir)}'; /bin/sleep 0.05; done`;
+    const keeps = await stopTime(loop);
+    expect(keeps.took).toBeGreaterThan(4);
+    expect(keeps.took).toBeLessThan(8);
+    expect(keeps.sleeps, 'root-side sleeps for a recorder that ignores SIGINT').toBeLessThanOrEqual(2);
+    const closes = await stopTime(`exec 9>&-; ${loop}`);
+    expect(closes.took, 'a recorder that closed the pipe still gets 5 s before SIGTERM').toBeGreaterThan(4);
+    expect(closes.took).toBeLessThan(8);
+    // A recorder that honours SIGINT (perl can catch it, a shell started ignoring it cannot): at most one poll, for a
+    // recorder that has ended but is not reaped yet.
+    if (fs.existsSync('/usr/bin/perl')) {
+      const honours = await stopTime(`exec /usr/bin/perl -e '$SIG{INT} = sub { exit 0 }; $| = 1; while (1) { open(my $f, "<", "${lineFile(dir)}") or die; print while <$f>; close $f; select(undef, undef, undef, 0.05) }'`);
+      expect(honours.took).toBeLessThan(2);
+      expect(honours.sleeps, 'root-side sleeps for a recorder that honours SIGINT').toBeLessThanOrEqual(1);
+    }
+  }, 60000);
+
   // The stop channel: when the script dies, however it dies, the recorder is stopped (as root, with no second sudo).
   test.runIf(darwin)('killing the script stops the recorder', async () => {
     const dir = tmpDir();

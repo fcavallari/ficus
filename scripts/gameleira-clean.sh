@@ -265,28 +265,39 @@ warn_if_other_mac() {
 }
 
 # ---- recording ----------------------------------------------------------------------------------------------
-# How the recorder is stopped without a second sudo: one `sudo -n /bin/sh -c "$STOP_WRAPPER" sh RECORDER... < CTL` runs
-# this as root. Its standard input is the stop channel CTL, a FIFO this script opens (and holds open, so the open does
-# not block) before sudo starts: root opens no path of the user's, and a script killed at any moment leaves nothing
-# waiting on an open. It starts a watcher with the channel (as fd 3: a `&` job's standard input is /dev/null), and
-# becomes the recorder (exec, so the recorder's pid is $$), with standard input /dev/null. The watcher waits for a line
+# How the recorder is stopped without a second sudo: one `sudo -n /bin/bash -c "$STOP_WRAPPER" bash RECORDER... < CTL`
+# runs this as root. Its standard input is the stop channel CTL, a FIFO this script opens (and holds open, so the open
+# does not block) before sudo starts: root opens no path of the user's, and a script killed at any moment leaves
+# nothing waiting on an open. It starts a watcher, and becomes the recorder (exec, so the recorder's pid is $$), with
+# standard input /dev/null. The watcher has the channel as fd 3, and as standard input a pipe whose only writer is the
+# recorder (fd 9, a process substitution): end-of-file on it means the recorder has ended. The watcher waits for a line
 # or end-of-file on the channel: a line when this script stops the recording, end-of-file when this script is gone
 # however it ended (its end of the FIFO closes with it). Then it sends SIGINT, so eslogger flushes, then SIGTERM, then
-# SIGKILL, 5 s apart, so a root eslogger is never left recording. SIGHUP is ignored, by eslogger too: a closed
-# terminal stops the recording through this script or the channel, not by killing eslogger mid-write. So is SIGQUIT
-# (Ctrl-\, which reaches the whole foreground group): this script stops the recording on it. The watcher's sleeps run
-# only while it stops.
+# SIGKILL, 5 s apart, so a root eslogger is never left recording. Between two signals it waits once, with `read -t 5`
+# on the pipe, instead of polling with /bin/sleep (each poll is an exec and an exit in the capture's tail); if that
+# wait ends early with the recorder still there (it closed fd 9, or has not been reaped yet), it polls as before for
+# the rest of the 5 s, so the recorder never gets less time. SIGHUP is ignored, by eslogger too: a closed terminal
+# stops the recording through this script or the channel, not by killing eslogger mid-write. So is SIGQUIT (Ctrl-\,
+# which reaches the whole foreground group): this script stops the recording on it. bash, not sh: read -t and process
+# substitution (/bin/bash is bash 3.2 on every macOS).
 STOP_WRAPPER='trap "" HUP QUIT
 me=$$
 exec 3<&0
-(
+exec 9> >(
+  exec >/dev/null 2>&1
   read -r line <&3
   for sig in INT TERM KILL; do
     kill -s "$sig" "$me" 2>/dev/null || exit 0
-    i=0
-    while [ "$i" -lt 10 ]; do kill -0 "$me" 2>/dev/null || exit 0; /bin/sleep 0.5; i=$((i + 1)); done
+    t=$SECONDS
+    read -r -t 5 _
+    i=$(( (SECONDS - t) * 2 ))
+    while kill -0 "$me" 2>/dev/null; do
+      [ "$i" -lt 10 ] || continue 2
+      /bin/sleep 0.5; i=$((i + 1))
+    done
+    exit 0
   done
-) </dev/null >/dev/null 2>&1 &
+)
 exec 3<&-
 exec "$@" </dev/null'
 
@@ -313,9 +324,9 @@ start_recording() {
   CLEANER_PID=$!
   # The channel is opened here, as the user, for reading: fd 4 holds it for writing, so the open does not block.
   if [ -n "$SUDO_CMD" ]; then
-    "$SUDO_CMD" -n /bin/sh -c "$STOP_WRAPPER" sh "${RECORDER[@]}" < "$ctl" > "$fifo" 4>&- 5<&- 6<&- &
+    "$SUDO_CMD" -n /bin/bash -c "$STOP_WRAPPER" bash "${RECORDER[@]}" < "$ctl" > "$fifo" 4>&- 5<&- 6<&- &
   else
-    /bin/sh -c "$STOP_WRAPPER" sh "${RECORDER[@]}" < "$ctl" > "$fifo" 4>&- 5<&- 6<&- &
+    /bin/bash -c "$STOP_WRAPPER" bash "${RECORDER[@]}" < "$ctl" > "$fifo" 4>&- 5<&- 6<&- &
   fi
   ES_PID=$!
 }
