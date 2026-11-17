@@ -2142,4 +2142,23 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(r.out).not.toMatch(/kowalski|firma|jane|acme|10\.0\.0|intranet/);
     sameFindings(input, r.out);
   });
+
+  test('a URL argument behind a wrapper with option values is read like the child that runs it', () => {
+    const input = [
+      run(1170, '/bin/sh', ['sh', '-c', 'sudo -u root wget intranet/a.sh; env -u FOO -C /tmp curl evil.sh/b; nice -n 5 wget intranet/c; timeout -s KILL 30 curl evil.sh/d; xargs -n 1 -P 2 curl evil.sh/e'], docs, 1),
+      run(1171, '/usr/local/bin/wget', ['wget', 'intranet/a.sh'], docs, 2),
+      run(1172, '/bin/sh', ['sh', '-c', 'sudo -u deploy ssh admin@buildbox uptime'], '/', 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const args = events(r.out).map(e => e.event.exec.args as string[]);
+    const h = keyed(r.key, 'host');
+    const n = keyed(r.key, 'name');
+    expect(args[0]![2]).toBe(`sudo -u root wget ${h.get('intranet')}/${n.get('a.sh')}; env -u FOO -C /tmp curl evil.sh/${n.get('b')}; `
+      + `nice -n 5 wget ${h.get('intranet')}/${n.get('c')}; timeout -s KILL 30 curl evil.sh/${n.get('d')}; xargs -n 1 -P 2 curl evil.sh/${n.get('e')}`);
+    expect(args[1]).toEqual(['wget', `${h.get('intranet')}/${n.get('a.sh')}`]);
+    expect(args[2]![2]).toBe(`sudo -u deploy ssh admin@${h.get('buildbox')} uptime`);
+    expect(n.has('intranet')).toBe(false);
+    sameFindings(input, r.out);
+  });
 });

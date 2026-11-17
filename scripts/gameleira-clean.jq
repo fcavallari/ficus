@@ -998,13 +998,31 @@ def HOST_PROGRAMS: {
   "traceroute6": true, "dig": true, "host": true, "nslookup": true, "whois": true, "ftp": true, "sftp": true, "mosh": true
 };
 # Shell code whose command, at the end of $before, is one of these programs (behind sudo, env, nohup … if any).
+# Programs that run the command after them, with their options that take a value (short letters, long names):
+# sudo -u root wget …, env -u FOO curl …, nice -n 5 …, timeout -s KILL 30 … (timeout also takes a duration first).
+def WRAPPER_OPTIONS: {
+  "sudo": {short: "ugCDhprtUT", long: {"--user": true, "--group": true, "--close-from": true, "--chdir": true, "--host": true,
+                                      "--prompt": true, "--role": true, "--type": true, "--other-user": true, "--command-timeout": true}},
+  "doas": {short: "uC", long: {}},
+  "env": {short: "uCSP", long: {"--unset": true, "--chdir": true, "--split-string": true}},
+  "nohup": {short: "", long: {}}, "command": {short: "", long: {}}, "time": {short: "", long: {}},
+  "exec": {short: "a", long: {}},
+  "nice": {short: "n", long: {"--adjustment": true}},
+  "timeout": {short: "sk", long: {"--signal": true, "--kill-after": true}},
+  "xargs": {short: "EIJLnPRSs", long: {}}
+};
+# True when $o, an option of the wrapper $wrap, takes the next word as its value.
+def wrapper_value_option($wrap; $o):
+  WRAPPER_OPTIONS[$wrap] as $spec
+  | $spec.long[$o] == true or (($o | test("^-[A-Za-z]+$")) and ($spec.short | contains($o[-1:])));
+# The wrappers as a regex, each with options that may take a value.
+def WRAPPER_RE: "(?:(?:" + (WRAPPER_OPTIONS | keys | join("|")) + ")(?:\\s+-\\S+(?:\\s+[^\\s;&|()`-]\\S*)?)*\\s+)*";
 def COMMAND_BEFORE($progs):
-  "(?:^|[;&|(`\\n\"'])\\s*(?:(?:sudo|env|nohup|command|exec|time)\\s+(?:-\\S+\\s+)*)*(?:[^\\s;&|()`\"']*/)?(?:" + $progs
-  + ")\\s[^;&|()`\\n]*$";
-def LOGIN_PROGRAMS: "ssh|scp|sftp|rsync|mosh|autossh|ssh-copy-id|sshpass";
+  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?(?:" + $progs + ")\\s[^;&|()`\\n]*$";
+def LOGIN_PROGRAMS: SSH_FAMILY | keys | join("|");
 # Shell code that ends in ssh's host position: ssh (mosh …) and its options, each with a value or not.
 def SSH_HOST_BEFORE:
-  "(?:^|[;&|(`\\n\"'])\\s*(?:(?:sudo|env|nohup|command|exec|time)\\s+(?:-\\S+\\s+)*)*(?:[^\\s;&|()`\"']*/)?"
+  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?"
   + "(?:ssh|mosh|autossh|ssh-copy-id)(?:\\s+-[A-Za-z]+(?:\\s+[^\\s-]\\S*)?)*\\s+$";
 
 # curl's long options that take the next argument (CURL_SPEC in src/rules/args.ts).
@@ -1082,7 +1100,6 @@ def URL_RE: "(?<![A-Za-z0-9+.-])(?![Ff][Ii][Ll][Ee]:)[A-Za-z][A-Za-z0-9+.-]*://[
 def AT_RE: "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*)";
 # Shell code as words (a quoted string is part of its word) and separators, for code_urls.
 def CODE_WORDS: "(?:\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'|\\\\.|[^\\s\"'`;|&<>()])+|[;|&()`\\n]+|[<>]+";
-def WRAPPERS: {"sudo": true, "env": true, "nohup": true, "command": true, "exec": true, "time": true, "nice": true};
 # A word without its quotes, when it is all one quoted string or has no quotes or backslashes; else null.
 def plain_word:
   if test("^\"[^\"\\\\]*\"$") or test("^'[^']*'$") then .[1:-1]
@@ -1095,12 +1112,17 @@ def plain_word:
 # Output: {v, s, prot: the cleaned URLs, by token number from $n0}.
 def code_urls_from($str; $n0):
   ($str | contains("\u0001") | not) as $tok
-  | reduce ($str | match(CODE_WORDS; "g")) as $m ({s: ., out: "", at: 0, cmd: null, prev: "", prot: []};
+  | reduce ($str | match(CODE_WORDS; "g")) as $m ({s: ., out: "", at: 0, cmd: null, prev: "", prot: [], wrap: null, skipv: false, dur: false};
     $m.string as $w
-    | if ($w | test("^[;|&()`\n]")) then .cmd = null | .prev = ""
+    | if ($w | test("^[;|&()`\n]")) then .cmd = null | .prev = "" | .wrap = null | .skipv = false | .dur = false
       elif ($w | test("^[<>]")) then .prev = $w
       elif .cmd == null then
-        if ($w | test("^[A-Za-z_][A-Za-z0-9_]*=")) or WRAPPERS[$w] == true or ($w | startswith("-")) then .
+        # Before the command: assignments, wrappers, their options and option values, timeout's duration.
+        if .skipv then .skipv = false
+        elif ($w | test("^[A-Za-z_][A-Za-z0-9_]*=")) then .
+        elif WRAPPER_OPTIONS[$w] != null then .wrap = $w | .dur = ($w == "timeout")
+        elif ($w | startswith("-")) then .skipv = (.wrap != null and wrapper_value_option(.wrap; $w))
+        elif .dur then .dur = false
         else .cmd = ($w | plain_word // "" | split("/") | last) | .prev = "" end
       else
         ($w | plain_word) as $u
@@ -1127,7 +1149,7 @@ def unrest_urls($prot): if $prot == [] then . else gsub("\u0001(?<i>[0-9]+)\u000
 # email, or as a login, whose host is cleaned and user left to step 7; then internal host names and addresses anywhere
 # but inside a path (after a /), except /dev/tcp/ and /dev/udp/. x@y is a login in an argument of an ssh-family
 # program ($login "all"), in user@host:path form in one of git ($login "colon"), and in shell code as ssh's host or in
-# user@host:path form after an ssh-family or git command (LOGIN_BEFORE); anywhere else it is an email when its domain
+# user@host:path form after an ssh-family or git command (COMMAND_BEFORE, SSH_HOST_BEFORE); anywhere else it is an email when its domain
 # ends in a top-level domain. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
