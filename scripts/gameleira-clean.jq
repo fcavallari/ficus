@@ -1353,20 +1353,23 @@ def pre_test($str; $ent):
 # Names that look secret, in NAME=value arguments, assignments, environment entries and headers.
 def SECRET_NAME: "(?i)password|passwd|token|secret|api_?key|auth|credential";
 def SECRET_HEADER: "(?i)auth|cookie|password|passwd|token|secret|api[-_]?key|credential";
-# Long options whose value is a secret, for any program: --password, --http-password, --access-token, --api-key …
-# (not --password-stdin or --token-file).
-def SECRET_LONG: "^--(?:[A-Za-z0-9]+[-_])*(?:password|passwd|token|secret|api[-_]?key|apikey)$";
+# Options whose value is a secret, for any program, with one dash or two, the secret word ending the name in any case:
+# --password, --http-password, --access-token, --api-key, -password, -adminPassword, -newPassword, -apiKey … (not
+# --password-stdin, --token-file or -passwordHint). Matched with "i".
+def SECRET_LONG: "^--?[A-Za-z0-9_-]*(?:password|passwd|token|secret|api[-_]?key)$";
 # A cheap test before the generic options are looked at: one regex over the whole command.
 def SECRET_WORDS: "(?i)pass|token|secret|api.?key|auth|credential";
 def secret_assignment: test("^[A-Za-z_][A-Za-z0-9_]*=.") and (.[:index("=")] | test(SECRET_NAME));
 
 # An edit: {i: the index in the command, v: its new value}.
-# Generic credentials in $a from index $from: --secret=value, --secret value (not when $nonext: mysql's --password
-# alone asks for it) and NAME=value with a secret-looking name.
-def generic_edits($a; $from; $nonext):
+# Generic credentials in $a from index $from: --secret=value, --secret value, -secret value (not when $nonext: mysql's
+# --password alone asks for it; never a value that starts with -, as in -password -, which reads it from standard
+# input) and NAME=value with a secret-looking name. $single: the one-dash form counts too (not for dscl, whose
+# -passwd names the account first: dscl_edits).
+def generic_edits($a; $from; $nonext; $single):
   if ([$a[$from:][] | strings] | join(" ") | test(SECRET_WORDS) | not) then []
   else [ range($from; $a | length) as $i | $a[$i] as $x | select($x | type == "string" and (contains("\u0002") | not))
-         | if ($x | startswith("--")) then
+         | if ($x | startswith("--")) or ($single and ($x | test("^-[A-Za-z]"))) then
              ($x | index("=")) as $q
              | if $q != null then (if $q < ($x | length) - 1 and ($x[:$q] | test(SECRET_LONG; "i")) then {i: $i, v: ($x[:$q + 1] + REDACTED)} else empty end)
                elif ($nonext | not) and ($x | test(SECRET_LONG; "i")) and ($a[$i + 1] | type == "string" and (startswith("-") | not)) then {i: ($i + 1), v: REDACTED}
@@ -1463,7 +1466,7 @@ def option_edits($a; $spec):
 # The recognised credentials in a command ($a[0] is its program, $prog that program's name) redacted, in place: the
 # Credentials list of the spec. Input: the state. Output: {v: the command, s}.
 def redact_args($a; $prog):
-  ( generic_edits($a; 1; MYSQL_FAMILY[$prog] == true)
+  ( generic_edits($a; 1; MYSQL_FAMILY[$prog] == true; $prog != "dscl")
     + (if $prog == "dscl" then dscl_edits($a) elif $prog == "security" then security_edits($a) elif $prog == "curl" then curl_edits($a)
        else SECRET_OPTIONS($prog) as $o | if $o == null then [] else option_edits($a; $o) end end) ) as $ed
   | if $ed == [] then {v: $a, s: .}
@@ -1514,7 +1517,7 @@ def command_at($w; $from):
 # Words before a command (assignments, a wrapper and its options) or with no command: only the generic credentials.
 # Input: the state. Output: {v, s}.
 def generic_secrets($x):
-  generic_edits($x; 0; false) as $ed
+  generic_edits($x; 0; false; true) as $ed
   | if $ed == [] then {v: $x, s: .}
     else .stats.redacted += ($ed | map(.i) | unique | length) | {v: (reduce $ed[] as $d ($x; .[$d.i] = $d.v)), s: .} end;
 def command_secrets($w):
@@ -1560,7 +1563,10 @@ def argv_secrets($args):
 # way. A cheap test first: nothing can match without one of these words.
 def code_maybe:
   contains("=") or contains("--") or contains("assword") or contains("curl") or contains("dscl") or contains("security") or contains("mysql")
-  or contains("mariadb") or contains("sshpass") or contains("zip") or contains("7z") or contains("openssl");
+  or contains("mariadb") or contains("sshpass") or contains("zip") or contains("7z") or contains("openssl")
+  # A one-dash secret option (-token, -apiKey, -passwd): SECRET_LONG.
+  or contains("oken") or contains("OKEN") or contains("ecret") or contains("ECRET") or contains("Key") or contains("key")
+  or contains("KEY") or contains("asswd") or contains("ASSW");
 # A word of shell code as the shell reads it: '…' as it is, "…" with \" \\ \$ \` undone, \x outside quotes as x.
 def SHELL_PIECE: "'([^']*)'|\"((?:\\\\[\\s\\S]|[^\"\\\\])*)\"|\\\\([\\s\\S])|([^'\"\\\\]+)|([\\s\\S])";
 def shell_unquote:
