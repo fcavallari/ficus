@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
 import { RECON_TOOLS, SHELLS } from '../src/rules/rules';
 import { esBtm, esClone, esCreate, esExec, esExit, esFork, esLink, esProc } from './clean-fixture';
-import { fixture } from './fixtures';
+import { fixture, hasRealCaptures, readLines, REAL_FIXTURES, type RealFixtureName } from './fixtures';
 import { findingSignature } from './helpers';
 
 // scripts/gameleira-clean.sh pseudonymizes a capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
@@ -3285,4 +3285,70 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     expect(argv.length).toBeGreaterThan(0);
     for (const [what, v] of values.filter(([, x]) => x !== '')) expect(argv.includes(v), `${what} in jq's arguments`).toBe(false);
   });
+});
+
+// The real captures, run through the cleaner for real. They are not in the repository (see fixtures.ts), so this block
+// skips without them. Nothing here may print a real value: a failing assertion gives a count and a kind, never the
+// value, the key row or the cleaned output.
+describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
+  const cleaned = new Map<RealFixtureName, CleanRun>();
+  /** One run per capture, shared by the tests below: the largest takes several seconds. */
+  const cleanedCapture = (name: RealFixtureName): CleanRun => {
+    let r = cleaned.get(name);
+    if (!r) {
+      r = runClean(['clean', '-i', fixture(name)]);
+      expect(r.status, `${name}: exit status\n${failureMessage(r.stderr)}`).toBe(0);
+      cleaned.set(name, r);
+    }
+    return r;
+  };
+
+  /** The words the program never takes for names outside a path (PROTECTED and KEEP in the jq program). */
+  const vocabulary = (): Set<string> => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'gameleira-clean.jq'), 'utf8');
+    const words = new Set<string>();
+    for (const def of ['PROTECTED', 'KEEP']) {
+      const body = new RegExp(`def ${def}: \\{([\\s\\S]*?)\\n\\};`).exec(src)?.[1] ?? '';
+      for (const m of body.matchAll(/"([^"]+)": true/g)) words.add(m[1]!);
+    }
+    expect(words.size, 'words the program keeps').toBeGreaterThan(100);
+    return words;
+  };
+
+  for (const name of REAL_FIXTURES) {
+    test(`${name}: the rule engine says the same of the cleaned capture, and no line is lost`, () => {
+      const r = cleanedCapture(name);
+      expect(r.summary['unreadable lines dropped'], `${name}: unreadable lines dropped`).toBe('0');
+      const rawLines = readLines(name);
+      expect(r.summary['events in'], `${name}: events in`).toBe(String(rawLines.length));
+      expect(r.summary['events out'], `${name}: events out`).toBe(String(rawLines.length));
+      const raw = findingSignature(buildModel(rawLines));
+      const out = findingSignature(buildModel(lines(r.out)));
+      expect(raw.size, `${name}: processes with findings`).toBeGreaterThan(0);
+      // A process id and the rules it matched, never a real value, so the differing ids may be named.
+      const differing = [...new Set([...raw.keys(), ...out.keys()])]
+        .filter(id => JSON.stringify(raw.get(id) ?? null) !== JSON.stringify(out.get(id) ?? null));
+      expect(differing.slice(0, 10), `${name}: processes whose findings differ (${differing.length})`).toEqual([]);
+    }, 120_000);
+
+    test(`${name}: no account, host, email, volume or data value from the key is left in the cleaned capture`, () => {
+      const r = cleanedCapture(name);
+      const rows = parseKey(r.key);
+      const text = r.out.toLowerCase();
+      const words = vocabulary();
+      const leaks: Record<string, number> = { user: 0, realname: 0, host: 0, email: 0, volume: 0, data: 0 };
+      const checked: Record<string, number> = { user: 0, realname: 0, host: 0, email: 0, volume: 0, data: 0 };
+      for (const row of rows) {
+        if (!(row.kind in leaks) || row.real.length < 4) continue;
+        checked[row.kind]!++;
+        // As the output holds it: a JSON string, lower-cased (names and hosts are replaced whatever their case).
+        const v = JSON.stringify(row.real).slice(1, -1).toLowerCase();
+        // The one exemption: a volume named like a word the program keeps outside a path (a disk image called Install)
+        // can stand in other text by design. The volume's own place, /Volumes/<name>, is still checked for it.
+        const exempt = row.kind === 'volume' && words.has(row.real.toLowerCase());
+        if (text.includes(`/volumes/${v}`) || (!exempt && text.includes(v))) leaks[row.kind]!++;
+      }
+      for (const kind of Object.keys(leaks)) expect(leaks[kind], `${name}: ${kind} values left in the cleaned capture (of ${checked[kind]} checked)`).toBe(0);
+    }, 120_000);
+  }
 });
