@@ -1,5 +1,6 @@
 import type { Severity } from '../rules/rules';
 import type { Status } from '../session/store';
+import { fmtArgs } from '../ui/triage-model';
 import type { ProcRef, Report, ReportCapture, ReportImage, ReportRow, Signature } from './report';
 
 /**
@@ -31,8 +32,6 @@ const SIG_WORDS: Record<Signature, string> = {
 const USER_SECTION = 'Marked by the user, not flagged by the rules';
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
-/** A command line with each argument that has spaces (or is empty) quoted, as the app shows it. */
-const argsLine = (args: string[]): string => args.map(a => (a === '' || /\s/.test(a) ? `"${a}"` : a)).join(' ');
 /** "zsh (pid 6130)"; a process known only by its pid is already named by it. */
 const who = (r: ProcRef): string => (r.pid >= 0 && !r.name.startsWith(`pid ${r.pid}`) ? `${text(r.name)} (pid ${r.pid})` : text(r.name));
 const signature = (i: ReportImage): string =>
@@ -64,7 +63,7 @@ function row(r: ReportRow, fileName: string): string[] {
     if (exec?.args) {
       const label = exec === img ? '**Command line:**'
         : `**Command line** (of ${exec.path ? code(exec.path) : 'an earlier program'}, the last exec captured):`;
-      out.push(`- ${label} ${code(argsLine(exec.args))}`);
+      out.push(`- ${label} ${code(fmtArgs(exec.args))}`);
     }
     if (img) out.push(`- **Program:** ${img.path ? code(img.path) : 'unknown'}, ${signature(img)}`);
     const others = p.images.filter(i => i !== img && !i.inherited && i.path !== null && i.path !== img?.path);
@@ -73,7 +72,7 @@ function row(r: ReportRow, fileName: string): string[] {
     if (exec?.script) out.push(`- **Script:** ${code(exec.script)}`);
     out.push(`- **Started by:** ${[...p.ancestry].reverse().map(who).concat('this').join(' → ')}`);
     if (p.responsible) out.push(`- **Responsible:** ${who(p.responsible)}`);
-    out.push(`- **Ran:** ${p.startTime ?? 'start not captured'} to ${p.exitTime ?? 'no exit captured'}`);
+    out.push(`- **Ran:** ${p.startTime !== null ? text(p.startTime) : 'start not captured'} to ${p.exitTime !== null ? text(p.exitTime) : 'no exit captured'}`);
   }
   for (const i of r.launchItems) {
     const parts = [text(i.typeName)];
@@ -81,7 +80,7 @@ function row(r: ReportRow, fileName: string): string[] {
     if (i.executablePath) parts.push(`runs ${code(i.executablePath)}`);
     if (i.appPath && i.appPath !== i.plistPath) parts.push(`app ${code(i.appPath)}`);
     parts.push(i.registeredBy ? `registered by ${who(i.registeredBy)} (${i.registeredBy.via})` : 'registered by no captured process');
-    out.push(`- **Launch item:** ${parts.join(', ')}, at ${i.time}`);
+    out.push(`- **Launch item:** ${parts.join(', ')}, at ${text(i.time)}`);
   }
   if (r.findings.length > 0) {
     out.push('', r.kind === 'user-marked' ? '**Context-only findings**' : '**Findings**', '');
@@ -103,7 +102,7 @@ function row(r: ReportRow, fileName: string): string[] {
 
 function captureLines(c: ReportCapture): string[] {
   if (!c.loaded) return [`- ${code(c.fileName)}: not loaded when the report was made.`];
-  const span = c.firstTime ? `, ${c.firstTime} to ${c.lastTime ?? '?'}` : '';
+  const span = c.firstTime ? `, ${text(c.firstTime)} to ${c.lastTime ? text(c.lastTime) : '?'}` : '';
   const schema = c.schemaVersions.length > 0 ? `, eslogger schema ${c.schemaVersions.map(v => `v${v}`).join(', ')}` : '';
   const out = [`- ${code(c.fileName)}: ${plural(c.events, 'event')}, ${plural(c.processes, 'process', 'processes')}${span}${schema}.`];
   const notes = [...(c.coverage ?? [])].sort((x, y) => (x.level === y.level ? 0 : x.level === 'warn' ? -1 : 1));
@@ -117,7 +116,7 @@ export function reportMarkdown(r: Report): string {
   const s = r.summary;
   const loaded = r.captures.filter(c => c.loaded);
   const out = [`# Ficus report: ${text(r.session.name)}`, ''];
-  out.push(`Generated ${r.generated}. ${plural(s.rows, 'flagged row')} in ${plural(loaded.length, 'loaded capture')}: ${s.bySeverity.high} high, ${s.bySeverity.med} medium, ${s.bySeverity.low} low.`);
+  out.push(`Generated ${text(r.generated)}. ${plural(s.rows, 'flagged row')} in ${plural(loaded.length, 'loaded capture')}: ${s.bySeverity.high} high, ${s.bySeverity.med} medium, ${s.bySeverity.low} low.`);
   out.push(`User's verdicts: ${s.byVerdict.confirmed} suspicious, ${s.byVerdict.benign} benign, ${s.byVerdict.unreviewed} not reviewed. (Verdicts were set by the person who ran the capture, not by security staff.)`);
   if (s.hiddenAsRoutine > 0) out.push(`${plural(s.hiddenAsRoutine, 'row')} the user hid as routine ${s.hiddenAsRoutine === 1 ? 'is' : 'are'} included and marked.`);
   if (s.userMarked > 0) out.push(`${plural(s.userMarked, 'process', 'processes')} the user marked without a rule flagging ${s.userMarked === 1 ? 'it is' : 'them are'} listed after the flagged rows.`);
@@ -151,7 +150,7 @@ export function reportMarkdown(r: Report): string {
     if (stale.length === 0) out.push('The user set no verdicts on them.', '');
     for (const c of stale) {
       for (const v of c.notLoaded!) {
-        const cmd = v.snapshot.args ? code(argsLine(v.snapshot.args)) : v.snapshot.path ? code(v.snapshot.path) : '';
+        const cmd = v.snapshot.args ? code(fmtArgs(v.snapshot.args)) : v.snapshot.path ? code(v.snapshot.path) : '';
         const rules = v.snapshot.ruleIds.length > 0 ? `, rules: ${v.snapshot.ruleIds.map(text).join(', ')}` : '';
         const sev = v.snapshot.severity ? `, ${SEV_WORD[v.snapshot.severity].toLowerCase()}` : '';
         out.push(`- ${code(c.fileName)}: **${text(v.snapshot.name)}**${cmd ? ` ${cmd}` : ''}${sev}${rules}. User's verdict: ${VERDICT_WORD[v.status]}${v.note ? `, note: “${text(v.note)}”` : ''}`);

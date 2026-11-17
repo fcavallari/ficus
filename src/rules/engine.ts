@@ -1,7 +1,7 @@
 import { ancestry } from '../model/relations';
 import type { CaptureModel, Image, ProcId, Process } from '../model/types';
 import { basename, timeMs } from '../model/util';
-import { persistenceOwner, RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
+import { persistenceOwner, resetImageIndex, RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
   mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null;
@@ -57,6 +57,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   };
 
   // 1. Run the rules.
+  resetImageIndex(m);
   const hits = new Map<ProcId, Hit[]>();
   const add = (id: ProcId, h: Hit) => {
     const list = hits.get(id);

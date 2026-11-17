@@ -41,7 +41,7 @@ export const SHELLS: Set<string> = new Set([
 ]);
 const SHELL_NAMES = new Set([...SHELLS].map(basename));
 /** Script interpreters, versioned names included (python3.11, perl5.30). */
-const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$/;
+export const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$/;
 
 const MAX_EVIDENCE = 300;
 
@@ -449,16 +449,51 @@ export function launchTarget(item: PersistenceItem): { path: string; isApp: bool
   return app !== null ? { path: app, isApp: true } : null;
 }
 
+interface ImageIndex { all: Image[]; byPath: Map<string, Image[]>; byApp: Map<string, Image[]> }
+const imageIndexes = new WeakMap<CaptureModel, ImageIndex>();
+const APP_DIR = /\.app$/i;
+
+/** Forget the image index of `m`: analyze() calls it first, so a capture edited between two runs is read afresh. */
+export function resetImageIndex(m: CaptureModel): void { imageIndexes.delete(m); }
+
+/**
+ * The images in the capture that ran the program at `key` (lower-cased, normalized), or, for an app, from inside that
+ * bundle. Indexed on first use, once per capture: every launch item asks, and a scan of every image per item is
+ * quadratic on a large capture.
+ */
+function imagesAt(m: CaptureModel, key: string, isApp: boolean): Image[] {
+  let idx = imageIndexes.get(m);
+  if (!idx) {
+    idx = { all: [], byPath: new Map(), byApp: new Map() };
+    const push = (map: Map<string, Image[]>, k: string, img: Image): void => {
+      const list = map.get(k);
+      if (list) list.push(img);
+      else map.set(k, [img]);
+    };
+    for (const q of m.processes.values()) {
+      for (const img of q.images) {
+        if (img.path === null) continue;
+        const ip = normPath(img.path).toLowerCase();
+        idx.all.push(img);
+        push(idx.byPath, ip, img);
+        // Every enclosing .app folder, so an app bundle is one lookup (a nested helper app is inside both).
+        for (let i = ip.lastIndexOf('/'); i > 0; i = ip.lastIndexOf('/', i - 1)) {
+          if (APP_DIR.test(ip.slice(0, i))) push(idx.byApp, ip.slice(0, i), img);
+        }
+      }
+    }
+    imageIndexes.set(m, idx);
+  }
+  if (!isApp) return idx.byPath.get(key) ?? [];
+  // An app path that does not end in .app is not in the bundle index: look through every image.
+  return APP_DIR.test(key) ? idx.byApp.get(key) ?? [] : idx.all.filter(i => normPath(i.path!).toLowerCase().startsWith(`${key}/`));
+}
+
 /** True when a captured Apple-signed image sits at the launch target (an app target: anywhere inside the bundle). */
 function appleSignedAt(m: CaptureModel, target: { path: string; isApp: boolean }): boolean {
-  const key = normPath(target.path).toLowerCase();
-  return [...m.processes.values()].some(q => q.images.some(i => {
-    // A platform image or a listed Apple team only: a team-less com.apple image under a developer path is apple-masquerade's
-    // trust, not a reason to clear a launch item that runs it.
-    if (!hasAppleIdentity(i) || i.path === null) return false;
-    const ip = normPath(i.path).toLowerCase();
-    return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
-  }));
+  // A platform image or a listed Apple team only: a team-less com.apple image under a developer path is apple-masquerade's
+  // trust, not a reason to clear a launch item that runs it.
+  return imagesAt(m, normPath(target.path).toLowerCase(), target.isApp).some(hasAppleIdentity);
 }
 
 /**
@@ -483,13 +518,7 @@ function persistenceSeverity(target: { path: string; isApp: boolean } | null, m:
     return { severity: 'high', reason: `${what} is ${words}` };
   }
   if (HOME_CACHES.test(p)) return { severity: 'high', reason: `${what} is in ~/Library/Caches, which the user can write to` };
-  const key = p.toLowerCase();
-  const matches = (i: Image) => {
-    if (i.path === null) return false;
-    const ip = normPath(i.path).toLowerCase();
-    return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
-  };
-  const seen = [...m.processes.values()].flatMap(q => q.images).filter(matches);
+  const seen = imagesAt(m, p.toLowerCase(), target.isApp);
   const bad = seen.find(i => isUnsigned(i) || (!i.isPlatform && isAdhoc(i)));
   if (bad) return { severity: 'high', reason: `${what} ran ${isUnsigned(bad) ? 'unsigned' : 'ad-hoc signed'} in this capture` };
   if (HOME.test(p)) {

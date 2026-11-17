@@ -13,7 +13,7 @@ Command lines are complete and may contain secrets.
   - No unlink events. This capture has none, so it cannot show files deleted. Either none happened while it ran, or eslogger was not subscribed to unlink; the file cannot say which.
   - No setextattr events. This capture has none, so it cannot show extended attributes set on files. Either none happened while it ran, or eslogger was not subscribed to setextattr; the file cannot say which.
   - No btm\\_launch\\_item\\_remove events. This capture has none, so it cannot show launch items removed. Either none happened while it ran, or eslogger was not subscribed to btm\\_launch\\_item\\_remove; the file cannot say which.
-  - 11 program changes without an exec event. A process was seen running a new program, but the exec that started it is not in the capture (it happened before the capture began, or was dropped). Its arguments and working directory are unknown, and the checks that read a command line skip it.
+  - 1 program change without an exec event. A process was seen running a new program, but the exec that started it is not in the capture (it happened before the capture began, or was dropped). Its arguments and working directory are unknown, and the checks that read a command line skip it.
   - 4 processes known only by pid. They started before the capture and emitted nothing themselves; they appear as parents of processes that did. Their program, arguments and signature were never logged.
   - 1 event type the viewer does not model. open ×3. They are counted but not read: they appear in no timeline and no check looks at them. Each still places its process in the tree.
   - Low-signal findings kept out of the queue: recon ×7, odd-location-exec ×1.

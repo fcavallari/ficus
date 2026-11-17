@@ -1,7 +1,7 @@
 import type { CaptureModel, Image } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import type { Analysis, QueueItem } from '../rules/engine';
-import { SHELLS } from '../rules/rules';
+import { INTERPRETER, SHELLS } from '../rules/rules';
 
 /** Programs with no signing id, team id or path cannot be told apart: a routine mark would hide everything. */
 export const NO_IDENTITY = '-|-|-';
@@ -12,12 +12,15 @@ export function programKey(img: Image): string {
 
 const RISKY_NAMES = new Set([
   ...[...SHELLS].map(basename),
-  'osascript', 'curl', 'wget', 'launchctl', 'python3', 'perl', 'ruby', 'osacompile', 'open',
+  'curl', 'wget', 'launchctl', 'osacompile', 'open',
 ]);
 
 /** Programs an attacker also uses: marking one routine hides every run of it, so the UI warns first. */
 export function isRiskyRoutine(img: Image): boolean {
-  return img.path !== null && (SHELLS.has(img.path) || RISKY_NAMES.has(basename(img.path)));
+  if (img.path === null) return false;
+  const name = basename(img.path);
+  // The interpreters are the rules' own list (osascript, node, php, and versioned names such as python3.11).
+  return SHELLS.has(img.path) || RISKY_NAMES.has(name) || INTERPRETER.test(name);
 }
 
 const PERSISTENCE_RULES = new Set(['persistence-item', 'persistence-plist']);

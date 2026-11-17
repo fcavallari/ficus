@@ -84,6 +84,7 @@ test('programKey format', () => {
 test('isRiskyRoutine warns for shells', () => {
   expect(isRiskyRoutine(img('/bin/bash'))).toBe(true);
   expect(isRiskyRoutine(img('/usr/bin/osascript'))).toBe(true);
+  for (const n of ['python3', 'python3.11', 'perl5.30', 'ruby3.2', 'node', 'php']) expect(isRiskyRoutine(img(`/usr/local/bin/${n}`))).toBe(true);
   expect(isRiskyRoutine(img(null))).toBe(false);
   expect(isRiskyRoutine(img('/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools'))).toBe(false);
 });

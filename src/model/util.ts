@@ -1,4 +1,4 @@
-import type { Image, Process } from './types';
+import type { CaptureModel, Image, PersistenceItem, Process } from './types';
 
 export function basename(p: string | null): string {
   if (!p) return '';
@@ -77,3 +77,13 @@ export function resolveAgainstApp(path: string | null, app: string | null): stri
 /** es_btm_item_type_t, in words. */
 const ITEM_TYPES = ['User item', 'App', 'Login item', 'Launch agent', 'Launch daemon'];
 export const itemTypeName = (t: number | null): string => (t !== null ? ITEM_TYPES[t] : undefined) ?? 'Unknown';
+
+const itemsById = new WeakMap<PersistenceItem[], Map<string, PersistenceItem>>();
+
+/** The launch item with this id (`btm:<seq>`), through an index built once per capture instead of a scan per lookup. */
+export function persistenceItem(m: CaptureModel, id: string | null): PersistenceItem | undefined {
+  if (id === null) return undefined;
+  let idx = itemsById.get(m.persistence);
+  if (!idx) { idx = new Map(m.persistence.map(i => [i.id, i])); itemsById.set(m.persistence, idx); }
+  return idx.get(id);
+}

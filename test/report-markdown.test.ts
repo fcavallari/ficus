@@ -97,3 +97,13 @@ test('Program describes the program the row is named after; a command line from 
   expect(block).toContain('- **Program:** `/tmp/evil`, unsigned');
   expect(block).toContain('- **Command line** (of `/usr/bin/dscl`, the last exec captured): `dscl . -authonly labuser labpass-not-real`');
 });
+
+test('capture times cannot add Markdown structure', () => {
+  const fresh = buildModel(readLines('synthetic-lab.jsonl'));
+  const p = procByPid(fresh, 7016);
+  p.startTime = 'x](https://evil.example)<img src=x>\n# Injected';
+  const md = reportMarkdown(build({ loaded: new Map([['fp', lab('fp', fresh)]]) }));
+  // Every special character is backslash-escaped and the newline is a space, so it stays one line of plain text.
+  expect(md).toContain('x\\](https://evil.example)\\<img src=x\\> \\# Injected');
+  expect(md.split('\n').some(l => l.startsWith('# Injected'))).toBe(false);
+});

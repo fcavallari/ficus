@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } 
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, childrenIndex, displayName, type ParentMode } from '../model/relations';
 import type { ProcId, Process } from '../model/types';
-import { basename, latestImage } from '../model/util';
+import { basename, latestImage, persistenceItem } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
@@ -358,7 +358,7 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
 function PersistenceDetail({ cap, q, onSelect, noteRef }: {
   cap: LoadedCapture; q: QueueItem; onSelect(id: ProcId): void; noteRef: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const item = cap.model.persistence.find(i => i.id === q.persistenceId);
+  const item = persistenceItem(cap.model, q.persistenceId);
   const status = useSession().verdicts.get(q.key)?.status ?? 'unreviewed';
   return (
     <>
@@ -382,7 +382,7 @@ function PersistenceDetail({ cap, q, onSelect, noteRef }: {
 /** The launch items a process's findings are about: the process registered one, or wrote the plist of one. */
 function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Process; findings: Finding[]; onSelect(id: ProcId): void }) {
   const ids = [...new Set(findings.map(f => f.persistenceId).filter((x): x is string => x !== null))];
-  const items = ids.flatMap(id => cap.model.persistence.find(i => i.id === id) ?? []);
+  const items = ids.flatMap(id => persistenceItem(cap.model, id) ?? []);
   if (items.length === 0) return null;
   return (
     <Section id="d-launch-item" title={items.length === 1 ? 'Launch item' : 'Launch items'}>

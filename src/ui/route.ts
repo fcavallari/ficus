@@ -10,7 +10,12 @@ export const GUIDE_HASH = '#guide';
 /** The guide section the address names: '' for the top of the guide, null when the guide is not open. */
 export function guideSection(hash: string = location.hash): string | null {
   if (hash === GUIDE_HASH) return '';
-  if (hash.startsWith(`${GUIDE_HASH}/`)) return decodeURIComponent(hash.slice(GUIDE_HASH.length + 1));
+  if (hash.startsWith(`${GUIDE_HASH}/`)) {
+    const raw = hash.slice(GUIDE_HASH.length + 1);
+    // An address typed or pasted by hand can hold a bad escape (`%E0%A4%A`): the section is then the text as written,
+    // which matches no section, rather than a throw during render that no reload would clear.
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  }
   return null;
 }
 

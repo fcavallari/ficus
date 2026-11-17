@@ -1,10 +1,10 @@
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, childrenIndex, displayName, registrant } from '../model/relations';
 import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { itemTypeName, resolvePath } from '../model/util';
+import { itemTypeName, normPath, resolvePath } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { cmdline, isAdhoc, isUnsigned, type Severity } from '../rules/rules';
-import { idHash, REDACTED, slug } from '../session/export';
+import { idHash, REDACTED, redactArgv, slug } from '../session/export';
 import { applyRoutine } from '../session/routine';
 import type { CaptureRec, Session, Status, Verdict, VerdictSnapshot } from '../session/store';
 import { coverage, itemName, verdictKey } from '../ui/triage-model';
@@ -93,26 +93,34 @@ const ref = (m: CaptureModel, id: ProcId): ProcRef => ({ name: displayName(m, id
 const reportFinding = ({ ruleId, severity, title, explanation, mitre, evidence, trait }: Finding): ReportFinding =>
   ({ ruleId, severity, title, explanation, mitre, evidence, trait });
 
-/** Every argument after argv[0] becomes "[redacted]". */
-const redactArgv = (args: string[] | null): string[] | null => (args === null ? null : args.map((a, i) => (i === 0 ? a : REDACTED)));
-
 /** Shortest argument redaction looks for in free text: one- and two-letter flags (-c, -w) occur in ordinary words. */
 const MIN_REDACTED = 3;
 
 /**
  * Every value the capture records in a field of its own (program and script paths, process names, working directories,
- * file-event paths, launch item paths), joined for substring search. Redaction keeps these: they are evidence, and when
- * an argument repeats one of them it is not a secret typed on a command line.
+ * file-event paths, launch item paths). Redaction keeps an argument that is exactly one of these: they are evidence, and
+ * an argument that repeats one is not a secret typed on a command line. A path also counts in its normalized form
+ * (`/private/tmp/x` as `/tmp/x`) and as a folder above a recorded path. Whole values, not substrings: a password such
+ * as `admin` or `bin` is part of some path in almost every capture, and must still be redacted.
  */
-function keptText(m: CaptureModel): string {
-  const out: string[] = [];
+function keptValues(m: CaptureModel): Set<string> {
+  const out = new Set<string>();
+  const add = (v: string | null | undefined): void => {
+    if (!v) return;
+    out.add(v);
+    if (!v.startsWith('/')) return;
+    const n = normPath(v);
+    out.add(n);
+    // Each folder above it, so `/tmp/stage` is kept when `/tmp/stage/a.txt` was recorded; a bare word never matches.
+    for (let i = n.lastIndexOf('/'); i > 0; i = n.lastIndexOf('/', i - 1)) out.add(n.slice(0, i));
+  };
   for (const p of m.processes.values()) {
-    out.push(displayName(m, p.id));
-    for (const i of p.images) out.push(i.path ?? '', i.cwd ?? '', i.script ?? '');
-    for (const f of p.fileOps) out.push(f.path, f.toPath ?? '');
+    add(displayName(m, p.id));
+    for (const i of p.images) { add(i.path); add(i.cwd); add(i.script); }
+    for (const f of p.fileOps) { add(f.path); add(f.toPath); }
   }
-  for (const i of m.persistence) out.push(i.plistPath ?? '', i.executablePath ?? '', i.appPath ?? '');
-  return out.join('\n');
+  for (const i of m.persistence) { add(i.plistPath); add(i.executablePath); add(i.appPath); }
+  return out;
 }
 
 function launchItem(m: CaptureModel, item: PersistenceItem): ReportLaunchItem {
@@ -129,7 +137,7 @@ class CaptureRows {
   private readonly m: CaptureModel;
   private readonly children: Map<ProcId | null, ProcId[]>;
   private readonly items: Map<string, PersistenceItem>;
-  private kept: string | null = null;
+  private kept: Set<string> | null = null;
   constructor(readonly cap: LoadedCapture, private readonly redact: boolean) {
     this.m = cap.model;
     this.children = childrenIndex(this.m, 'original');
@@ -164,11 +172,11 @@ class CaptureRows {
     let e = out.evidence;
     const img = f.imgIndex !== null ? p.images[f.imgIndex] : undefined;
     if (img?.args) e = e.split(cmdline(img)).join(cmdline({ ...img, args: redactArgv(img.args) }));
-    this.kept ??= keptText(this.m);
+    this.kept ??= keptValues(this.m);
     // An argument as typed, and as a rule may have resolved it against the working directory (osascript's script path).
     const typed = p.images.flatMap(i => (i.args?.slice(1) ?? []).flatMap(a => [a, resolvePath(a, i.cwd)]));
     const args = [...new Set(typed)]
-      .filter(a => a.length >= MIN_REDACTED && a !== REDACTED && !this.kept!.includes(a))
+      .filter(a => a.length >= MIN_REDACTED && a !== REDACTED && !this.kept!.has(a) && !this.kept!.has(normPath(a)))
       .sort((a, b) => b.length - a.length);
     for (const a of args) e = e.split(a).join(REDACTED);
     return { ...out, evidence: e };
