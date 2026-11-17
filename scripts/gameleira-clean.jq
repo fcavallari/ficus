@@ -1551,13 +1551,19 @@ def shell_unquote:
 # A value written back as one shell word: as it is when nothing in it is special to the shell, else in '…'.
 def shell_quote: if test("^[^\\s'\"\\\\$`;&|<>()*?\\[\\]{}#~]*$") then . else "'" + gsub("'"; "'\\''") + "'" end;
 def CODE_SEPARATORS: {";": true, "|": true, "&": true, "(": true, ")": true, "`": true, "\n": true};
-# AppleScript's do shell script … password "…" (osascript -e, or in shell code) is redacted first.
-def APPLESCRIPT_PASSWORD: "(?i)(?<p>\\bpassword\\s+)\"(?:[^\"\\\\]|\\\\.)*\"";
+# AppleScript's do shell script … password "…" (osascript -e, or in shell code) is redacted first: the keyword password
+# outside a string, then a string. A string is matched whole first, so the word password inside one (display dialog
+# "Enter your password " default answer "") is text, not the parameter.
+def APPLESCRIPT_PASSWORD: "\"(?:[^\"\\\\]|\\\\.)*\"|(?<p>(?i:\\bpassword)\\s+)\"(?:[^\"\\\\]|\\\\.)*\"";
 def code_secrets($str0):
   if ($str0 | code_maybe | not) then {v: $str0, s: .}
   else
-    ([$str0 | match(APPLESCRIPT_PASSWORD; "g")] | length) as $ap
-    | (if $ap == 0 then $str0 else $str0 | gsub(APPLESCRIPT_PASSWORD; "\(.p)\"\u0002\"") end) as $str
+    (if $str0 | contains("assword") | not then [] else [$str0 | match(APPLESCRIPT_PASSWORD; "g") | select(.captures[0].string != null)] end) as $pm
+    | ($pm | length) as $ap
+    | (if $ap == 0 then $str0
+       else reduce $pm[] as $m ({out: "", at: 0};
+              .out += $str0[.at:$m.offset] + $m.captures[0].string + "\"\u0002\"" | .at = $m.offset + $m.length)
+         | .out + $str0[.at:] end) as $str
     | .stats.redacted += $ap
     | (reduce ($str | match(CODE_WORDS; "g")) as $m ({cmds: [], cur: [], redir: false};
        $m.string[:1] as $c

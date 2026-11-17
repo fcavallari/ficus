@@ -2492,6 +2492,9 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       run(1405, '/usr/bin/base64', ['base64', '-d', '-i', '/tmp/p.b64'], '/', 6),
       run(1406, '/usr/bin/openssl', ['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', 'pass:OPW', '-in', '/tmp/p.bin'], '/', 7),
       run(1407, '/usr/bin/xattr', ['xattr', '-d', 'com.apple.quarantine', '/tmp/x.app'], '/', 8),
+      // The word password inside a dialog's text is not do shell script's password parameter.
+      run(1408, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "Enter your password " default answer "" with hidden answer'], '/', 9),
+      run(1409, '/usr/bin/osascript', ['osascript', '-e', 'display dialog "macOS needs your password" with hidden answer default answer ""'], '/', 10),
     ].join('\n') + '\n';
     for (const r of both(input)) {
       const args = events(r.out).map(e => e.event.exec.args as string[]);
@@ -2503,6 +2506,8 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
       expect(args[5]!.slice(0, 3)).toEqual(['base64', '-d', '-i']);
       expect(args[6]!.slice(0, 6)).toEqual(['openssl', 'enc', '-d', '-aes-256-cbc', '-pass', '<redacted>']);
       expect(args[7]!.slice(0, 3)).toEqual(['xattr', '-d', 'com.apple.quarantine']);
+      expect(args[8]).toEqual(['osascript', '-e', 'display dialog "Enter your password " default answer "" with hidden answer']);
+      expect(args[9]).toEqual(['osascript', '-e', 'display dialog "macOS needs your password" with hidden answer default answer ""']);
       const ids = ruleIds(r.out);
       for (const id of ['dscl-authonly', 'keychain-access', 'fake-prompt', 'payload-decode', 'quarantine-strip']) expect(ids, id).toContain(id);
       expect([...findingSignature(buildModel(lines(r.out))).values()].flat().filter(s => s.startsWith('keychain-access:high'))).toHaveLength(2);
