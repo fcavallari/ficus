@@ -235,10 +235,10 @@ def initial_state($cfg):
     keep: (reduce $cfg.keep[] as $n ({}; .[$n] = true)),
     ci: (reduce ($cfg.key[] | select(.kind == "user" or .kind == "realname" or .kind == "host" or .kind == "email")) as $k ({};
            .[$k.kind][$k.real | ascii_downcase] //= $k.placeholder)),
-    # The -D domains, as a regex for internal_names and as the literals net_maybe looks for (as written, upper-case
-    # and capitalized: contains has no case-insensitive form).
+    # The -D domains, as a regex for internal_names and as the lower-case literals net_maybe looks for. nf: values
+    # net_maybe found nothing in (see clean_net).
     domre: ($cfg.domains // [] | map(regex_escape) | join("|")),
-    domlit: [$cfg.domains // [] | .[] | ., ascii_upcase, (.[:1] | ascii_upcase) + .[1:]] | unique,
+    domlit: [$cfg.domains // [] | .[] | ascii_downcase] | unique, nf: {}, nfn: 0,
     words: {}, multi: {}, nwords: 0, netc: {}, netn: 0, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "", acctall: "", clear: {}, clearn: 0,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, uncleaned: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
@@ -926,13 +926,13 @@ def internal_names($dom): "(?:[A-Za-z0-9-]+\\.)+(?:local|internal|corp|lan|home\
 # compiles its pattern on every call. Input: the string (net_maybe: the state).
 def maybe_ipv4: contains("10.") or contains("127.") or contains("172.") or contains("192.168") or contains("169.254");
 def maybe_ipv6: contains("::") or contains("fe80:") or contains("FE80:");
+# maybe_names: on a lower-cased copy (names are case-insensitive: Build01.CoRp, wiki.ACME.com); $domlit the -D domains.
 def maybe_names($domlit):
   contains(".local") or contains(".corp") or contains(".lan") or contains(".internal") or contains(".arpa")
-  or contains(".LOCAL") or contains(".CORP") or contains(".LAN") or contains(".INTERNAL") or contains(".ARPA")
-  or contains(".Local") or contains(".Corp") or contains(".Lan") or contains(".Internal")
   or (. as $str | any($domlit[]; . as $d | $str | contains($d)));
 def net_maybe($str):
-  .domlit as $dl | $str | contains("@") or contains("://") or maybe_ipv4 or maybe_ipv6 or maybe_names($dl);
+  .domlit as $dl
+  | ($str | contains("@") or contains("://") or maybe_ipv4 or maybe_ipv6) or ($str | ascii_downcase | maybe_names($dl));
 
 # The placeholder of a host. One host has one placeholder whatever its case (state.ci), and a known host followed by
 # .local is that host (Janes-MacBook-Pro.local is the host seed Janes-MacBook-Pro). Input: the state. Output: {ph, state}.
@@ -1179,18 +1179,25 @@ def net_steps($str; $code; $login):
   # a / (110.0.0.1, a path).
   | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9./]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
       (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:./_-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
-      (.domlit as $dl | if $s3 | maybe_names($dl) then
+      (.domlit as $dl | if $s3 | ascii_downcase | maybe_names($dl) then
          "(?<![A-Za-z0-9._%+/-])(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])(?!\\.[A-Za-z0-9])" else empty end) ] as $res
   | if $res == [] then {v: $s3, s: ., prot: $prot}
     else net_sub($s3; $res | join("|"); .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state}) | .prot = $prot end;
 
 # Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), after the cheap
-# test. What it made of a value outside code and logins is cached (state.netc, at most 4096 values of up to 1 KB,
+# test (net_maybe). What it made of a value outside code and logins is cached (state.netc, at most 4096 values of up to 1 KB,
 # emptied when full): environment entries come back in event after event, and most that hold an @ or a URL do. A
 # cached value gives the placeholders it would get again, and the user info it removed is counted again. Input: the
 # state. Output: {v, s}.
 def clean_net($str; $code; $login):
-  if (net_maybe($str) or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
+  # net_maybe lower-cases the value, which costs more than the rest of the test, and most values come back in event
+  # after event: one it found nothing in is noted (state.nf, at most 8192 values of up to 1 KB, emptied when full).
+  (if .nf[$str] == true then {m: false, s: .}
+   elif net_maybe($str) then {m: true, s: .}
+   elif ($str | utf8bytelength) > 1024 then {m: false, s: .}
+   else {m: false, s: ((if .nfn >= 8192 then .nf = {} | .nfn = 0 else . end) | .nf[$str] = true | .nfn += 1)} end) as $t
+  | $t.s
+  | if ($t.m or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
   elif $code or $login != "" then net_steps($str; $code; $login)
   elif .netc[$str] != null then .netc[$str] as $c | {v: $c.v, s: (.stats.redacted += $c.r), prot: []}
   else .stats.redacted as $r0

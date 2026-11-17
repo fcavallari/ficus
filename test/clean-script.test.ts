@@ -2161,4 +2161,22 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(n.has('intranet')).toBe(false);
     sameFindings(input, r.out);
   });
+
+  test('internal names in any case are cleaned', () => {
+    const input = [
+      run(1180, '/bin/sh', ['sh', '-c', 'ping wiki.ACME.com; ping Build01.CoRp'], '/', 1, [...JDOE_ENV, 'WIKI=Wiki.AcMe.com']),
+      run(1181, '/bin/echo', ['echo', 'NAS.Home.Arpa', 'printer.LoCaL'], '/', 2),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-D', 'acme.com'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    // One host has one placeholder whatever its case; the key holds it as first written.
+    const lower = new Map([...keyed(r.key, 'host')].map(([k, v]) => [k.toLowerCase(), v]));
+    const h = { get: (k: string): string | undefined => lower.get(k.toLowerCase()) };
+    expect(keyed(r.key, 'host').size).toBe(4);
+    expect(ev[0]!.event.exec.args[2]).toBe(`ping ${h.get('wiki.ACME.com')}; ping ${h.get('Build01.CoRp')}`);
+    expect(ev[0]!.event.exec.env).toContain(`WIKI=${h.get('wiki.ACME.com')}`);
+    expect(ev[1]!.event.exec.args).toEqual(['echo', h.get('NAS.Home.Arpa'), h.get('printer.LoCaL')]);
+    expect(r.out).not.toMatch(/acme|build01|nas\.|printer/i);
+  });
 });
