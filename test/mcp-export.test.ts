@@ -78,17 +78,19 @@ test('the JSON report equals ws.report(N, false) apart from generated', async ()
   expect(written).toEqual(expected);
 });
 
-test('agent-verdict.md holds the verdict, then the revealed rows or "none"', async () => {
+test('agent-verdict.md starts with the rows shown with consent (or none recorded), then the verdict', async () => {
   const none = await writeExport(ws, p, N, { mode: 'report', verdict: '# Verdict\n\nLooks bad.' }, NOW);
-  expect(read(none.folder, 'agent-verdict.md')).toBe('# Verdict\n\nLooks bad.\n\n## Shown to the agent with consent\n\nnone\n');
+  expect(read(none.folder, 'agent-verdict.md')).toBe(
+    '## Shown to the agent with consent\n\nnone recorded since the Ficus server started\n\n---\n\n# Verdict\n\nLooks bad.\n',
+  );
   const view = await ws.analyze(N);
   const dscl = view.rows.find(r => r.name === 'dscl')!;
   await ws.row(N, dscl.key, true);
   const some = await writeExport(ws, p, N, { mode: 'report', verdict: 'v2' }, NOW);
   const text = read(some.folder, 'agent-verdict.md');
-  expect(text.startsWith('v2\n\n## Shown to the agent with consent\n')).toBe(true);
-  expect(text).toContain('dscl');
-  expect(text).not.toContain('none');
+  expect(text.startsWith('## Shown to the agent with consent\n\n- dscl (')).toBe(true);
+  expect(text.endsWith('\n\n---\n\nv2\n')).toBe(true);
+  expect(text).not.toContain('none recorded');
   expect(text).not.toContain(PASSWORD);
 });
 
@@ -99,8 +101,8 @@ test('a second export in the same second goes to "… 2"', async () => {
   expect(path.basename(a.folder)).toBe('Ficus report 2026-11-17 103012');
   expect(path.basename(b.folder)).toBe('Ficus report 2026-11-17 103012 2');
   expect(path.basename(c.folder)).toBe('Ficus report 2026-11-17 103012 3');
-  expect(read(a.folder, 'agent-verdict.md')).toContain('a\n');
-  expect(read(b.folder, 'agent-verdict.md')).toContain('b\n');
+  expect(read(a.folder, 'agent-verdict.md')).toMatch(/\n\na\n$/);
+  expect(read(b.folder, 'agent-verdict.md')).toMatch(/\n\nb\n$/);
 });
 
 test('reveals on another capture are not listed', async () => {
@@ -113,7 +115,7 @@ test('reveals on another capture are not listed', async () => {
   const view = await ws.analyze(other);
   await ws.row(other, view.rows.find(r => r.name === 'dscl')!.key, true);
   const r = await writeExport(ws, p, N, { mode: 'report', verdict: 'v' }, NOW);
-  expect(read(r.folder, 'agent-verdict.md')).toMatch(/consent\n\nnone\n$/);
+  expect(read(r.folder, 'agent-verdict.md')).toMatch(/^## Shown to the agent with consent\n\nnone recorded since the Ficus server started\n/);
 });
 
 test('README.txt says the key stays on the Mac and the capture is pseudonymized', async () => {
@@ -127,6 +129,48 @@ test('README.txt says the key stays on the Mac and the capture is pseudonymized'
   }
   expect(read(full.folder, 'README.txt')).toContain(N);
   expect(read(full.folder, 'README.txt')).toContain(saveFileName(ws.session(N)));
+});
+
+test('README.txt: pseudonymized not anonymous, read before sending, what the report holds, how to open the session', async () => {
+  const open = await writeExport(ws, p, N, { mode: 'full', verdict: 'v' }, NOW);
+  const t = read(open.folder, 'README.txt');
+  expect(t).toMatch(/pseudonymi[sz]ed, not anonymous/i);
+  expect(t).toMatch(/read the report before (you )?send/i);
+  expect(t).toMatch(/report files contain the cleaned command lines/i);
+  expect(t).not.toMatch(/exported with redaction/i);
+  // how to open the full session: the home page, Import a session, then drop the capture in. There is no "Confirmed" tab.
+  expect(t).toMatch(/home page/i);
+  expect(t).toContain('Import a session');
+  expect(t).toMatch(/drop (the capture|\S+\.cleaned\.jsonl)/i);
+  expect(t).not.toMatch(/Confirmed/);
+  // the report-only README does not tell anyone to import a session
+  const report = await writeExport(ws, p, N, { mode: 'report', verdict: 'v' }, NOW);
+  expect(read(report.folder, 'README.txt')).not.toContain('Import a session');
+  // with redact: true the README says the report files were redacted, and not that they hold command lines
+  const shut = await writeExport(ws, p, N, { mode: 'report', verdict: 'v', redact: true }, NOW);
+  const u = read(shut.folder, 'README.txt');
+  expect(u).toMatch(/exported with redaction/i);
+  expect(u).not.toMatch(/report files contain the cleaned command lines/i);
+});
+
+test.skipIf(process.getuid?.() === 0)('a Desktop folder macOS will not let it write to is a plain message, with no half-made folder', async () => {
+  const locked = path.join(p.exportRoot, 'locked');
+  fs.mkdirSync(locked);
+  fs.chmodSync(locked, 0o555);
+  try {
+    // the export root itself is read-only: making the report folder in it fails with EACCES
+    await expect(writeExport(ws, { ...p, exportRoot: locked }, N, { mode: 'report', verdict: 'v' }, NOW)).rejects.toThrow(
+      /could not write to the Desktop folder.*Privacy & Security/s,
+    );
+    // and a root that cannot even be created under a read-only parent
+    await expect(writeExport(ws, { ...p, exportRoot: path.join(locked, 'x', 'y') }, N, { mode: 'report', verdict: 'v' }, NOW)).rejects.toThrow(
+      /could not write to the Desktop folder/,
+    );
+    await expect(writeExport(ws, { ...p, exportRoot: locked }, N, { mode: 'report', verdict: 'v' }, NOW)).rejects.not.toThrow(/EACCES|EPERM/);
+  } finally {
+    fs.chmodSync(locked, 0o755);
+  }
+  expect(fs.readdirSync(locked)).toEqual([]);
 });
 
 test('a refused capture throws and leaves no folder behind', async () => {
