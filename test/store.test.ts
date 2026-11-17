@@ -115,6 +115,7 @@ test('a newer version opened elsewhere makes this connection step aside, and the
   expect((await s2.listSessions())[0]!.name).toBe('renamed');
 });
 
+// Still the name from before the app was called Ficus: renaming it would leave every saved session behind.
 test('the default database is named gameleira', async () => {
   await openStore();
   expect((await indexedDB.databases()).map(d => d.name)).toContain('gameleira');

@@ -1,5 +1,5 @@
 import { openDB } from 'idb';
-import { idHash, parseExport, SAVE_SUFFIX, slug, type SessionExport } from './export';
+import { idHash, LEGACY_SAVE_SUFFIX, parseExport, SAVE_SUFFIX, slug, type SessionExport } from './export';
 import type { Session } from './store';
 
 /*
@@ -31,7 +31,7 @@ export const folderSupported = (): boolean => typeof picker() === 'function';
 export async function pickFolder(): Promise<DirHandle | null> {
   try {
     // `id` makes the picker open where it was last used for this purpose.
-    return await picker()!({ id: 'gameleira-sessions', mode: 'readwrite' });
+    return await picker()!({ id: 'ficus-sessions', mode: 'readwrite' });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') return null;
     throw e;
@@ -71,7 +71,7 @@ export async function findSavedCopy(dir: DirHandle, session: Pick<Session, 'id' 
   const prefix = `${slug(session.name)}.`;
   let best: SavedCopy | null = null;
   for await (const entry of dir.values()) {
-    if (entry.kind !== 'file' || !entry.name.endsWith(SAVE_SUFFIX)) continue;
+    if (entry.kind !== 'file' || !(entry.name.endsWith(SAVE_SUFFIX) || entry.name.endsWith(LEGACY_SAVE_SUFFIX))) continue;
     if (!entry.name.includes(hash) && !entry.name.startsWith(prefix)) continue;
     let copy: SavedCopy;
     try {
@@ -90,6 +90,7 @@ export async function findSavedCopy(dir: DirHandle, session: Pick<Session, 'id' 
  * The chosen folder is remembered in its own small database, not the sessions one, so the sessions schema stays as it
  * is. A directory handle can be stored in IndexedDB; the browser asks again for access when it is used after a restart.
  */
+// Named before the app was renamed Ficus; kept so the folder chosen then is still remembered.
 const DB = 'gameleira-save-folder';
 const KEY = 'folder';
 const db = () => openDB(DB, 1, { upgrade(d) { d.createObjectStore('kv'); } });

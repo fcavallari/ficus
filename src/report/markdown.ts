@@ -116,7 +116,7 @@ function captureLines(c: ReportCapture): string[] {
 export function reportMarkdown(r: Report): string {
   const s = r.summary;
   const loaded = r.captures.filter(c => c.loaded);
-  const out = [`# Gameleira report: ${text(r.session.name)}`, ''];
+  const out = [`# Ficus report: ${text(r.session.name)}`, ''];
   out.push(`Generated ${r.generated}. ${plural(s.rows, 'flagged row')} in ${plural(loaded.length, 'loaded capture')}: ${s.bySeverity.high} high, ${s.bySeverity.med} medium, ${s.bySeverity.low} low.`);
   out.push(`User's verdicts: ${s.byVerdict.confirmed} suspicious, ${s.byVerdict.benign} benign, ${s.byVerdict.unreviewed} not reviewed. (Verdicts were set by the person who ran the capture, not by security staff.)`);
   if (s.hiddenAsRoutine > 0) out.push(`${plural(s.hiddenAsRoutine, 'row')} the user hid as routine ${s.hiddenAsRoutine === 1 ? 'is' : 'are'} included and marked.`);

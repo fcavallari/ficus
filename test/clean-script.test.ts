@@ -9,8 +9,8 @@ import { esBtm, esClone, esCreate, esExec, esExit, esFork, esLink, esProc } from
 import { fixture, hasRealCaptures, readLines, REAL_FIXTURES, type RealFixtureName } from './fixtures';
 import { findingSignature } from './helpers';
 
-// scripts/gameleira-clean.sh pseudonymizes a capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
-const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'gameleira-clean.sh');
+// scripts/ficus-clean.sh pseudonymizes a capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
+const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'ficus-clean.sh');
 const JQ = '/usr/bin/jq';
 const SYNTHETIC = fixture('synthetic-lab.jsonl');
 
@@ -79,7 +79,7 @@ export function runClean(args: string[], opts: { input?: string; env?: Record<st
   const keyDir = path.join(dir, 'keys');
   const r = spawnSync('/bin/bash', [SCRIPT, ...argv], {
     cwd: dir, maxBuffer: 64 << 20, input: fromStdin ? opts.input ?? '' : '',
-    env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: keyDir, GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', ...opts.env },
+    env: { ...process.env, FICUS_CLEAN_KEY_DIR: keyDir, FICUS_CLEAN_NO_LOCAL_SEEDS: '1', ...opts.env },
   });
   const stderr = r.stderr.toString('utf8');
   const summary: Record<string, string> = {};
@@ -221,7 +221,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     const dir = tmpDir();
     const keyDir = path.join(dir, 'k');
     const out = path.join(dir, 'x.cleaned.jsonl');
-    const r = runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { GAMELEIRA_CLEAN_KEY_DIR: keyDir } });
+    const r = runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { FICUS_CLEAN_KEY_DIR: keyDir } });
     expect(r.status).toBe(0);
     const keyFile = path.join(keyDir, 'x.cleaned.jsonl.key.tsv');
     expect(r.summary['key']).toBe(keyFile);
@@ -243,10 +243,10 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
   test('with -o -, the default key is stdout.key.tsv, and it is not overwritten by a second run', () => {
     const dir = tmpDir();
     const keyDir = path.join(dir, 'keys');
-    const first = runClean(['clean', '-i', SYNTHETIC, '-o', '-'], { env: { GAMELEIRA_CLEAN_KEY_DIR: keyDir } });
+    const first = runClean(['clean', '-i', SYNTHETIC, '-o', '-'], { env: { FICUS_CLEAN_KEY_DIR: keyDir } });
     expect(first.status).toBe(0);
     expect(first.summary['key']).toBe(path.join(keyDir, 'stdout.key.tsv'));
-    const second = runClean(['clean', '-i', SYNTHETIC, '-o', '-'], { env: { GAMELEIRA_CLEAN_KEY_DIR: keyDir } });
+    const second = runClean(['clean', '-i', SYNTHETIC, '-o', '-'], { env: { FICUS_CLEAN_KEY_DIR: keyDir } });
     expect(second.status).toBe(1);
     expect(second.stderr).toMatch(/already exists/);
     expect(second.stderr).toMatch(/-k/);
@@ -257,9 +257,9 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     const dir = tmpDir();
     const keyDir = path.join(dir, 'keys');
     const out = path.join(dir, 'cap.jsonl');
-    expect(runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { GAMELEIRA_CLEAN_KEY_DIR: keyDir } }).status).toBe(0);
+    expect(runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { FICUS_CLEAN_KEY_DIR: keyDir } }).status).toBe(0);
     const before = fs.readFileSync(out, 'utf8');
-    const again = runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { GAMELEIRA_CLEAN_KEY_DIR: keyDir } });
+    const again = runClean(['clean', '-i', SYNTHETIC, '-o', out], { env: { FICUS_CLEAN_KEY_DIR: keyDir } });
     expect(again.status).toBe(1);
     expect(again.stderr).toMatch(/pass -k to reuse it/);
     expect(again.stderr).toMatch(/another -o/);
@@ -290,7 +290,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     fs.writeFileSync(key, 'something else\n');
     const r = runClean(['clean', '-i', SYNTHETIC, '-o', '-', '-k', key]);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/not a Gameleira key file/);
+    expect(r.stderr).toMatch(/not a Ficus key file/);
     expect(fs.readFileSync(key, 'utf8')).toBe('something else\n');
   });
 
@@ -320,7 +320,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     const keyDir = path.join(dir, 'keys');
     const out = path.join(dir, 'cap.jsonl');
     const seeds = path.join(dir, 'seeds.tsv');
-    const env = { GAMELEIRA_CLEAN_KEY_DIR: keyDir };
+    const env = { FICUS_CLEAN_KEY_DIR: keyDir };
     fs.writeFileSync(seeds, 'nonsense\n');
     const bad = runClean(['clean', '-i', SYNTHETIC, '-o', out, '-S', seeds], { env });
     expect(bad.status).toBe(1);
@@ -385,7 +385,7 @@ describe.skipIf(!fs.existsSync(JQ))('plumbing', () => {
     expect(e.stderr).toMatch(/-k and -i are the same file/);
     expect(fs.readFileSync(empty, 'utf8')).toBe('');
     // record checks it too, before recording.
-    const rec = runClean(['record', '-t', '1', '-o', out, '-k', out], { env: { GAMELEIRA_CLEAN_RECORDER: 'exit 0' } });
+    const rec = runClean(['record', '-t', '1', '-o', out, '-k', out], { env: { FICUS_CLEAN_RECORDER: 'exit 0' } });
     expect(rec.status).toBe(1);
     expect(rec.stderr).toMatch(/-o and -k are the same file/);
     expect(fs.existsSync(out)).toBe(false);
@@ -431,8 +431,8 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     const key = path.join(dir, 'key');
     const stats = path.join(dir, 'stats');
     fs.writeFileSync(key, 'kind\tplaceholder\treal\n');
-    const r = spawnSync('/bin/bash', ['-c', `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"; run_cleaner "${dir}/cfg" "${key}" "${stats}"; echo "status $?" >&2`], {
-      input: 'one\ntwo\n', env: { ...process.env, GAMELEIRA_CLEAN_JQ: fakeJq },
+    const r = spawnSync('/bin/bash', ['-c', `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"; run_cleaner "${dir}/cfg" "${key}" "${stats}"; echo "status $?" >&2`], {
+      input: 'one\ntwo\n', env: { ...process.env, FICUS_CLEAN_JQ: fakeJq },
     });
     expect(r.stdout.toString()).toBe('{"cleaned":"one"}\n{"cleaned":"two"}\n');
     expect(fs.readFileSync(key, 'utf8')).toBe('kind\tplaceholder\treal\nname\tname1\t"real one"\nname\tname1\t"real two"\n');
@@ -447,7 +447,7 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
   // state, numbering, K lines and S line run under the real jq, whatever clean_event grows into.
   test('the real program writes a K line per placeholder, numbers on from a loaded key, and ends with the stats', () => {
     const dir = tmpDir();
-    const program = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'gameleira-clean.jq'), 'utf8');
+    const program = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'ficus-clean.jq'), 'utf8');
     expect(program).toContain('clean_event($seen)');
     const mint = [
       'def mint_event($state):',
@@ -468,7 +468,7 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     const input = [nasty, 'known', nasty, 'fresh'].map(w => JSON.stringify({ who: w, global_seq_num: 1 })).join('\n') + '\n'
       + 'not json\n' + JSON.stringify({ who: 'late', global_seq_num: 4 }) + '\n';
     const r = spawnSync('/bin/bash', ['-c', [
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `CLEAN_PROGRAM="${scratch}"; DOMAINS=(); SEED_FILE=; LOADED_KEY="${loadedKey}"`,
       `write_config "${dir}/cfg.json" && run_cleaner "${dir}/cfg.json" "${key}" "${stats}"`,
     ].join('\n')], { input, env: process.env });
@@ -497,7 +497,7 @@ describe.skipIf(!fs.existsSync(JQ))('the stream between jq and the files', () =>
     fs.writeFileSync(key, 'kind\tplaceholder\treal\nname\tname7\t"a\\tb\\nc"\nrealname\tPerson 2\t"Alice A"\n');
     const cfg = path.join(dir, 'cfg.json');
     const r = spawnSync('/bin/bash', ['-c',
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"; DOMAINS=(Corp.Example .other.example); SEED_FILE="${seeds}"; LOADED_KEY="${key}"; write_config "${cfg}"`]);
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"; DOMAINS=(Corp.Example .other.example); SEED_FILE="${seeds}"; LOADED_KEY="${key}"; write_config "${cfg}"`]);
     expect(r.status, r.stderr.toString()).toBe(0);
     expect(JSON.parse(fs.readFileSync(cfg, 'utf8'))).toEqual({
       seeds: [{ kind: 'user', value: 'alice' }, { kind: 'host', value: 'box.corp.example' }],
@@ -864,7 +864,7 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
   });
 
   test('same findings: the synthetic-lab fixture and the lab script\'s synthetic capture', () => {
-    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
+    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'ficus-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
     for (const [input, user] of [[fs.readFileSync(SYNTHETIC, 'utf8'), 'alice'], [lab, 'learner']] as const) {
       const r = runClean(['clean', '-o', '-'], { input });
       expect(r.status, r.stderr).toBe(0);
@@ -1079,10 +1079,10 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
       run(543, '/bin/launchctl', ['launchctl', 'load', 'Volumes/x.plist'], '/Users/jdoe/Documents', 13),
       run(544, '/bin/sh', ['sh', '-c', 'echo Chrome Safe Storage; echo load dialog answer'], '/Users/jdoe/Documents', 14),
       // What the rules match as a phrase stays whole, even with other words in it, and even when a folder has that name.
-      esCreate(zsh, { path: '/Users/jdoe/Documents/Gameleira Lab Safe Storage/y.txt' }, 15),
-      run(545, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Gameleira Lab Safe Storage', '-w'], '/Users/jdoe/Documents', 16),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Ficus Lab Safe Storage/y.txt' }, 15),
+      run(545, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Ficus Lab Safe Storage', '-w'], '/Users/jdoe/Documents', 16),
       run(546, '/usr/bin/security', ['security', 'find-generic-password', '-s', 'Exodus Backup', '-a', 'Brave Browser'], '/Users/jdoe/Documents', 17),
-      run(547, '/bin/sh', ['sh', '-c', 'security find-generic-password -s "Gameleira Lab Safe Storage"'], '/', 18),
+      run(547, '/bin/sh', ['sh', '-c', 'security find-generic-password -s "Ficus Lab Safe Storage"'], '/', 18),
     ].join('\n') + '\n';
     const r = runClean(['clean', '-o', '-'], { input });
     expect(r.status, r.stderr).toBe(0);
@@ -1093,15 +1093,15 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
     expect(args[3]!.slice(0, 2)).toEqual(['launchctl', 'load']);
     expect(args[3]![2]).toMatch(/^Volumes\/name\d+\.plist$/);
     expect(args[4]).toEqual(['sh', '-c', 'echo Chrome Safe Storage; echo load dialog answer']);
-    expect(args[5]).toEqual(['security', 'find-generic-password', '-s', 'Gameleira Lab Safe Storage', '-w']);
+    expect(args[5]).toEqual(['security', 'find-generic-password', '-s', 'Ficus Lab Safe Storage', '-w']);
     expect(args[6]).toEqual(['security', 'find-generic-password', '-s', 'Exodus Backup', '-a', 'Brave Browser']);
     // In shell text, which the rules do not read, the folder's name is a mapped name like any other.
-    expect(args[7]).toEqual(['sh', '-c', `security find-generic-password -s "${keyed(r.key, 'name').get('Gameleira Lab Safe Storage')}"`]);
+    expect(args[7]).toEqual(['sh', '-c', `security find-generic-password -s "${keyed(r.key, 'name').get('Ficus Lab Safe Storage')}"`]);
     sameFindings(input, r.out);
   });
 
   // The words come partly from src/rules/rules.ts itself, so a new recon tool or shell there fails this test until
-  // PROTECTED in scripts/gameleira-clean.jq has it.
+  // PROTECTED in scripts/ficus-clean.jq has it.
   test('words the rules look for stay outside paths, even when a folder has that name', () => {
     const sample = [
       'load', 'bootstrap', 'submit', 'disable', 'enable', 'display', 'dialog', 'hidden', 'answer', 'authonly', '-authonly',
@@ -1127,7 +1127,7 @@ describe.skipIf(!fs.existsSync(JQ))('arguments and text', () => {
   });
 
   test('the every-rule story run from a home folder', () => {
-    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
+    const lab = spawnSync('/bin/bash', [path.resolve(__dirname, '..', 'scripts', 'ficus-lab.sh'), 'synthetic', '--stdout']).stdout.toString('utf8');
     const moved = lines(lab).map(l => {
       const e = JSON.parse(l) as { event?: { exec?: { cwd?: { path: string } } } };
       if (e.event?.exec?.cwd) e.event.exec.cwd.path = '/Users/learner/Documents/Board';
@@ -3192,7 +3192,7 @@ describe.skipIf(!fs.existsSync(JQ))('secrets and data', () => {
   });
 });
 
-// Record mode runs `sudo eslogger`; these tests never do. GAMELEIRA_CLEAN_RECORDER names a stand-in recorder, run as the
+// Record mode runs `sudo eslogger`; these tests never do. FICUS_CLEAN_RECORDER names a stand-in recorder, run as the
 // user without sudo, and the sourced functions are driven with SUDO_CMD=''. The stand-in ignores SIGINT, as a recorder
 // that does not stop when asked would, so the SIGTERM that follows is tested too.
 describe.skipIf(!fs.existsSync(JQ))('record', () => {
@@ -3232,18 +3232,18 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     return new Promise(res => child.on('close', status => res({ status, stdout, stderr, pid: child.pid! })));
   };
 
-  // GAMELEIRA_CLEAN_FAKE_OS stands in for `uname -s`; the stand-in recorder and -t keep a failing run short and sudo-free.
+  // FICUS_CLEAN_FAKE_OS stands in for `uname -s`; the stand-in recorder and -t keep a failing run short and sudo-free.
   test('record refuses to run off macOS', () => {
     const dir = tmpDir();
     const r = runClean(['record', '-t', '1', '-o', path.join(dir, 'out.jsonl')],
-      { env: { GAMELEIRA_CLEAN_FAKE_OS: 'Linux', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) } });
+      { env: { FICUS_CLEAN_FAKE_OS: 'Linux', FICUS_CLEAN_RECORDER: recorder(lineFile(dir)) } });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/only on macOS/);
     expect(fs.existsSync(path.join(dir, 'out.jsonl'))).toBe(false);
   });
 
   test('record refuses to run as root', () => {
-    const r = runClean(['record', '-t', '5'], { env: { GAMELEIRA_CLEAN_FAKE_UID: '0' } });
+    const r = runClean(['record', '-t', '5'], { env: { FICUS_CLEAN_FAKE_UID: '0' } });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/not as root|without sudo/);
     expect(r.summary['key']).toBeUndefined();
@@ -3253,7 +3253,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const dir = tmpDir();
     const t0 = Date.now();
     const res = await detached(['-c', [
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `SUDO_CMD=''`,
       `RECORDER=(/bin/bash -c "${recorder(lineFile(dir))}")`,
       'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
@@ -3285,7 +3285,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const out = path.join(dir, 'out.jsonl');
     const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out], {
       cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+      env: { ...process.env, FICUS_CLEAN_KEY_DIR: path.join(dir, 'keys'), FICUS_CLEAN_NO_LOCAL_SEEDS: '1', FICUS_CLEAN_RECORDER: recorder(lineFile(dir)) },
     });
     const pgid = child.pid!;
     groups.push(pgid);
@@ -3315,7 +3315,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const child = spawn('/bin/bash', [SCRIPT, 'record', '-o', out, ...extra], {
       cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
       // TMPDIR in the test folder: a script killed with SIGKILL cannot remove its temporary files.
-      env: { ...process.env, TMPDIR: dir, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorderCmd },
+      env: { ...process.env, TMPDIR: dir, FICUS_CLEAN_KEY_DIR: path.join(dir, 'keys'), FICUS_CLEAN_NO_LOCAL_SEEDS: '1', FICUS_CLEAN_RECORDER: recorderCmd },
     });
     groups.push(child.pid!);
     let stderr = '';
@@ -3332,7 +3332,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const dir = tmpDir();
     const perl = `$SIG{INT} = sub { exit 0 }; $| = 1; while (1) { open(my $f, '<', '${lineFile(dir)}') or die; print while <$f>; close $f; select(undef, undef, undef, 0.05) }`;
     const res = await detached(['-c', [
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `SUDO_CMD=''`,
       `RECORDER=(/usr/bin/perl -e "${perl.replace(/\$/g, '\\$')}")`,
       'DOMAINS=(); SEED_FILE=; LOADED_KEY=; KEEP_FILE=',
@@ -3361,7 +3361,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const dir = tmpDir();
     const log = path.join(dir, 'execs');
     const res = await detached(['-c', [
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `SUDO_CMD=''`,
       `RECORDER=(/bin/bash -c "${command.replace(/["$`]/g, '\\$&')}")`,
       // Each /bin/sleep the wrapper runs, counted: the wrapper is shell code, so its path can be swapped here.
@@ -3415,7 +3415,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     for (const l of lines(fs.readFileSync(out, 'utf8'))) expect(() => JSON.parse(l)).not.toThrow();
     // A killed script cannot clean up: what it leaves (its pipes, empty files) holds nothing. The stats can list short
     // account names, so the cleaner removes them when the script is gone.
-    const left = (fs.readdirSync(dir).filter(n => n.startsWith('gameleira-clean.')) as string[])
+    const left = (fs.readdirSync(dir).filter(n => n.startsWith('ficus-clean.')) as string[])
       .flatMap(n => { const p = path.join(dir, n); return fs.lstatSync(p).isDirectory() ? fs.readdirSync(p).map(m => path.join(p, m)) : [p]; })
       .filter(p => fs.lstatSync(p).isFile() && fs.lstatSync(p).size > 0);
     expect(left.length, 'temporary files with content after the script was killed').toBe(0);
@@ -3428,7 +3428,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const dir = tmpDir();
     // Not `detached`: what is left behind would hold its output open, and the run would never close.
     const child = spawn('/bin/bash', ['-c', [
-      `GAMELEIRA_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_CLEAN_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `TMPDIR="${dir}/"`,
       `SUDO_CMD=''`,
       'RECORDER=(/bin/bash -c "exec /bin/sleep 61")',
@@ -3452,7 +3452,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const out = path.join(dir, 'out.jsonl');
     const child = spawn('/bin/bash', [SCRIPT, 'record', '-t', '600', '-o', out], {
       cwd: dir, detached: true, stdio: 'ignore',
-      env: { ...process.env, TMPDIR: dir, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '1', GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+      env: { ...process.env, TMPDIR: dir, FICUS_CLEAN_KEY_DIR: path.join(dir, 'keys'), FICUS_CLEAN_NO_LOCAL_SEEDS: '1', FICUS_CLEAN_RECORDER: recorder(lineFile(dir)) },
     });
     groups.push(child.pid!);
     const exited = new Promise<void>(res => child.on('exit', () => res()));
@@ -3507,9 +3507,9 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const out = path.join(dir, 'out.jsonl');
     const seeds = path.join(dir, 'seeds.tsv');
     fs.writeFileSync(seeds, 'user\tjdoe\n');
-    const env = { ...process.env, TMPDIR: `${tmp}/`, GAMELEIRA_CLEAN_KEY_DIR: path.join(dir, 'keys'), GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' };
+    const env = { ...process.env, TMPDIR: `${tmp}/`, FICUS_CLEAN_KEY_DIR: path.join(dir, 'keys'), FICUS_CLEAN_NO_LOCAL_SEEDS: '' };
     const rec = spawn('/bin/bash', [SCRIPT, 'record', '-o', out, '-S', seeds], {
-      cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...env, GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)) },
+      cwd: dir, detached: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...env, FICUS_CLEAN_RECORDER: recorder(lineFile(dir)) },
     });
     groups.push(rec.pid!);
     let stderr = '';
@@ -3560,7 +3560,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     fs.mkdirSync(bin);
     for (const p of ['ps', 'sleep']) fs.writeFileSync(path.join(bin, p), `#!/bin/bash\necho ${p} >> '${log}'\nexec /bin/${p} "$@"\n`, { mode: 0o755 });
     const t0 = Date.now();
-    const r = runClean(['record', '-t', '2', '-o', out], { env: { GAMELEIRA_CLEAN_RECORDER: recorder(lineFile(dir)), PATH: `${bin}:${process.env.PATH}` } });
+    const r = runClean(['record', '-t', '2', '-o', out], { env: { FICUS_CLEAN_RECORDER: recorder(lineFile(dir)), PATH: `${bin}:${process.env.PATH}` } });
     expect(r.status, r.stderr).toBe(0);
     expect(Date.now() - t0).toBeLessThan(15000);
     const runs = fs.existsSync(log) ? lines(fs.readFileSync(log, 'utf8')) : [];
@@ -3579,7 +3579,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
     const dir = tmpDir();
     const out = path.join(dir, 'out.jsonl');
     const key = path.join(dir, 'fresh.key.tsv');
-    const r = runClean(['record', '-o', out, '-k', key], { env: { GAMELEIRA_CLEAN_RECORDER: 'exit 0' } });
+    const r = runClean(['record', '-o', out, '-k', key], { env: { FICUS_CLEAN_RECORDER: 'exit 0' } });
     expect(r.status, r.stderr).toBe(1);
     expect(r.stderr).toMatch(/eslogger stopped before recording anything/);
     expect(fs.existsSync(key)).toBe(false);
@@ -3594,7 +3594,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
   test.runIf(darwin)('clean -i warns about a capture from another Mac', () => {
     const line = esCreate(zsh, { path: '/Users/nobody-here-xyz/Documents/notes.txt' }, 1);
     for (const l of [line, escapeSlashes(line)]) for (const args of [['clean', '-o', '-'], ['clean', '-i', '-', '-o', '-']]) {
-      const r = runClean(args, { input: l + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+      const r = runClean(args, { input: l + '\n', env: { FICUS_CLEAN_NO_LOCAL_SEEDS: '' } });
       expect(r.status).toBe(0);
       expect(r.stderr.includes(WARNING), `the other-Mac warning, ${args.join(' ')}`).toBe(true);
       expect(lines(r.out)).toHaveLength(1);
@@ -3612,7 +3612,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
       [[...late, esCreate(zsh, { path: `/Users/${me}/Documents/a.txt` }, 1100)], true],
     ];
     for (const [input, warns] of cases) {
-      const r = runClean(['clean', '-i', '-', '-o', '-'], { input: input.join('\n') + '\n', env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' } });
+      const r = runClean(['clean', '-i', '-', '-o', '-'], { input: input.join('\n') + '\n', env: { FICUS_CLEAN_NO_LOCAL_SEEDS: '' } });
       expect(r.status).toBe(0);
       expect(r.stderr.includes(WARNING), `warning expected: ${warns}`).toBe(warns);
       expect(lines(r.out)).toHaveLength(input.length);
@@ -3643,7 +3643,7 @@ describe.skipIf(!fs.existsSync(JQ))('record', () => {
       esExec(sh, echo, { args: ['echo', `owner ${me} on ${computer}`, serial, `hello ${realName}`, `ssh ${localHost}.local`, uuid],
         cwd: `/Users/${me}`, env: [`HOME=/Users/${me}`], seq: 2 }),
     ].map(escapeSlashes).join('\n') + '\n';
-    const r = runClean(['clean', '-o', '-'], { input, env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '', GAMELEIRA_CLEAN_JQ: spyJq } });
+    const r = runClean(['clean', '-o', '-'], { input, env: { FICUS_CLEAN_NO_LOCAL_SEEDS: '', FICUS_CLEAN_JQ: spyJq } });
     expect(r.status).toBe(0);
     expect(r.stderr.includes(WARNING), 'warning on a capture of this Mac').toBe(false);
     const low = r.out.toLowerCase();
@@ -3695,7 +3695,7 @@ describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
 
   /** The words the program never takes for names outside a path (PROTECTED and KEEP in the jq program). */
   const vocabulary = (): Set<string> => {
-    const src = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'gameleira-clean.jq'), 'utf8');
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 'ficus-clean.jq'), 'utf8');
     const words = new Set<string>();
     for (const def of ['PROTECTED', 'KEEP']) {
       const body = new RegExp(`def ${def}: \\{([\\s\\S]*?)\\n\\};`).exec(src)?.[1] ?? '';
@@ -3742,10 +3742,10 @@ describe.skipIf(!hasRealCaptures || !fs.existsSync(JQ))('real captures', () => {
 // The closest test to real use: the live lab capture was recorded on this Mac, so this Mac's own names (read as seeds,
 // local seeds on) are in it. Skips without the capture, off macOS, or when the cleaner says the capture is from another
 // Mac. Counts and kinds only in every message: never a value, never the cleaner's stderr.
-const LIVE_LAB = path.resolve(__dirname, '..', 'scratch', 'gameleira-lab-live.jsonl');
+const LIVE_LAB = path.resolve(__dirname, '..', 'scratch', 'ficus-lab-live.jsonl');
 describe.skipIf(!fs.existsSync(JQ) || !fs.existsSync(LIVE_LAB) || process.platform !== 'darwin')('this Mac\'s own names in a live capture', () => {
   test('the live lab capture, cleaned with local seeds on, holds none of the key\'s account, name, host or seed values, and keeps its findings', (ctx) => {
-    const r = runClean(['clean', '-i', LIVE_LAB], { env: { GAMELEIRA_CLEAN_NO_LOCAL_SEEDS: '' }, countsOnly: true });
+    const r = runClean(['clean', '-i', LIVE_LAB], { env: { FICUS_CLEAN_NO_LOCAL_SEEDS: '' }, countsOnly: true });
     expect(r.status, `exit status (${countsOnly(r.stderr)})`).toBe(0);
     if (r.stderr.includes('names outside paths are only caught with -S')) ctx.skip();   // recorded on another Mac
     const rows = parseKey(r.key);

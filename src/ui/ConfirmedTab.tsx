@@ -42,7 +42,7 @@ export interface SaveSession {
  * Saves the open session as a JSON file, with the export options chosen on the Confirmed tab. Where the browser can
  * write into a folder (Chromium), the file goes into the remembered folder, asking for one the first time, and replaces
  * the previous save of this session there; opening the session from the home page later looks in that folder.
- * Elsewhere the file is downloaded. Either way it is named `<name>.<id hash>.gameleira-session.json`.
+ * Elsewhere the file is downloaded. Either way it is named `<name>.<id hash>.ficus-session.json`.
  */
 export function useSaveSession(): SaveSession {
   const c = useSession();

@@ -18,7 +18,7 @@ const { m, a } = queued('synthetic-lab.jsonl');
 
 test('every queue row is in the report, in queue order', () => {
   const r = build();
-  expect(r.format).toBe('gameleira-report');
+  expect(r.format).toBe('ficus-report');
   expect(r.version).toBe(1);
   expect(r.generated).toBe(GEN);
   expect(r.session).toEqual({ id: 'sess-1', name: 'lab' });
@@ -140,8 +140,8 @@ test('a capture with an empty queue still reports its facts', () => {
 });
 
 test('reportFileName follows the session save name', () => {
-  expect(reportFileName({ id: 'sess-1', name: 'lab' }, 'md')).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.md$/);
-  expect(reportFileName({ id: 'sess-1', name: 'lab' }, 'json')).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.json$/);
+  expect(reportFileName({ id: 'sess-1', name: 'lab' }, 'md')).toMatch(/^lab\.[0-9a-f]{8}\.ficus-report\.md$/);
+  expect(reportFileName({ id: 'sess-1', name: 'lab' }, 'json')).toMatch(/^lab\.[0-9a-f]{8}\.ficus-report\.json$/);
 });
 
 test('the report is deterministic', () => {

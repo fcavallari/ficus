@@ -25,7 +25,7 @@ export function Fig({ size = 16 }: { size?: number }) {
 }
 
 export function Wordmark() {
-  return <span className="brand"><Mark /><span className="wordmark">Gameleira</span></span>;
+  return <span className="brand"><Mark /><span className="wordmark">Ficus</span></span>;
 }
 
 /** The bark-tinted frame and its one sheet, for the screens that have nothing but a message to show. */

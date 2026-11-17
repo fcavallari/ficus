@@ -1,4 +1,4 @@
-# Builds Gameleira and publishes dist/index.html to GitHub Pages.
+# Builds Ficus and publishes dist/index.html to GitHub Pages.
 # One-time setup: Settings -> Pages -> Source: "GitHub Actions".
 name: Deploy to GitHub Pages
 

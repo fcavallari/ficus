@@ -9,8 +9,8 @@ import { analyze } from '../src/rules/engine';
 import { RULES, type Severity } from '../src/rules/rules';
 import { queueStatus } from './helpers';
 
-// scripts/gameleira-lab.sh writes a teaching capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
-const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'gameleira-lab.sh');
+// scripts/ficus-lab.sh writes a teaching capture. Run with /bin/bash so macOS's bash 3.2 is what gets tested there.
+const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'ficus-lab.sh');
 
 function runLab(...args: string[]): string {
   return execFileSync('/bin/bash', [SCRIPT, ...args], { maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8');
@@ -27,7 +27,7 @@ describe('the script', () => {
     expect(runLab('synthetic', '--stdout')).toBe(runLab('synthetic', '--stdout'));
   });
   test('json_str escapes quotes, backslashes and control characters', () => {
-    const out = execFileSync('/bin/bash', ['-c', `GAMELEIRA_LAB_SOURCE_ONLY=1 . "${SCRIPT}"; json_str "$1"`, '_', 'a"b\\c\td\ne\u0001'])
+    const out = execFileSync('/bin/bash', ['-c', `FICUS_LAB_SOURCE_ONLY=1 . "${SCRIPT}"; json_str "$1"`, '_', 'a"b\\c\td\ne\u0001'])
       .toString('utf8');
     expect(JSON.parse(out)).toBe('a"b\\c\td\ne\u0001');
   });
@@ -112,7 +112,7 @@ describe('live mode', () => {
     expect(rows.length).toBeGreaterThan(10);
     for (const r of rows) expect(ids.has(r.rule), r.rule).toBe(true);
     expect(tsv).toMatch(/^#.*unsigned/m);
-    expect(tsv).toMatch(/^#.*gameleira-lab\.sh/m);
+    expect(tsv).toMatch(/^#.*ficus-lab\.sh/m);
   });
   test.runIf(process.platform !== 'darwin')('live refuses to run off macOS', () => {
     expect(() => runLab('live', '-o', path.join(os.tmpdir(), 'x.jsonl'))).toThrow(/macOS/);
@@ -120,7 +120,7 @@ describe('live mode', () => {
   test.runIf(process.platform === 'darwin')('live refuses to run as root', () => {
     let err = '';
     try {
-      execFileSync('/bin/bash', [SCRIPT, 'live'], { env: { ...process.env, GAMELEIRA_LAB_FAKE_UID: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync('/bin/bash', [SCRIPT, 'live'], { env: { ...process.env, FICUS_LAB_FAKE_UID: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       err = String((e as { stderr: Buffer }).stderr);
     }
@@ -143,13 +143,13 @@ describe('live mode, after review', () => {
     }
     expect(status).not.toBe(0);
     expect(err).toMatch(/lab folder/);
-    expect(runLab('live', '--answers')).toMatch(/^#.*gameleira-lab\.sh __steps/m);
+    expect(runLab('live', '--answers')).toMatch(/^#.*ficus-lab\.sh __steps/m);
   });
 
   test('stopping the capture ends a recorder that ignores SIGINT, within a few seconds', () => {
     const t0 = Date.now();
     const out = execFileSync('/bin/bash', ['-c', [
-      `GAMELEIRA_LAB_SOURCE_ONLY=1 . "${SCRIPT}"`,
+      `FICUS_LAB_SOURCE_ONLY=1 . "${SCRIPT}"`,
       `SUDO_CMD=''`,
       `( trap '' INT; exec sleep 60 ) & ES_PID=$!`,
       'sleep 0.3',
@@ -176,6 +176,6 @@ describe('live mode, after review', () => {
   });
 
   test('the keychain lookup names a keychain file in the lab folder, so it cannot prompt for the real one', () => {
-    expect(liveSteps).toMatch(/find-generic-password -s 'Gameleira Lab Safe Storage' -w "\$LAB\//);
+    expect(liveSteps).toMatch(/find-generic-password -s 'Ficus Lab Safe Storage' -w "\$LAB\//);
   });
 });

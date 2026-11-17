@@ -129,6 +129,16 @@ async function newSession(name: string): Promise<void> {
   await user.type(screen.getByLabelText(/session name/i), `${name}{enter}`);
 }
 
+test('the home page is titled Ficus and credits the gameleira it is named after', async () => {
+  render(<App />);
+  expect(await screen.findByRole('heading', { level: 1, name: 'Ficus' })).toBeInTheDocument();
+  const tree = screen.getByRole('link', { name: 'Ficus gomelleira' });
+  expect(tree).toHaveAttribute('href', 'https://en.wikipedia.org/wiki/Ficus_gomelleira');
+  expect(tree).toHaveAttribute('target', '_blank');
+  expect(tree.closest('p')).toHaveTextContent(/^The name comes from the gameleira, Ficus gomelleira, a Brazilian fig/);
+  expect(screen.getByRole('link', { name: 'github.com/fcavallari/ficus' })).toHaveAttribute('href', 'https://github.com/fcavallari/ficus');
+});
+
 test('create session and see empty drop zone with capture command', async () => {
   render(<App />);
   await newSession('lab MacBook');
@@ -260,9 +270,9 @@ test('Save session, beside the session name, downloads the session while triagin
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
   const before = vi.mocked(URL.createObjectURL).mock.calls.length;
   await user.click(screen.getByRole('button', { name: 'Save session' }));
-  await waitFor(() => { expect(clicked).toEqual([expect.stringMatching(/^lab\.[0-9a-f]{8}\.gameleira-session\.json$/)]); });
+  await waitFor(() => { expect(clicked).toEqual([expect.stringMatching(/^lab\.[0-9a-f]{8}\.ficus-session\.json$/)]); });
   const saved = JSON.parse(await readBlob(vi.mocked(URL.createObjectURL).mock.calls[before]![0] as Blob)) as { format: string };
-  expect(saved.format).toBe('gameleira-session');
+  expect(saved.format).toBe('ficus-session');
 });
 
 test('where the browser can, Save session asks for a folder once, then saves into it without asking', async () => {
@@ -274,8 +284,8 @@ test('where the browser can, Save session asks for a folder once, then saves int
   await user.click(screen.getByRole('button', { name: 'Save session' }));
   await waitFor(() => { expect(Object.keys(dir.files)).toHaveLength(1); });
   const name = Object.keys(dir.files)[0]!;
-  expect(name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-session\.json$/);
-  expect(JSON.parse(dir.files[name]!.text)).toMatchObject({ format: 'gameleira-session', session: { name: 'lab' } });
+  expect(name).toMatch(/^lab\.[0-9a-f]{8}\.ficus-session\.json$/);
+  expect(JSON.parse(dir.files[name]!.text)).toMatchObject({ format: 'ficus-session', session: { name: 'lab' } });
   expect(await screen.findByText(`Saved ${name} in “cases”.`)).toBeInTheDocument();
   expect(screen.getByText(/Saves into “cases”/)).toBeInTheDocument();
   expect(folderMemory.dir).toBe(dir);
@@ -400,7 +410,7 @@ test('Confirmed tab lists confirmed verdicts of every capture, labelled; export 
   expect(clicked[0]).toMatch(/^lab.*\.json$/);
   const blob = vi.mocked(URL.createObjectURL).mock.calls[0]![0] as Blob;
   const exported = JSON.parse(await readBlob(blob)) as { format: string; verdicts: unknown[] };
-  expect(exported.format).toBe('gameleira-session');
+  expect(exported.format).toBe('ficus-session');
   expect(exported.verdicts).toHaveLength(3);
 
   // import creates a new session, never touches this one
@@ -442,7 +452,7 @@ test('import shows the error for a file that is not a session export', async () 
   await newSession('lab');
   await user.click(await screen.findByRole('tab', { name: 'Suspicious' }));
   await user.upload(screen.getByLabelText(/import session/i), new File(['{"nope":1}'], 'x.json'));
-  expect(await screen.findByText(/not a Gameleira session export/)).toBeInTheDocument();
+  expect(await screen.findByText(/not a Ficus session export/)).toBeInTheDocument();
 });
 
 function Boom(): never { throw new Error('boom'); }
@@ -2401,11 +2411,11 @@ test('Report for security downloads a Markdown and a JSON report', async () => {
   await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   await headerShows('111 events');
   const got = await downloads('Report for security', 2);
-  expect(got[0]!.name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.md$/);
-  expect(got[1]!.name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-report\.json$/);
-  expect(got[0]!.text.startsWith('# Gameleira report: lab')).toBe(true);
-  expect((JSON.parse(got[1]!.text) as { format: string }).format).toBe('gameleira-report');
-  expect(await screen.findByText(/^Downloaded lab\..*\.gameleira-report\.md and /)).toBeInTheDocument();
+  expect(got[0]!.name).toMatch(/^lab\.[0-9a-f]{8}\.ficus-report\.md$/);
+  expect(got[1]!.name).toMatch(/^lab\.[0-9a-f]{8}\.ficus-report\.json$/);
+  expect(got[0]!.text.startsWith('# Ficus report: lab')).toBe(true);
+  expect((JSON.parse(got[1]!.text) as { format: string }).format).toBe('ficus-report');
+  expect(await screen.findByText(/^Downloaded lab\..*\.ficus-report\.md and /)).toBeInTheDocument();
 });
 
 test('the overview offers the report with the redaction choice', async () => {

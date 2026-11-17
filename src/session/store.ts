@@ -43,6 +43,7 @@ interface Schema extends DBSchema {
   routine: { key: [string, string]; value: RoutineRec };
 }
 
+// Named before the app was renamed Ficus. Kept: a new name would leave every saved session behind in the old one.
 const DB_NAME = 'gameleira';
 
 /** Every composite key beginning with `prefix`: arrays sort above any string, so `[...prefix, []]` closes the range. */

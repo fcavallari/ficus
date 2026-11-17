@@ -1,4 +1,4 @@
-# gameleira-clean.jq: the program scripts/gameleira-clean.sh runs as `jq -n -R -c --unbuffered --slurpfile cfg CONFIG`.
+# ficus-clean.jq: the program scripts/ficus-clean.sh runs as `jq -n -R -c --unbuffered --slurpfile cfg CONFIG`.
 #
 # It reads the capture as raw lines, keeps what it has learned across lines in a state value and writes each cleaned
 # event to stdout as one line of JSON. It also talks to the script on stderr, one line per message, in two kinds:
@@ -169,7 +169,7 @@ def KEYCHAIN_PHRASES:
   + "|^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$";
 def keychain_value($prog; $a): $prog == "security" and ($a | test(KEYCHAIN_PHRASES));
 # The words of KEYCHAIN_PHRASES. In a keychain argument a mapped name is replaced only when it has none of them, so
-# Board Minutes Safe Storage becomes name5 Safe Storage, but a folder called Gameleira Lab Safe Storage does not take
+# Board Minutes Safe Storage becomes name5 Safe Storage, but a folder called Ficus Lab Safe Storage does not take
 # the service of that name.
 def KEYCHAIN_WORDS: {
   "safe": true, "storage": true, "exodus": true, "electrum": true, "metamask": true, "ledger": true, "live": true,

@@ -14,7 +14,7 @@ import { coverage, itemName, verdictKey } from '../ui/triage-model';
  * with what a reader without the capture needs to judge it. The JSON file is this object; the Markdown is rendered
  * from it, so the two always agree. The shape is versioned: tools ingest it.
  */
-export const REPORT_FORMAT = 'gameleira-report';
+export const REPORT_FORMAT = 'ficus-report';
 export const FILE_OPS_SHOWN = 20;
 
 export type Signature = 'apple-platform' | 'team-signed' | 'signed-no-team' | 'adhoc' | 'unsigned' | 'unknown';
@@ -79,7 +79,7 @@ export function signatureOf(img: Image): Signature {
 }
 
 export const reportFileName = (s: Pick<Session, 'id' | 'name'>, ext: 'md' | 'json'): string =>
-  `${slug(s.name)}.${idHash(s.id)}.gameleira-report.${ext}`;
+  `${slug(s.name)}.${idHash(s.id)}.ficus-report.${ext}`;
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const SEV_ORDER: Record<Severity, number> = { high: 0, med: 1, low: 2 };

@@ -7,7 +7,7 @@ test('single self-contained file with CSP', () => {
   expect(html).toContain("connect-src 'none'");
   expect(html).toContain("base-uri 'none'");
   expect(html).toContain("form-action 'none'");
-  expect(html).toContain('<title>Gameleira</title>');
+  expect(html).toContain('<title>Ficus</title>');
   expect(html).not.toContain('fetch('); // the module-preload polyfill is off: nothing in the page fetches
   expect(html).not.toMatch(/<script[^>]+src=/);
   expect(html).not.toMatch(/<link[^>]+rel="stylesheet"[^>]+href=/);
