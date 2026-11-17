@@ -248,7 +248,7 @@ def initial_state($cfg):
     # net_maybe found nothing in (see clean_net).
     domre: ($cfg.domains // [] | map(regex_escape) | join("|")),
     domlit: [$cfg.domains // [] | .[] | ascii_downcase] | unique, nf: {}, nfn: 0,
-    words: {}, multi: {}, nwords: 0, netc: {}, netn: 0, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "", acctall: "", clear: {}, clearn: 0,
+    words: {}, multi: {}, nwords: 0, netc: {}, netn: 0, netp: false, single: false, code: false, rel: null, sec: false, acct: {}, acctl: [], acctn: 0, acctany: "", acctre: "", acctall: "", clear: {}, clearn: 0,
     stats: { eventsIn: 0, eventsOut: 0, unreadable: 0, uncleaned: 0, seqGaps: 0, redacted: 0, placeholders: {} },
     lastSeq: null, new: [] }
   | reduce $cfg.key[] as $k (.; index_word($k.kind; $k.real; $k.placeholder))
@@ -331,6 +331,204 @@ def exec_names($ps):
   | [ ($ps[] | select(exec_name_path(.)) as $p | $e | getpath($p)), .event.exec.args[0]?, .event.btm_launch_item_add.executable_path?
       | strings | sub("/+$"; "") | split("/") | last | select(. != null and . != "") ];
 
+# ---- emails, internal hosts and URLs (General string cleaning, steps 5 and 6) -----------------------------------
+# These run on a raw value before every other step, so a host is never taken for a relative name (evil.sh) or a mapped
+# folder (acme:8080), and the key holds the address as written. What they write is inert to the later steps: a host
+# placeholder is a dotted host (dotted_host), a URL keeps its scheme (URL_SCHEME), and seed_kept skips placeholders.
+#
+# Internal: private and link-local IPv4 (10/8, 172.16/12, 192.168/16, 169.254/16, 127/8) and IPv6 (fc00::/7,
+# fe80::/10, ::1); names ending in .local, .internal, .corp, .lan, .home.arpa; names under a -D domain (state.domre);
+# a host that already has a placeholder (a host seed: Janes-MacBook-Pro, and with .local after it); and a single-label
+# name in a URL, a user@host: form or ssh's host (intranet/a.sh, deploy@buildbox:/srv). localhost stays: it names no
+# machine. Public hosts stay: a command-and-control domain is evidence.
+def IPV4_INTERNAL: "(?:10\\.[0-9]{1,3}|127\\.[0-9]{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9]{1,3}\\.[0-9]{1,3}";
+def IPV6_INTERNAL: "(?:[fF][cdCD][0-9a-fA-F]{2}|[fF][eE][89abAB][0-9a-fA-F]):(?:[0-9a-fA-F]{0,4}:){0,6}[0-9a-fA-F]{0,4}|::1";
+def internal_names($dom): "(?:[A-Za-z0-9-]+\\.)+(?:local|internal|corp|lan|home\\.arpa)" + (if $dom == "" then "" else "|(?:[A-Za-z0-9-]+\\.)*(?:" + $dom + ")" end);
+
+# Cheap tests before any regex: most strings hold none of these. contains costs a fraction of a regex in jq, which
+# compiles its pattern on every call. Input: the string (net_maybe: the state).
+def maybe_ipv4: contains("10.") or contains("127.") or contains("172.") or contains("192.168") or contains("169.254");
+def maybe_ipv6: contains("::") or contains("fe80:") or contains("FE80:");
+# maybe_names: on a lower-cased copy (names are case-insensitive: Build01.CoRp, wiki.ACME.com); $domlit the -D domains.
+# A suffix counts only after a label (build01.corp), not after a / (~/.local/bin).
+def maybe_names($domlit):
+  ((contains(".local") or contains(".corp") or contains(".lan") or contains(".internal") or contains(".arpa"))
+   and test("[a-z0-9-]\\.(?:local|corp|lan|internal|arpa)"))
+  or (. as $str | any($domlit[]; . as $d | $str | contains($d)));
+def net_maybe($str):
+  .domlit as $dl
+  | ($str | contains("@") or contains("://") or maybe_ipv4 or maybe_ipv6) or ($str | ascii_downcase | maybe_names($dl));
+
+# The placeholder of a host. One host has one placeholder whatever its case (state.ci), and a known host followed by
+# .local is that host (Janes-MacBook-Pro.local is the host seed Janes-MacBook-Pro). Input: the state. Output: {ph, state}.
+def host_placeholder($h):
+  ($h | ascii_downcase) as $l
+  | (.ci.host[$l] // (if $l | endswith(".local") then .ci.host[$l[:-6]] else null end)) as $have
+  | if $have != null then {ph: $have, state: .} else placeholder("host"; $h) end;
+
+# True when $h (no brackets, no port) is an internal host. $single: a single-label name counts (URLs, user@host:, ssh's
+# host). Input: the state.
+def internal_host($h; $single):
+  ($h | ascii_downcase) as $l
+  | .domre as $dom
+  | $l != "" and $l != "localhost"
+    and (($single and ($l | test("^[a-z0-9_-]+$")))
+         or ($l | test("^(?:" + IPV4_INTERNAL + "|" + IPV6_INTERNAL + ")$"))
+         or ($l | test("^(?:" + internal_names($dom) + ")$"; "i"))
+         or .ci.host[$l] != null
+         or (($l | endswith(".local")) and .ci.host[$l[:-6]] != null));
+
+# A host as written ([fd12::1] with brackets): its placeholder when internal, else as it is. Input: the state. {v, s}.
+def clean_host($h; $single):
+  ($h | if startswith("[") and endswith("]") then .[1:-1] else . end) as $bare
+  | if internal_host($bare; $single) then host_placeholder($bare) | {v: .ph, s: .state} else {v: $h, s: .} end;
+
+# A query or fragment: each value becomes a data placeholder, names stay (?id=data1&t=data2); a part without = is a
+# value. Input: the state. Output: {v, s}.
+def clean_query($q):
+  reduce ($q | split("&"))[] as $kv ({s: ., out: []};
+    ($kv | index("=")) as $i
+    | (if $i == null then {k: "", v: $kv} else {k: $kv[:$i + 1], v: $kv[$i + 1:]} end) as $c
+    | if $c.v == "" then .out += [$kv]
+      else (.s | placeholder("data"; $c.v)) as $r | .s = $r.state | .out += [$c.k + $r.ph] end)
+  | {v: (.out | join("&")), s: .s};
+
+# The file extensions that are also top-level domains (evil.sh, x.zip): a host ending in one is a host.
+def TLD_EXTENSIONS: {"sh": true, "py": true, "pl": true, "rs": true, "md": true, "so": true, "ps": true, "zip": true, "mov": true, "dot": true};
+# ssh, scp and the like name user@host logins, not mailboxes.
+def SSH_FAMILY: {"ssh": true, "scp": true, "sftp": true, "rsync": true, "mosh": true, "autossh": true, "ssh-copy-id": true, "sshpass": true};
+# Programs whose positional arguments are hosts (not URLs): a dotted one is a host, never a relative name.
+def HOST_PROGRAMS: {
+  "ping": true, "ping6": true, "nc": true, "ncat": true, "netcat": true, "telnet": true, "traceroute": true,
+  "traceroute6": true, "dig": true, "host": true, "nslookup": true, "whois": true, "ftp": true, "sftp": true, "mosh": true
+};
+# Shell code whose command, at the end of $before, is one of these programs (behind sudo, env, nohup … if any).
+# Programs that run the command after them, with their options that take a value (short letters, long names):
+# sudo -u root wget …, env -u FOO curl …, nice -n 5 …, timeout -s KILL 30 … (timeout also takes a duration first).
+def WRAPPER_OPTIONS: {
+  "sudo": {short: "ugCDhprtUT", long: {"--user": true, "--group": true, "--close-from": true, "--chdir": true, "--host": true,
+                                      "--prompt": true, "--role": true, "--type": true, "--other-user": true, "--command-timeout": true}},
+  "doas": {short: "uC", long: {}},
+  "env": {short: "uCSP", long: {"--unset": true, "--chdir": true, "--split-string": true}},
+  "nohup": {short: "", long: {}}, "command": {short: "", long: {}}, "time": {short: "", long: {}},
+  "exec": {short: "a", long: {}},
+  "nice": {short: "n", long: {"--adjustment": true}},
+  "timeout": {short: "sk", long: {"--signal": true, "--kill-after": true}},
+  "xargs": {short: "EIJLnPRSs", long: {}}
+};
+# True when $o, an option of the wrapper $wrap, takes the next word as its value.
+def wrapper_value_option($wrap; $o):
+  WRAPPER_OPTIONS[$wrap] as $spec
+  | $spec.long[$o] == true or (($o | test("^-[A-Za-z]+$")) and ($spec.short | contains($o[-1:])));
+# The wrappers as a regex, each with options that may take a value.
+def WRAPPER_RE: "(?:(?:" + (WRAPPER_OPTIONS | keys | join("|")) + ")(?:\\s+-\\S+(?:\\s+[^\\s;&|()`-]\\S*)?)*\\s+)*";
+def COMMAND_BEFORE($progs):
+  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?(?:" + $progs + ")\\s[^;&|()`\\n]*$";
+def LOGIN_PROGRAMS: SSH_FAMILY | keys | join("|");
+# Shell code that ends in ssh's host position: ssh (mosh …) and its options, each with a value or not.
+def SSH_HOST_BEFORE:
+  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?"
+  + "(?:ssh|mosh|autossh|ssh-copy-id)(?:\\s+-[A-Za-z]+(?:\\s+[^\\s-]\\S*)?)*\\s+$";
+
+# Every match of $re in $str replaced by f, which gets {m: the match, s: the state, t: $str} and gives {v, s}. Input:
+# the state. Output: {v, s}.
+def net_sub($str; $re; f):
+  [$str | match($re; "g")] as $ms
+  | if $ms == [] then {v: $str, s: .}
+    else reduce $ms[] as $m ({s: ., out: "", at: 0};
+           ({m: $m, s: .s, t: $str} | f) as $r
+           | .out += $str[.at:$m.offset] + $r.v | .s = $r.s | .at = $m.offset + $m.length)
+      | {v: (.out + $str[.at:]), s: .s}
+    end;
+
+# A scheme URL anywhere (file:// is a path, cleaned by step 1).
+def URL_RE: "(?<![A-Za-z0-9+.-])(?![Ff][Ii][Ll][Ee]:)[A-Za-z][A-Za-z0-9+.-]*://[^\\s\"'`<>|;(){}\\\\]*";
+# x@y, an email or a user@host login: the domain or host as far as it goes.
+def AT_RE: "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*)";
+# True when the match at $o..$e of $t lies inside a path: the word it is in (to a space, quote or shell character) has
+# a / before it, or it is followed by a / and a letter (backup-10.0.0.5/x); an address in /dev/tcp/ or /dev/udp/, or
+# before a / and digits (10.0.0.0/8), is not.
+def in_path_word($t; $o; $e):
+  ([$t[:$o] | match("[^\\s\"'`;|&<>(),=]*$") | .string] | .[0] // "") as $b
+  | (($b | contains("/")) and ($b | test("^/dev/(?:tcp|udp)/$") | not)) or ($t[$e:$e + 2] | test("^/[^0-9]"));
+
+# Emails and internal hosts in a value (steps 5 and 6, without URLs): x@y as an email, or as a login, whose host is
+# cleaned and user left to step 7; then internal host names and addresses. x@y is a login in an argument of an
+# ssh-family program ($login "all"), in user@host:path form in one of git ($login "colon"), and in shell code ($code)
+# as ssh's host or in user@host:path form after an ssh-family or git command (COMMAND_BEFORE, SSH_HOST_BEFORE);
+# anywhere else it is an email when its domain ends in a top-level domain. One inside a path word (in_path_word) is
+# left to the path step, which gives the name it is in a placeholder of its own (net_name). Input: the state.
+# Output: {v, s}.
+def net_shapes($str; $code; $login):
+  (if $str | contains("@") then
+       net_sub($str; AT_RE;
+         .m.string as $x | .t as $t | (.m.offset + .m.length) as $e
+         | ($x | index("@")) as $at | $x[$at + 1:] as $dom
+         | if ($x | test("^person[0-9]+@example\\.invalid$"; "i")) or in_path_word($t; .m.offset; $e) then {v: $x, s: .s}
+           elif ($t[$e:$e + 2] | test("^:[^\\s]")) as $colon
+                | $login == "all" or ($colon and $login == "colon")
+                  or ($code and ($t[:.m.offset] as $b
+                                 | ($colon and ($b | test(COMMAND_BEFORE(LOGIN_PROGRAMS + "|git"))))
+                                   or ($b | test(SSH_HOST_BEFORE)))) then
+             .s | clean_host($dom; true) | .v = $x[:$at + 1] + .v
+           elif ($dom | test("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$"))
+                and ($dom | split(".") | last | ascii_downcase) as $tld
+                | FILE_EXTENSIONS[$tld] != true or TLD_EXTENSIONS[$tld] == true then
+             .s | placeholder("email"; $x) | {v: .ph, s: .state}
+           else {v: $x, s: .s} end)
+     else {v: $str, s: .} end)
+  | .v as $s3 | .s
+  # One regex of the kinds the value may hold (each regex is compiled on every call).
+  # An address may follow a letter or a colon (-h10.0.0.5, TCP:10.0.0.5:4444, 8080:10.0.0.5:80), not a digit, a dot or
+  # a / (110.0.0.1, a path).
+  | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9./]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
+      (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:./_-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
+      (.domlit as $dl | if $s3 | ascii_downcase | maybe_names($dl) then
+         "(?<![A-Za-z0-9._%+/-])(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])(?!\\.[A-Za-z0-9])" else empty end) ] as $res
+  | if $res == [] then {v: $s3, s: .}
+    else net_sub($s3; $res | join("|");
+           if in_path_word(.t; .m.offset; .m.offset + .m.length) then {v: .m.string, s: .s}
+           else .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state} end) end;
+
+
+
+# Which kinds the value being cleaned may hold (state.netp: false, or {at, ip4, ip6, names}, set from the whole value
+# by clean_event), and whether $x, a part of it, may hold one of them: a cheap test before net_shapes in each name.
+# Input: the state.
+def net_flags($str):
+  .domlit as $dl
+  # An @ counts before a dotted name (jane@acme.com), not node@18 in a Homebrew path; an address prefix only before a
+  # whole private address. One regex each, only for a value net_maybe let through.
+  | {at: ($str | contains("@") and test("@[A-Za-z0-9-]+\\.[A-Za-z]")),
+     ip4: ($str | maybe_ipv4 and test(IPV4_INTERNAL)),
+     ip6: ($str | maybe_ipv6), names: ($str | ascii_downcase | maybe_names($dl))};
+def net_hint($x):
+  .netp as $f | .domlit as $dl
+  | $f != false
+    and (($f.at and ($x | contains("@"))) or ($f.ip4 and ($x | maybe_ipv4)) or ($f.ip6 and ($x | maybe_ipv6))
+         or ($f.names and ($x | contains(".")) and ($x | ascii_downcase | maybe_names($dl))));
+
+# An email, internal host or private address in a path's name, when the value may hold one (net_hint; steps 1, 5
+# and 6): {v: the name with them replaced (a host keeps a file extension after it: wiki.acme.corp.plist), whole: true
+# when the name was one of them, s: the state}, or null. Input: the state.
+def net_name($n):
+  if (net_hint($n) | not) then null
+  else ([$n | capture("^(?<b>.+)(?<e>\\.[A-Za-z0-9]{1,11})$")] | .[0]) as $c
+    | net_shapes($n; false; "") as $r
+    | (if $r.v != $n or $c == null or FILE_EXTENSIONS[$c.e[1:] | ascii_downcase] != true then $r + {e: ""}
+       else net_shapes($c.b; false; "") as $q | if $q.v == $c.b then $r + {e: ""} else $q + {e: $c.e} end end) as $x
+    | if $x.e == "" and $x.v == $n then null
+      else {v: ($x.v + $x.e), s: $x.s,
+            whole: ($x.v | test("^(?:host[0-9]+\\.internal\\.invalid|person[0-9]+@example\\.invalid)$"))} end
+  end;
+# A kept name with the emails and internal hosts in it replaced (net_name), as {v, s}. Input: the state.
+def net_in_name($n): net_name($n) as $r | if $r == null then {v: $n, s: .} else {v: $r.v, s: $r.s} end;
+
+# A name kept in a path: account names and seeds replaced (a program's name keeps account names: $program), and
+# emails and internal hosts in it (net_in_name). Input: the state. Output: {v, s}.
+def kept_clean($n; $program):
+  (if $program then replace_parts_opts($n; "program") else replace_accounts($n) end) as $k | net_in_name($k);
+
 # ---- paths ------------------------------------------------------------------------------------------------------
 # %-escapes in a file:// URL, undone (as UTF-8), so a name matches the same name in a plain path.
 def hex_byte: ascii_downcase | explode | map(if . >= 97 then . - 87 else . - 48 end) | .[0] * 16 + .[1];
@@ -410,7 +608,7 @@ def clean_path_opts($text; $esc):
          else $raw end) as $names
       | ($names | map(ascii_downcase)) as $lc
       | place($lc; $home) as $pl
-      | if $pl.from == null and unchanged_elsewhere($text) then {v: $text, s: .}
+      | if $pl.from == null and unchanged_elsewhere($text) and (net_hint($text) | not) then {v: $text, s: .}
         else
           # ~name/ is that account's home folder: the name becomes its user placeholder.
           (if $tu != "" and (system_account($tu) | not) then placeholder("user"; $tu) | {pre: ("~" + .ph), s: .state} else {pre: $pre0, s: .} end) as $h
@@ -424,16 +622,22 @@ def clean_path_opts($text; $esc):
               elif $pl.from != null and $i >= $pl.from then
                 # Kept names win over an account or volume of the same name (a NAS share called Downloads).
                 if .s.keep[$n] == true then
-                  (.s | replace_parts_opts($n; "program")) as $k | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
+                  (.s | kept_clean($n; true)) as $k | .s = $k.s | .out += [if $k.v == $n then $raw[$i] else $k.v | url_part($url) end]
                 elif kept_by_place($pl; $lc; $i; $n) or (.s.map.name[$n] == null and (.s | kept_name($n; $i == $pl.top))) then
-                  (.s | replace_accounts($n)) as $k | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
+                  (.s | kept_clean($n; false)) as $k | .s = $k.s | .out += [if $k.v == $n then $raw[$i] else $k.v | url_part($url) end]
                 elif .s.map.name[$n] != null then .out += [.s.map.name[$n] | url_part($url)]
                 elif (.s.map.user[$n] // .s.map.volume[$n]) != null then .out += [.s.map.user[$n] // .s.map.volume[$n]]
-                else (.s | placeholder("name"; $n)) as $r | .s = $r.state | .out += [$r.ph | url_part($url)]
+                else
+                  # A name that is an internal host or address, or an email already met, has that placeholder (the same
+                  # in a path as anywhere); any other name, one with an email or host inside included, a name placeholder.
+                  (.s | net_name($n)) as $nn
+                  | if $nn != null and $nn.whole and (($nn.v | startswith("host")) or .s.ci.email[$n | ascii_downcase] != null) then
+                      .s = $nn.s | .out += [$nn.v | url_part($url)]
+                    else (.s | placeholder("name"; $n)) as $r | .s = $r.state | .out += [$r.ph | url_part($url)] end
                 end
               elif $pl.from == null then
-                (.s | if .keep[$n] then replace_parts_opts($n; "program") else replace_accounts($n) end) as $k
-                | .out += [if $k == $n then $raw[$i] else $k | url_part($url) end]
+                (.s | kept_clean($n; .keep[$n] == true)) as $k | .s = $k.s
+                | .out += [if $k.v == $n then $raw[$i] else $k.v | url_part($url) end]
               else .out += [$raw[$i]] end)
           | {v: ($pre + (.out | join("/"))), s: .s}
         end
@@ -914,66 +1118,6 @@ def arg_value($prog; $a):
       | if $k != null and $k < ($a | length) - 2 then {pre: $a[0:$k + 2], val: $a[$k + 2:]} else option_value($a) end
     else option_value($a) end;
 
-# ---- emails, internal hosts and URLs (General string cleaning, steps 5 and 6) -----------------------------------
-# These run on a raw value before every other step, so a host is never taken for a relative name (evil.sh) or a mapped
-# folder (acme:8080), and the key holds the address as written. What they write is inert to the later steps: a host
-# placeholder is a dotted host (dotted_host), a URL keeps its scheme (URL_SCHEME), and seed_kept skips placeholders.
-#
-# Internal: private and link-local IPv4 (10/8, 172.16/12, 192.168/16, 169.254/16, 127/8) and IPv6 (fc00::/7,
-# fe80::/10, ::1); names ending in .local, .internal, .corp, .lan, .home.arpa; names under a -D domain (state.domre);
-# a host that already has a placeholder (a host seed: Janes-MacBook-Pro, and with .local after it); and a single-label
-# name in a URL, a user@host: form or ssh's host (intranet/a.sh, deploy@buildbox:/srv). localhost stays: it names no
-# machine. Public hosts stay: a command-and-control domain is evidence.
-def IPV4_INTERNAL: "(?:10\\.[0-9]{1,3}|127\\.[0-9]{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01])|192\\.168|169\\.254)\\.[0-9]{1,3}\\.[0-9]{1,3}";
-def IPV6_INTERNAL: "(?:[fF][cdCD][0-9a-fA-F]{2}|[fF][eE][89abAB][0-9a-fA-F]):(?:[0-9a-fA-F]{0,4}:){0,6}[0-9a-fA-F]{0,4}|::1";
-def internal_names($dom): "(?:[A-Za-z0-9-]+\\.)+(?:local|internal|corp|lan|home\\.arpa)" + (if $dom == "" then "" else "|(?:[A-Za-z0-9-]+\\.)*(?:" + $dom + ")" end);
-
-# Cheap tests before any regex: most strings hold none of these. contains costs a fraction of a regex in jq, which
-# compiles its pattern on every call. Input: the string (net_maybe: the state).
-def maybe_ipv4: contains("10.") or contains("127.") or contains("172.") or contains("192.168") or contains("169.254");
-def maybe_ipv6: contains("::") or contains("fe80:") or contains("FE80:");
-# maybe_names: on a lower-cased copy (names are case-insensitive: Build01.CoRp, wiki.ACME.com); $domlit the -D domains.
-def maybe_names($domlit):
-  contains(".local") or contains(".corp") or contains(".lan") or contains(".internal") or contains(".arpa")
-  or (. as $str | any($domlit[]; . as $d | $str | contains($d)));
-def net_maybe($str):
-  .domlit as $dl
-  | ($str | contains("@") or contains("://") or maybe_ipv4 or maybe_ipv6) or ($str | ascii_downcase | maybe_names($dl));
-
-# The placeholder of a host. One host has one placeholder whatever its case (state.ci), and a known host followed by
-# .local is that host (Janes-MacBook-Pro.local is the host seed Janes-MacBook-Pro). Input: the state. Output: {ph, state}.
-def host_placeholder($h):
-  ($h | ascii_downcase) as $l
-  | (.ci.host[$l] // (if $l | endswith(".local") then .ci.host[$l[:-6]] else null end)) as $have
-  | if $have != null then {ph: $have, state: .} else placeholder("host"; $h) end;
-
-# True when $h (no brackets, no port) is an internal host. $single: a single-label name counts (URLs, user@host:, ssh's
-# host). Input: the state.
-def internal_host($h; $single):
-  ($h | ascii_downcase) as $l
-  | .domre as $dom
-  | $l != "" and $l != "localhost"
-    and (($single and ($l | test("^[a-z0-9_-]+$")))
-         or ($l | test("^(?:" + IPV4_INTERNAL + "|" + IPV6_INTERNAL + ")$"))
-         or ($l | test("^(?:" + internal_names($dom) + ")$"; "i"))
-         or .ci.host[$l] != null
-         or (($l | endswith(".local")) and .ci.host[$l[:-6]] != null));
-
-# A host as written ([fd12::1] with brackets): its placeholder when internal, else as it is. Input: the state. {v, s}.
-def clean_host($h; $single):
-  ($h | if startswith("[") and endswith("]") then .[1:-1] else . end) as $bare
-  | if internal_host($bare; $single) then host_placeholder($bare) | {v: .ph, s: .state} else {v: $h, s: .} end;
-
-# A query or fragment: each value becomes a data placeholder, names stay (?id=data1&t=data2); a part without = is a
-# value. Input: the state. Output: {v, s}.
-def clean_query($q):
-  reduce ($q | split("&"))[] as $kv ({s: ., out: []};
-    ($kv | index("=")) as $i
-    | (if $i == null then {k: "", v: $kv} else {k: $kv[:$i + 1], v: $kv[$i + 1:]} end) as $c
-    | if $c.v == "" then .out += [$kv]
-      else (.s | placeholder("data"; $c.v)) as $r | .s = $r.state | .out += [$c.k + $r.ph] end)
-  | {v: (.out | join("&")), s: .s};
-
 # One URL (General string cleaning, step 6): user info removed and counted as redacted (a credential, never in the key),
 # an internal host replaced, path segments cleaned like names in a cleaned place (with their %-escapes undone, as in a
 # file:// URL), query and fragment values made data placeholders. Without a scheme (a curl or wget argument: evil.sh,
@@ -996,41 +1140,6 @@ def clean_url($u):
   | (if $c.f == null then {v: "", s: .} else clean_query($c.f[1:]) | .v = "#" + .v end) as $f
   | {v: (($c.sch // "") + $h.v + $port.v + $pa.v + $q.v + $f.v), s: $f.s};
 
-# ssh, scp and the like name user@host logins, not mailboxes.
-def SSH_FAMILY: {"ssh": true, "scp": true, "sftp": true, "rsync": true, "mosh": true, "autossh": true, "ssh-copy-id": true, "sshpass": true};
-# Programs whose positional arguments are hosts (not URLs): a dotted one is a host, never a relative name.
-def HOST_PROGRAMS: {
-  "ping": true, "ping6": true, "nc": true, "ncat": true, "netcat": true, "telnet": true, "traceroute": true,
-  "traceroute6": true, "dig": true, "host": true, "nslookup": true, "whois": true, "ftp": true, "sftp": true, "mosh": true
-};
-# Shell code whose command, at the end of $before, is one of these programs (behind sudo, env, nohup … if any).
-# Programs that run the command after them, with their options that take a value (short letters, long names):
-# sudo -u root wget …, env -u FOO curl …, nice -n 5 …, timeout -s KILL 30 … (timeout also takes a duration first).
-def WRAPPER_OPTIONS: {
-  "sudo": {short: "ugCDhprtUT", long: {"--user": true, "--group": true, "--close-from": true, "--chdir": true, "--host": true,
-                                      "--prompt": true, "--role": true, "--type": true, "--other-user": true, "--command-timeout": true}},
-  "doas": {short: "uC", long: {}},
-  "env": {short: "uCSP", long: {"--unset": true, "--chdir": true, "--split-string": true}},
-  "nohup": {short: "", long: {}}, "command": {short: "", long: {}}, "time": {short: "", long: {}},
-  "exec": {short: "a", long: {}},
-  "nice": {short: "n", long: {"--adjustment": true}},
-  "timeout": {short: "sk", long: {"--signal": true, "--kill-after": true}},
-  "xargs": {short: "EIJLnPRSs", long: {}}
-};
-# True when $o, an option of the wrapper $wrap, takes the next word as its value.
-def wrapper_value_option($wrap; $o):
-  WRAPPER_OPTIONS[$wrap] as $spec
-  | $spec.long[$o] == true or (($o | test("^-[A-Za-z]+$")) and ($spec.short | contains($o[-1:])));
-# The wrappers as a regex, each with options that may take a value.
-def WRAPPER_RE: "(?:(?:" + (WRAPPER_OPTIONS | keys | join("|")) + ")(?:\\s+-\\S+(?:\\s+[^\\s;&|()`-]\\S*)?)*\\s+)*";
-def COMMAND_BEFORE($progs):
-  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?(?:" + $progs + ")\\s[^;&|()`\\n]*$";
-def LOGIN_PROGRAMS: SSH_FAMILY | keys | join("|");
-# Shell code that ends in ssh's host position: ssh (mosh …) and its options, each with a value or not.
-def SSH_HOST_BEFORE:
-  "(?:^|[;&|(`\\n\"'])\\s*" + WRAPPER_RE + "(?:[^\\s;&|()`\"']*/)?"
-  + "(?:ssh|mosh|autossh|ssh-copy-id)(?:\\s+-[A-Za-z]+(?:\\s+[^\\s-]\\S*)?)*\\s+$";
-
 # curl's long options that take the next argument (CURL_SPEC in src/rules/args.ts).
 def CURL_LONG_VALUES: {
   "--output": true, "--header": true, "--data": true, "--data-raw": true, "--data-binary": true, "--data-urlencode": true,
@@ -1044,8 +1153,6 @@ def curl_value_option($prev):
   or (($prev | test("^-[A-Za-z]+$"))
       and ([$prev[1:] | explode[] | [.] | implode] as $l
            | (first(range(0; $l | length) | . as $k | select(SHORT_VALUES("curl") | contains($l[$k]))) // -1) == ($l | length) - 1));
-# The file extensions that are also top-level domains (evil.sh, x.zip): a host ending in one is a host.
-def TLD_EXTENSIONS: {"sh": true, "py": true, "pl": true, "rs": true, "md": true, "so": true, "ps": true, "zip": true, "mov": true, "dot": true};
 # A value without a scheme whose host part ends in a file extension that is no top-level domain (Board.pdf,
 # notes.txt/x): a file, even where curl or wget would read a URL, so it is cleaned as a name.
 def file_like_host:
@@ -1089,21 +1196,6 @@ def clean_net_word($kind; $w):
     | if $c == null then {v: $w, s: .} else clean_host($c.h; true) | .v = ($c.u // "") + .v end
   else clean_host($w; false) end;
 
-# Every match of $re in $str replaced by f, which gets {m: the match, s: the state, t: $str} and gives {v, s}. Input:
-# the state. Output: {v, s}.
-def net_sub($str; $re; f):
-  [$str | match($re; "g")] as $ms
-  | if $ms == [] then {v: $str, s: .}
-    else reduce $ms[] as $m ({s: ., out: "", at: 0};
-           ({m: $m, s: .s, t: $str} | f) as $r
-           | .out += $str[.at:$m.offset] + $r.v | .s = $r.s | .at = $m.offset + $m.length)
-      | {v: (.out + $str[.at:]), s: .s}
-    end;
-
-# A scheme URL anywhere (file:// is a path, cleaned by step 1).
-def URL_RE: "(?<![A-Za-z0-9+.-])(?![Ff][Ii][Ll][Ee]:)[A-Za-z][A-Za-z0-9+.-]*://[^\\s\"'`<>|;(){}\\\\]*";
-# x@y, an email or a user@host login: the domain or host as far as it goes.
-def AT_RE: "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*)";
 # Shell code as words (a quoted string is part of its word) and separators, for code_urls.
 def CODE_WORDS: "(?:\"(?:\\\\.|[^\"\\\\])*\"|'[^']*'|\\\\.|[^\\s\"'`;|&<>()])+|[;|&()`\\n]+|[<>]+";
 # A word without its quotes, when it is all one quoted string or has no quotes or backslashes; else null.
@@ -1151,59 +1243,31 @@ def code_urls($str): code_urls_from($str; 0);
 # The URLs code_urls set aside, put back into the cleaned value.
 def unrest_urls($prot): if $prot == [] then . else gsub("\u0001(?<i>[0-9]+)\u0001"; $prot[.i | tonumber]) end;
 
-# The steps of clean_net, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; x@y as an
-# email, or as a login, whose host is cleaned and user left to step 7; then internal host names and addresses anywhere
-# but inside a path (after a /), except /dev/tcp/ and /dev/udp/. x@y is a login in an argument of an ssh-family
-# program ($login "all"), in user@host:path form in one of git ($login "colon"), and in shell code as ssh's host or in
-# user@host:path form after an ssh-family or git command (COMMAND_BEFORE, SSH_HOST_BEFORE); anywhere else it is an email when its domain
-# ends in a top-level domain. Input: the state. Output: {v, s, prot} (prot: see code_urls).
+# The steps of clean_net, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; then
+# net_shapes. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
   | .v as $s1 | .s
   | (if $code and ($s1 | contains("curl") or contains("wget")) then code_urls($s1) else {v: $s1, s: ., prot: []} end)
   | .v as $s2 | .prot as $prot | .s
-  | (if $s2 | contains("@") then
-       net_sub($s2; AT_RE;
-         .m.string as $x | .t as $t | (.m.offset + .m.length) as $e
-         | ($x | index("@")) as $at | $x[$at + 1:] as $dom
-         | if ($x | test("^person[0-9]+@example\\.invalid$"; "i")) then {v: $x, s: .s}
-           elif ($t[$e:$e + 2] | test("^:[^\\s]")) as $colon
-                | $login == "all" or ($colon and $login == "colon")
-                  or ($code and ($t[:.m.offset] as $b
-                                 | ($colon and ($b | test(COMMAND_BEFORE(LOGIN_PROGRAMS + "|git"))))
-                                   or ($b | test(SSH_HOST_BEFORE)))) then
-             .s | clean_host($dom; true) | .v = $x[:$at + 1] + .v
-           elif ($dom | test("^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$"))
-                and ($dom | split(".") | last | ascii_downcase) as $tld
-                | FILE_EXTENSIONS[$tld] != true or TLD_EXTENSIONS[$tld] == true then
-             .s | placeholder("email"; $x) | {v: .ph, s: .state}
-           else {v: $x, s: .s} end)
-     else {v: $s2, s: .} end)
-  | .v as $s3 | .s
-  # One regex of the kinds the value may hold (each regex is compiled on every call).
-  # An address may follow a letter or a colon (-h10.0.0.5, TCP:10.0.0.5:4444, 8080:10.0.0.5:80), not a digit, a dot or
-  # a / (110.0.0.1, a path).
-  | [ (if $s3 | maybe_ipv4 then "(?:(?<=/dev/tcp/)|(?<=/dev/udp/)|(?<![0-9./]))(?:" + IPV4_INTERNAL + ")(?![0-9]|\\.[0-9])" else empty end),
-      (if $s3 | maybe_ipv6 then "(?<![0-9A-Za-z:./_-])(?:" + IPV6_INTERNAL + ")(?![0-9A-Za-z:])" else empty end),
-      (.domlit as $dl | if $s3 | ascii_downcase | maybe_names($dl) then
-         "(?<![A-Za-z0-9._%+/-])(?i:" + internal_names(.domre) + ")(?![A-Za-z0-9-])(?!\\.[A-Za-z0-9])" else empty end) ] as $res
-  | if $res == [] then {v: $s3, s: ., prot: $prot}
-    else net_sub($s3; $res | join("|"); .m.string as $h | .s | host_placeholder($h) | {v: .ph, s: .state}) | .prot = $prot end;
+  | net_shapes($s2; $code; $login) | .prot = $prot;
 
 # Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), after the cheap
 # test (net_maybe). What it made of a value outside code and logins is cached (state.netc, at most 4096 values of up to 1 KB,
 # emptied when full): environment entries come back in event after event, and most that hold an @ or a URL do. A
 # cached value gives the placeholders it would get again, and the user info it removed is counted again. Input: the
 # state. Output: {v, s}.
-def clean_net($str; $code; $login):
-  # net_maybe lower-cases the value, which costs more than the rest of the test, and most values come back in event
-  # after event: one it found nothing in is noted (state.nf, at most 8192 values of up to 1 KB, emptied when full).
-  (if .nf[$str] == true then {m: false, s: .}
-   elif net_maybe($str) then {m: true, s: .}
-   elif ($str | utf8bytelength) > 1024 then {m: false, s: .}
-   else {m: false, s: ((if .nfn >= 8192 then .nf = {} | .nfn = 0 else . end) | .nf[$str] = true | .nfn += 1)} end) as $t
-  | $t.s
-  | if ($t.m or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
+# net_maybe, remembered: it lower-cases the value, which costs more than the rest of the test, and most values come
+# back in event after event, so one it found nothing in is noted (state.nf, at most 8192 values of up to 1 KB, emptied
+# when full). Input: the state. Output: {m: what net_maybe says, s}.
+def net_test($str):
+  if .nf[$str] == true then {m: false, s: .}
+  elif net_maybe($str) then {m: true, s: .}
+  elif ($str | utf8bytelength) > 1024 then {m: false, s: .}
+  else {m: false, s: ((if .nfn >= 8192 then .nf = {} | .nfn = 0 else . end) | .nf[$str] = true | .nfn += 1)} end;
+# clean_net with net_test's answer $m given.
+def clean_net_m($str; $code; $login; $m):
+  if ($m or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
   elif $code or $login != "" then net_steps($str; $code; $login)
   elif .netc[$str] != null then .netc[$str] as $c | {v: $c.v, s: (.stats.redacted += $c.r), prot: []}
   else .stats.redacted as $r0
@@ -1212,6 +1276,7 @@ def clean_net($str; $code; $login):
       else .v as $v | .s |= ((if .netn >= 4096 then .netc = {} | .netn = 0 else . end)
                               | .netc[$str] = {v: $v, r: (.stats.redacted - $r0)} | .netn += 1) end
   end;
+def clean_net($str; $code; $login): net_test($str) as $t | $t.s | clean_net_m($str; $code; $login; $t.m);
 
 # True when the raw value $v holds no account name or seed in any form: known (state.clear: executable paths and
 # environment entries come back in event after event) or tested now. Input: the state.
@@ -1241,14 +1306,16 @@ def clean_event($state):
   | [$e | paths(worth_cleaning(true))] as $ps
   | (reduce ($e | exec_names($ps)[]) as $n ($state; if .keep[$n] then . else .keep[$n] = true end)) as $s0
   | reduce $ps[] as $p ({e: $e, s: ($s0 | .new = [])};
-      ($e | getpath($p)) as $v
+      .s.netp = false
+      | ($e | getpath($p)) as $v
       | if ($v | type) == "object" then
           ($v | named_in_dir($p)) as $k
           | if $k == null then .
             else $v[$k.dir].path as $dir | $v[$k.name] as $name
               | if ($dir | startswith("/")) and $name != "" then
-                  (.s | clean_relative($dir; $name)) as $r
-                  | .s = $r.s | .e |= setpath($p + [$k.name]; $r.s | replace_seeds($r.v))
+                  (.s | net_test($name)) as $t
+                  | (.s = $t.s | .s.netp = (if $t.m then .s | net_flags($name) else false end) | .s | clean_relative($dir; $name)) as $r
+                  | .s = ($r.s | .netp = false) | .e |= setpath($p + [$k.name]; $r.s | replace_seeds($r.v))
                 else . end
             end
         elif $p[-1] == "signing_id" then
@@ -1272,10 +1339,12 @@ def clean_event($state):
             else
             # Emails, internal hosts and URLs first (steps 5 and 6), then the other steps on what they leave; a path
             # field that holds a path is a path, whose names are names.
-            (if path_field($p) and ($v | startswith("/") or startswith("~") or startswith("file:")) then {v: $v, s: .s, prot: []}
-             else .s | clean_net($v; $code; if ($arg | not) or $code then "" elif SSH_FAMILY[$prog] == true then "all"
-                                            elif $prog == "git" then "colon" else "" end) end) as $n
-            | .s = $n.s | $n.v as $u | $n.prot as $prot
+            # The path step cleans emails and hosts in names when the value may hold one (state.netp, net_name).
+            (.s | net_test($v)) as $t
+            | (if path_field($p) and ($v | startswith("/") or startswith("~") or startswith("file:")) then {v: $v, s: $t.s, prot: []}
+               else $t.s | clean_net_m($v; $code; if ($arg | not) or $code then "" elif SSH_FAMILY[$prog] == true then "all"
+                                                 elif $prog == "git" then "colon" else "" end; $t.m) end) as $n
+            | .s = ($n.s | .netp = (if $t.m then net_flags($v) else false end)) | $n.v as $u | $n.prot as $prot
             # Shell code is never a relative name. One word of an ssh command (ssh host ls Board/Q3.pdf) can be.
             | if $relc and $arg and ($kc | not)
                  and (if $p[3] == 0 then ($u | index("/")) != null
@@ -1299,7 +1368,7 @@ def clean_event($state):
               end
             end
         end)
-  | {event: .e, state: .s, new: .s.new};
+  | {event: .e, state: (.s | .netp = false), new: .s.new};
 
 # One raw line against the state: {s: new state, emit: [event to write], new: [key entries]}.
 def step($line):

@@ -2035,7 +2035,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       run(1121, '/bin/sh', ['sh', '-c', `curl -o /tmp/q "${url}#frag" | tee /tmp/log`], '/', 2),
       // Not hosts: kept paths with a version that looks like an address, perl's ::, a public address.
       run(1122, '/usr/bin/perl', ['perl', '-MFile::Basename', '-e', 'print 1'], '/', 3),
-      esCreate(zsh, { path: '/Library/Frameworks/X.framework/Versions/10.0.0.5/X' }, 4),
+      esCreate(zsh, { path: '/Library/Frameworks/X.framework/Versions/10.0.0/X' }, 4),
       run(1123, '/sbin/ping', ['ping', '8.8.8.8'], '/', 5),
       run(1124, '/usr/bin/curl', ['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net'], '/', 6),
       run(1125, '/bin/sh', ['sh', '-c', 'date +%H:%M:%S; echo 10:30:00 110.0.0.1 1.10.0.0.5'], '/', 7),
@@ -2050,7 +2050,7 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
     expect(ev[0]!.event.exec.args).toEqual(['curl', '-o', `/tmp/${n.get('p')}`, cleaned]);
     expect(ev[1]!.event.exec.args[2]).toBe(`curl -o /tmp/${n.get('q')} "${cleaned}#${d.get('frag')}" | tee /tmp/${n.get('log')}`);
     expect(ev[2]!.event.exec.args).toEqual(['perl', '-MFile::Basename', '-e', 'print 1']);
-    expect(ev[3]!.event.create.destination.existing_file.path).toBe('/Library/Frameworks/X.framework/Versions/10.0.0.5/X');
+    expect(ev[3]!.event.create.destination.existing_file.path).toBe('/Library/Frameworks/X.framework/Versions/10.0.0/X');
     expect(ev[4]!.event.exec.args).toEqual(['ping', '8.8.8.8']);
     expect(ev[5]!.event.exec.args).toEqual(['curl', '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/110.0.0.0', '-o', '/dev/null', 'evil.example.net']);
     expect(ev[6]!.event.exec.args[2]).toBe('date +%H:%M:%S; echo 10:30:00 110.0.0.1 1.10.0.0.5');
@@ -2232,5 +2232,44 @@ describe.skipIf(!fs.existsSync(JQ))('hosts', () => {
       ['sh', '-c', `ping -c1 ${b} && rsync -a x ${b}:/srv/`]]);
     expect(args.slice(5)).toEqual([['ssh', h.get('work')], ['echo', 'work']]);
     sameFindings(input, r.out);
+  });
+
+  // An email, host or address inside a path is the path step's: cleaned places give a name that is one its own
+  // placeholder and any other name a name placeholder; kept places replace them inside the name. Field and argument agree.
+  test('emails, hosts and addresses inside paths get the same placeholder in every field, and no key row holds a placeholder', () => {
+    const mail = '/Users/jdoe/Library/Mail/V10/IMAP-jane.doe@acme.com/x.emlx';
+    const input = [
+      run(1210, '/bin/echo', ['echo', 'jane.doe@acme.com', 'wiki.acme.corp'], '/', 1),
+      esCreate(zsh, { path: '/Library/Application Support/Vendor/jane.doe@acme.com/db' }, 2),
+      esCreate(zsh, { path: '/Library/Preferences/wiki.acme.corp.plist' }, 3),
+      esCreate(zsh, { path: mail }, 4),
+      run(1211, '/bin/ls', ['ls', mail], '/', 5),
+      esCreate(zsh, { path: '/Users/jdoe/backup-10.0.0.5/x' }, 6),
+      run(1212, '/bin/ls', ['ls', '/Users/jdoe/backup-10.0.0.5/x'], '/', 7),
+      run(1213, '/bin/sh', ['sh', '-c', 'cat /Library/Preferences/wiki.acme.corp.plist /Users/jdoe/backup-10.0.0.5/x'], '/', 8),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/10.0.0.9/notes.txt' }, 9),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-D', 'acme.com'] : ['clean', '-o', '-', '-D', 'acme.com'], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const ev = events(r.out);
+      const h = keyed(r.key, 'host');
+      const n = keyed(r.key, 'name');
+      const created = ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path as string);
+      const args = ev.filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+      expect(args[0]).toEqual(['echo', 'person1@example.invalid', h.get('wiki.acme.corp')]);
+      expect(created[0]).toBe('/Library/Application Support/Vendor/person1@example.invalid/db');
+      expect(created[1]).toBe(`/Library/Preferences/${h.get('wiki.acme.corp')}.plist`);
+      const mailOut = `/Users/user1/Library/Mail/${n.get('V10')}/${n.get('IMAP-jane.doe@acme.com')}/${n.get('x.emlx')}`;
+      expect(created[2]).toBe(mailOut);
+      expect(args[1]).toEqual(['ls', mailOut]);
+      const backup = `/Users/user1/${n.get('backup-10.0.0.5')}/${n.get('x')}`;
+      expect(created[3]).toBe(backup);
+      expect(args[2]).toEqual(['ls', backup]);
+      expect(args[3]![2]).toBe(`cat /Library/Preferences/${h.get('wiki.acme.corp')}.plist ${backup}`);
+      expect(created[4]).toBe(`/Users/user1/Documents/${h.get('10.0.0.9')}/${n.get('notes.txt')}`);
+      for (const k of parseKey(r.key)) expect(k.real, k.placeholder).not.toMatch(/(?:name|host|data|user)\d+|internal\.invalid|example\.invalid/);
+      expect(r.out).not.toMatch(/jane|acme|10\.0\.0/);
+    }
   });
 });
