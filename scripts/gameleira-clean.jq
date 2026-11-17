@@ -258,9 +258,16 @@ def LIBRARY_STRUCTURE: {
 # A bundle (Foo.app, X.framework …) or Go's build folder: kept wherever it is.
 def bundle_name: test("(?i:\\.(?:app|framework|bundle|plugin|kext|xpc|appex))$|^(?i:go-build)");
 # A bundle whose name has no dot before its suffix (Code.app, Visual Studio Code.app): the rules read such app names,
-# so account names and seeds inside are left alone. One named by a bundle ID (com.jdoe.Helper.xpc) has its parts
-# replaced like any bundle ID.
+# so account names inside are left alone (seed_kept, replace_accounts); host names, full names and other seeds are
+# replaced there like anywhere. One named by a bundle ID (com.jdoe.Helper.xpc) has its parts replaced like any bundle ID.
 def plain_bundle_name: bundle_name and (sub("(?i:\\.[a-z]+)$"; "") | index(".") == null);
+# The apps shell-under-app does not count as a launcher of shells (src/rules/rules.ts, the parent path test). A bundle of
+# exactly one of these names is kept whole, whatever seed it equals, so that test reads the same name.
+def RULE_APPS: {
+  "Terminal": true, "iTerm": true, "iTerm2": true, "Visual Studio Code": true, "Code": true, "Cursor": true, "Xcode": true,
+  "Claude": true, "Warp": true, "Ghostty": true, "Alacritty": true, "kitty": true, "WezTerm": true
+};
+def rule_app_bundle: endswith(".app") and RULE_APPS[.[:-4]] == true;
 # A reverse-DNS bundle ID (com.apple.launchd.x, with or without .plist), recognised only at the top of a temporary
 # folder: it has a common first label and no document extension, so it.budget.cuts.xlsx is a person's file.
 def bundle_id:
@@ -276,19 +283,25 @@ def kept_name($n; $ids):
 # the ends, however many parts they span: jdoe -> user1, com.jdoe.agent.plist -> com.user1.agent.plist,
 # com.Janes-MacBook-Pro.tool -> com.host1.internal.invalid.tool, a platform UUID that is the whole value -> seed2.
 # Longest first. Only names that already have a placeholder are replaced, so the state does not change. Input: the state.
-def replace_parts($n):
+# $users false: account names stay, only full names, hosts and other seeds are replaced.
+def replace_parts_opts($n; $users):
   if .acctn == 0 then $n
   else .acctany as $re
     | if ($n | test($re; "i") | not) then $n
       else .acct as $a
-        | reduce (.acctl[] | select(. as $k | $n | test($k | regex_escape; "i"))) as $k ($n;
+        | reduce (.acctl[] | select(. as $k | ($users or ($a[$k] | startswith("user") | not)) and ($n | test($k | regex_escape; "i")))) as $k ($n;
             gsub("(?<![^.\\-])" + ($k | regex_escape) + "(?![^.\\-])"; $a[$k]; "i"))
       end
   end;
+def replace_parts($n): replace_parts_opts($n; true);
 
-# Account names and seeds in a path's name (replace_parts). A bundle with a plain name (Code.app) is kept whole: the
-# rules read app names (Code.app, Visual Studio Code.app). Input: the state.
-def replace_accounts($n): if ($n | plain_bundle_name) then $n else replace_parts($n) end;
+# Account names and seeds in a path's name (replace_parts). In a bundle with a plain name (Code.app, Visual Studio
+# Code.app), whose name the rules read, an account name is a path component and stays; full names, hosts and other
+# seeds are replaced (Jane Doe.app becomes Person 1.app). A bundle named like an app the rules list (RULE_APPS) is
+# kept whole. Input: the state.
+def replace_accounts($n):
+  if ($n | plain_bundle_name) then (if ($n | rule_app_bundle) then $n else replace_parts_opts($n; false) end)
+  else replace_parts($n) end;
 
 # The file names of the programs and scripts an event runs: the last component of every process's executable.path,
 # exec's script.path and dyld_exec_path, a launch item's executable_path, and argv[0]. Input: the event. $ps: the
@@ -467,13 +480,15 @@ def SEED_TOKEN: "[^\\s\"'`=:;|&<>(),/\\\\\\[\\]{}]*";
 def SEED_PART: "[^/\"'`\\n\\r:=;|&<>]*";
 
 # True when an account name or seed found in $t (the match $m) is to stay: inside an option name (--code, --no-code),
-# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name or a plain bundle that is the whole token
-# (Code.app), or a placeholder already written (Person 2, person1@example.invalid).
-# An account name (never a host, full name or other seed) is also kept inside a kept program name or plain bundle of
-# several words, tested on the whole part it is in (Code Helper (Plugin).app, Visual Studio Code.app, "Code Helper"):
-# in a path component always, elsewhere only when it is a weak word (shorter than 4 characters, common or a rule
-# word: code), since text such as "jdoe has Zoom.app" is not an app's name. In shell code ($code) a part that runs
-# from the start of the code and has a space is a command, not a name (ls jdoe Code.app), so it does not count.
+# a variable's name ($HOME, ${HOME}, HOME=, JDOE_DIR=), a kept program name that is the whole token, a bundle named
+# like an app the rules list (Claude.app, RULE_APPS), or a placeholder already written (Person 2,
+# person1@example.invalid).
+# An account name (never a host, full name or other seed) is also kept inside a plain bundle that is the whole token
+# (Code.app), and inside a kept program name or plain bundle of several words, tested on the whole part it is in (Code
+# Helper (Plugin).app, Visual Studio Code.app, "Code Helper"): in a path component always, elsewhere only when it is a
+# weak word (shorter than 4 characters, common or a rule word: code), since text such as "jdoe has Zoom.app" or
+# "echo jdoe.app" is not an app's name. In shell code ($code) a part that runs from the start of the code and has a
+# space is a command, not a name (ls jdoe Code.app), so it does not count.
 # Input: the state.
 def seed_kept($t; $m; $code):
   $m.offset as $o | ($o + $m.length) as $e
@@ -485,18 +500,21 @@ def seed_kept($t; $m; $code):
   | ($l | test("^-+[A-Za-z0-9_-]*$"))
     or ($before | test("[$]\\{?[A-Za-z0-9_]*$"))
     or (($l | test("^[A-Za-z0-9_]*$")) and ($after | test("^[A-Za-z0-9_]*=")))
-    or .keep[$tok] == true or ($tok | plain_bundle_name)
+    or .keep[$tok] == true or ($tok | rule_app_bundle)
     or ($tok | test("^(?i:person[0-9]+@example\\.invalid|host[0-9]+\\.internal\\.invalid)$"))
     or ($m.string == "Person" and ($after | test("^ [0-9]")))
     or ((.acct[$m.string | gsub("\\\\(?= )"; "") | ascii_downcase] // "" | test("^user[0-9]+$"))
-        and ([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
-        | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
-        | ($pl + $m.string + $pr) as $part
-        | (($before | length) - ($pl | length)) as $i
-        | ((if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/"
-           or ($m.string | length) < 4 or COMMON_ACCOUNT_WORDS[$m.string | ascii_downcase] == true or protected_word($m.string))
-          and (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
-          and (($part | plain_bundle_name) or .keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true));
+        and (($m.string | length) < 4 or COMMON_ACCOUNT_WORDS[$m.string | ascii_downcase] == true or protected_word($m.string)) as $weak
+        | ((($tok | plain_bundle_name)
+            and ($weak or (($before | length) > ($l | length) and $before[($before | length) - ($l | length) - 1:($before | length) - ($l | length)] == "/")
+                 or $after[($r | length):($r | length) + 1] == "/"))
+           or (([$before | match(SEED_PART + "$") | .string] | .[0] // "") as $pl
+               | ([$after | match("^" + SEED_PART) | .string] | .[0] // "") as $pr
+               | ($pl + $m.string + $pr) as $part
+               | (($before | length) - ($pl | length)) as $i
+               | ((if $i > 0 then $before[$i - 1:$i] else "" end) == "/" or $after[($pr | length):($pr | length) + 1] == "/" or $weak)
+                 and (($code | not) or ($pl | length) < $o or ($part | test("\\s") | not))
+                 and (($part | plain_bundle_name) or .keep[$part | sub("^\\s+"; "") | sub("\\s+$"; "")] == true))));
 
 # $str with account names and seeds replaced, case-insensitively, as whole words (General string cleaning, step 7; a
 # word ends at anything but a letter or digit, so jdoe_backup is user1_backup):

@@ -1779,6 +1779,57 @@ describe.skipIf(!fs.existsSync(JQ))('seeds', () => {
     sameFindings(input, r.out);
   });
 
+  // Only an account name is kept inside a bundle name, and only where it is a weak word or a path component (the rules
+  // read app names: Code.app). A host name, full name or other seed is replaced there like anywhere.
+  test('host names, full names and seeds inside bundle names are replaced, in text and in paths', () => {
+    const helper = '/Applications/Jane Doe.app/Contents/MacOS/Helper';
+    const input = [
+      run(1000, '/bin/echo', ['echo', 'Jane Doe.app', 'Janes-MacBook-Pro.app', 'C02XK1ABJGH5.app', 'jdoe.app'], '/', 1),
+      run(1001, '/usr/bin/open', ['open', '-a', 'Jane Doe.app'], '/', 2),
+      run(1002, '/bin/sh', ['sh', '-c', 'open -a "Jane Doe.app" && open -a Janes-MacBook-Pro.app'], '/', 3),
+      esCreate(zsh, { path: '/Applications/Jane Doe.app/Contents/MacOS/x' }, 4),
+      esCreate(zsh, { path: '/Applications/Janes-MacBook-Pro.app/Contents/Info.plist' }, 5),
+      esCreate(zsh, { path: '/Applications/Janes-MacBook-Pro Tools.app/Contents/Info.plist' }, 6),
+      esCreate(zsh, { path: '/Applications/jdoe.app/Contents/Info.plist' }, 7),
+      ...fromApp(1003, helper, ['/bin/zsh', '-c', 'echo hi'], 8),
+    ].join('\n') + '\n';
+    for (const stdin of [false, true]) {
+      const r = runClean(stdin ? ['clean', '-i', '-', '-o', '-', '-S', seedFile(SEEDS)] : ['clean', '-o', '-', '-S', seedFile(SEEDS)], { input });
+      expect(r.status, r.stderr).toBe(0);
+      const ev = events(r.out);
+      const args = ev.filter(e => e.event.exec).map(e => e.event.exec.args as string[]);
+      expect(args[0]).toEqual(['echo', 'Person 1.app', 'host1.internal.invalid.app', 'seed1.app', 'user1.app']);
+      expect(args[1]).toEqual(['open', '-a', 'Person 1.app']);
+      expect(args[2]![2]).toBe('open -a "Person 1.app" && open -a host1.internal.invalid.app');
+      expect(ev.filter(e => e.event.create).map(e => e.event.create.destination.existing_file.path)).toEqual([
+        '/Applications/Person 1.app/Contents/MacOS/x', '/Applications/host1.internal.invalid.app/Contents/Info.plist',
+        '/Applications/host1.internal.invalid Tools.app/Contents/Info.plist',
+        // An account name in a path component of a bundle stays: the rules read app names.
+        '/Applications/jdoe.app/Contents/Info.plist',
+      ]);
+      expect(ev.find(e => e.event.fork)!.process.executable.path).toBe('/Applications/Person 1.app/Contents/MacOS/Helper');
+      expect(r.out.replace(/\/Applications\/jdoe\.app\//g, '')).not.toMatch(/Jane|Doe|Janes|MacBook|C02XK1ABJGH5|jdoe/i);
+      sameFindings(input, r.out);
+    }
+  });
+
+  // shell-under-app skips shells under the apps it lists (Code.app, Claude.app …): a seed that is one of those names
+  // stays in a bundle name of exactly that name, so the finding does not appear.
+  test('a seed that is the name of an app shell-under-app lists stays in that bundle name', () => {
+    const input = [
+      ...fromApp(1010, '/Applications/Claude.app/Contents/MacOS/Electron', ['/bin/zsh', '-c', 'echo hi'], 1),
+      ...fromApp(1012, '/Applications/Cursor.app/Contents/MacOS/Electron', ['/bin/zsh', '-c', 'echo hi'], 3),
+      ...fromApp(1014, '/Applications/Claude Tools.app/Contents/MacOS/Tool', ['/bin/zsh', '-c', 'echo hi'], 5),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-', '-S', seedFile([['host', 'Claude'], ['realname', 'Cursor']])], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(events(r.out).filter(e => e.event.fork).map(e => e.process.executable.path)).toEqual([
+      '/Applications/Claude.app/Contents/MacOS/Electron', '/Applications/Cursor.app/Contents/MacOS/Electron',
+      '/Applications/host1.internal.invalid Tools.app/Contents/MacOS/Tool',
+    ]);
+    sameFindings(input, r.out);
+  });
+
   // A key made from seeds on one run is the only source of them on the next (-k without -S).
   test.skipIf(process.platform !== 'darwin')('a loaded key matches its names composed or decomposed', () => {
     const nfc = 'José Núñez';
