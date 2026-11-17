@@ -1667,7 +1667,7 @@ def pre_exec($e):
          envk: $n.keep, s: $n.s}
     end;
 
-# The steps of clean_net, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; then
+# The steps of clean_net_m, in this order: scheme URLs; in shell code ($code), curl and wget's URL arguments; then
 # net_shapes. Input: the state. Output: {v, s, prot} (prot: see code_urls).
 def net_steps($str; $code; $login):
   (if $str | contains("://") then net_sub($str; URL_RE; .m.string as $u | .s | clean_url($u)) else {v: $str, s: .} end)
@@ -1676,15 +1676,11 @@ def net_steps($str; $code; $login):
   | .v as $s2 | .prot as $prot | .s
   | net_shapes($s2; $code; $login) | .prot = $prot;
 
-# Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), after the cheap
-# test (net_maybe). What it made of a value outside code and logins is cached (state.netc, at most 4096 values of up to 1 KB,
-# emptied when full): environment entries come back in event after event, and most that hold an @ or a URL do. A
-# cached value gives the placeholders it would get again, and the user info it removed is counted again. Input: the
-# state. Output: {v, s}.
-# net_maybe, remembered (pre_test: it lower-cases the value, which costs more than the rest of the test). Input: the
-# state. Output: {m: what net_maybe says, s}.
-def net_test($str): pre_test($str; false) | {m, s};
-# clean_net with net_test's answer $m given.
+# Emails, internal hosts and URLs in a value (General string cleaning, steps 5 and 6; net_steps), when $m (the cheap
+# test net_maybe, as pre_test remembers it) says it may hold one. What it made of a value outside code and logins is
+# cached (state.netc, at most 4096 values of up to 1 KB, emptied when full): environment entries come back in event
+# after event, and most that hold an @ or a URL do. A cached value gives the placeholders it would get again, and the
+# user info it removed is counted again. Input: the state. Output: {v, s, prot}.
 def clean_net_m($str; $code; $login; $m):
   if ($m or ($code and ($str | contains("curl") or contains("wget")))) | not then {v: $str, s: ., prot: []}
   elif $code or $login != "" then net_steps($str; $code; $login)
@@ -1695,7 +1691,6 @@ def clean_net_m($str; $code; $login; $m):
       else .v as $v | .s |= ((if .netn >= 4096 then .netc = {} | .netn = 0 else . end)
                               | .netc[$str] = {v: $v, r: (.stats.redacted - $r0)} | .netn += 1) end
   end;
-def clean_net($str; $code; $login): net_test($str) as $t | $t.s | clean_net_m($str; $code; $login; $t.m);
 
 # True when the raw value $v holds no account name or seed in any form: known (state.clear: executable paths and
 # environment entries come back in event after event) or tested now. Input: the state.
