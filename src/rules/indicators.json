@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "updated": "2026-11-17",
+  "about": "Host indicators that vendors published for named macOS malware families, in the forms a process capture can show: code-signing team and signing IDs, file and plist paths, and strings in a command line. File hashes and network indicators beyond what appears in an argument are left out on purpose: a capture holds neither. Each entry names its source and how sure it is. high = read in the report's own page text, or quoted exactly in Objective-See's reproduction of it; medium = read only through a summarizing fetch, or from a single secondary page. Severity is high only for a high-confidence, distinctive indicator. An absence of matches proves nothing: indicators age, and a family changes its names between samples. Chollima names are CrowdStrike's: the cited reports say DPRK, Lazarus or BlueNoroff.",
+  "pathSyntax": "`~/` is any user's home folder; `*` is any characters inside one path segment; `**/` is any number of folders; a trailing `/` means the folder and everything in it. Paths compare case-insensitively after /private/tmp, /private/var and /private/etc are written as /tmp, /var and /etc. kind `plist` is a launch plist file name, matched in /Library/LaunchAgents, /Library/LaunchDaemons and ~/Library/LaunchAgents. kind `argv` is a whole word in a command line, never argv[0].",
+  "families": [
+    {
+      "id": "chillyhell",
+      "name": "ChillyHell",
+      "actor": "UNC4487 (Mandiant's report is not public; Jamf says a Team ID matches Mandiant's sample)",
+      "attribution": "vendor-attributed, not independently confirmed",
+      "summary": "Modular macOS backdoor, signed and notarized under developer certificates that Apple later revoked. Persists as an Apple-lookalike launch plist, or in a shell profile.",
+      "indicators": [
+        { "kind": "team-id", "value": "R868N47FV5", "severity": "high", "confidence": "high", "source": "https://www.jamf.com/blog/chillyhell-a-modular-macos-backdoor/", "note": "Signed chrome_render and the newer applet sample; revoked." },
+        { "kind": "team-id", "value": "F645668Q3H", "severity": "high", "confidence": "high", "source": "https://www.jamf.com/blog/chillyhell-a-modular-macos-backdoor/", "note": "Signed the notarized eDrawMaxBeta2023 sample; revoked." },
+        { "kind": "plist", "value": "com.apple.qtop.plist", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Apple does not ship a plist of this name in a user or /Library launch folder." },
+        { "kind": "path", "value": "~/Library/com.apple.qtop/", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Install folder of the user-level backdoor (`qtop`)." },
+        { "kind": "path", "value": "/usr/local/bin/qtop", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Backdoor binary of the root install." },
+        { "kind": "path", "value": "/tmp/kworker", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/chillyhell-a-modular-macos-backdoor/", "note": "Downloaded module run from here and deleted about 5 seconds later." }
+      ]
+    },
+    {
+      "id": "flexibleferret",
+      "name": "FlexibleFerret",
+      "actor": "DPRK-aligned operators, the Contagious Interview operation (Jamf); CrowdStrike names this cluster Famous Chollima",
+      "attribution": "vendor-attributed",
+      "summary": "A fake job interview tells the victim to paste a Terminal command that \"fixes\" the camera or microphone and stages a loader in /var/tmp.",
+      "indicators": [
+        { "kind": "plist", "value": "com.driver9990as7tpatch.plist", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "LaunchAgent that runs the loader; Jamf also names it." },
+        { "kind": "path", "value": "/var/tmp/macpatch.sh", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/flexibleferret-malware-continues-to-adapt/", "note": "Stage-2 script of the camera and microphone lure." },
+        { "kind": "path", "value": "/var/tmp/CDrivers.zip", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/flexibleferret-malware-continues-to-adapt/", "note": "Payload archive." },
+        { "kind": "path", "value": "/var/tmp/CDrivers/", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/flexibleferret-malware-continues-to-adapt/", "note": "Where the archive is extracted." },
+        { "kind": "path", "value": "**/MediaPatcher.app/", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/flexibleferret-malware-continues-to-adapt/", "note": "Ad-hoc signed decoy app." },
+        { "kind": "path", "value": "~/Library/LaunchAgents/us.zoom.ZoomDaemon.plist", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Earlier variant, as SentinelOne described it (the plist's Label is com.zoom). Only in the user's folder: the real Zoom installer's system daemon has this name in /Library/LaunchDaemons." },
+        { "kind": "path", "value": "/var/tmp/InstallerAlert.app/", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Earlier variant: fake password-prompt app opened by the installer's postinstall script." },
+        { "kind": "path", "value": "/var/tmp/versus.app/", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Earlier variant: app launched by the same postinstall script (versus.pkg)." }
+      ]
+    },
+    {
+      "id": "contagious-interview",
+      "name": "Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)",
+      "actor": "DPRK (Jamf: a long-running campaign attributed to the DPRK; Unit 42: CL-STA-0240, moderate confidence); CrowdStrike names this cluster Famous Chollima",
+      "attribution": "vendor-attributed",
+      "summary": "Trojanized meeting apps and installers, poisoned repositories (VS Code tasks, git hooks) and a Python backdoor kit staged in hidden folders.",
+      "indicators": [
+        { "kind": "path", "value": "~/.n2/", "severity": "high", "confidence": "high", "source": "https://unit42.paloaltonetworks.com/two-campaigns-by-north-korea-bad-actors-target-job-hunters/", "note": "InvisibleFerret payload and browser-stealer folder (files pay, bow, adc)." },
+        { "kind": "path", "value": "~/.npl", "severity": "high", "confidence": "high", "source": "https://unit42.paloaltonetworks.com/two-campaigns-by-north-korea-bad-actors-target-job-hunters/", "note": "InvisibleFerret's first Python script, in the home folder." },
+        { "kind": "path", "value": "/Volumes/MiroTalk/MiroTalk.app/Contents/MacOS/Jami", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x7D.html", "note": "Trojanized native BeaverTail meeting app run from its disk image." },
+        { "kind": "path", "value": "**/Contents/MacOS/.macos", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/contagious-interview-trojanized-macos-installers/", "note": "A hidden Go program as an app's CFBundleExecutable: the trojanized installers' entry point." },
+        { "kind": "path", "value": "~/.vscode/vscode-bootstrap.sh", "severity": "med", "confidence": "medium", "source": "https://opensourcemalware.com/blog/latest-contagious-interview-malware-campaign-abuses-microsoft-vscode-tasks", "note": "Dropped by the VS Code tasks.json route." },
+        { "kind": "argv", "value": "/task/tokenlinux", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/contagious-interview-trojanized-macos-installers/", "note": "Staging-server URL path of the second stage." },
+        { "kind": "argv", "value": "/task/mac", "severity": "med", "confidence": "medium", "source": "https://www.jamf.com/blog/contagious-interview-trojanized-macos-installers/", "note": "Staging-server URL path the trojanized installers curl." },
+        { "kind": "argv", "value": "162.0.239.85", "severity": "med", "confidence": "medium", "source": "https://gbhackers.com/contagious-interview-operators/amp/", "note": "Staging server address, as quoted by a secondary report (network indicator: matches only inside a command line)." },
+        { "kind": "path", "value": "~/Library/LaunchAgents/com.onedrive.launcher.plist", "severity": "med", "confidence": "medium", "source": "https://quetzal.bitso.com/p/north-koreas-safari-hunting-for-rats", "note": "The Mach-O Man kit's LaunchAgent for a fake OneDrive binary (Bitso, which calls the actor Famous Chollima)." }
+      ]
+    },
+    {
+      "id": "kandykorn",
+      "name": "KANDYKORN",
+      "actor": "DPRK, overlapping with the Lazarus Group; Elastic tracks the intrusion set as REF7001 (Lazarus corresponds to CrowdStrike's Labyrinth Chollima)",
+      "attribution": "vendor-attributed",
+      "summary": "Fake arbitrage-bot lure sent over Discord; a Python dropper stages SUGARLOADER, and persistence hijacks Discord.",
+      "indicators": [
+        { "kind": "signing-id", "value": "HLOADER-5555494485b460f1e2343dffaef9b94d01136320", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "Ad-hoc signing identifier of HLOADER, which replaces Discord's binary." },
+        { "kind": "path", "value": "/Users/Shared/FinderTools", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "Python dropper saved in /Users/Shared." },
+        { "kind": "path", "value": "/Users/Shared/.sld", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "SUGARLOADER." },
+        { "kind": "path", "value": "/Library/Caches/com.apple.safari.ck", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "Encrypted config shared by SUGARLOADER and KANDYKORN." },
+        { "kind": "path", "value": "/Applications/Discord.app/Contents/MacOS/.lock", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "The genuine Discord binary, renamed when HLOADER takes its place." },
+        { "kind": "path", "value": "**/Cross-Platform Bridges.zip", "severity": "med", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "The lure archive." },
+        { "kind": "argv", "value": "tp-globa.xyz", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "Download host passed as an argument by testSpeed.py (network indicator)." },
+        { "kind": "argv", "value": "23.254.226.90", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "SUGARLOADER's default C2, passed as a command-line argument (network indicator)." },
+        { "kind": "argv", "value": "192.119.64.43", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/elastic-catches-dprk-passing-out-kandykorn", "note": "Network indicator from the same report." }
+      ]
+    },
+    {
+      "id": "rustbucket",
+      "name": "RustBucket",
+      "actor": "Lazarus Group, high confidence (Elastic); earlier attributed to BlueNoroff by Jamf (CrowdStrike: Stardust Chollima)",
+      "attribution": "vendor-attributed",
+      "summary": "An AppleScript stage-1 app fetches a Rust backdoor into /Users/Shared and persists as an Apple-lookalike LaunchAgent.",
+      "indicators": [
+        { "kind": "path", "value": "/Users/Shared/.pd", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/DPRK-strikes-using-a-new-variant-of-rustbucket", "note": "Stage-2 binary saved by the stage-1 script." },
+        { "kind": "path", "value": "~/Library/Metadata/System Update", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/DPRK-strikes-using-a-new-variant-of-rustbucket", "note": "Persistent copy of the binary." },
+        { "kind": "plist", "value": "com.apple.systemupdate.plist", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/DPRK-strikes-using-a-new-variant-of-rustbucket", "note": "Apple-lookalike LaunchAgent." },
+        { "kind": "argv", "value": "webhostwatto.work.gd", "severity": "high", "confidence": "high", "source": "https://www.elastic.co/security-labs/DPRK-strikes-using-a-new-variant-of-rustbucket", "note": "C2 URL passed as the LaunchAgent's argument (network indicator)." }
+      ]
+    },
+    {
+      "id": "hiddenrisk",
+      "name": "HiddenRisk",
+      "actor": "DPRK, BlueNoroff (SentinelOne, as quoted by Objective-See); CrowdStrike names BlueNoroff Stardust Chollima",
+      "attribution": "vendor-attributed",
+      "summary": "A lure app masquerading as a PDF persists through ~/.zshenv, guarded by a marker file.",
+      "indicators": [
+        { "kind": "path", "value": "/tmp/.zsh_init_success", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x7D.html", "note": "Marker file that stops the ~/.zshenv line from running twice." },
+        { "kind": "path", "value": "**/Hidden Risk Behind New Surge of Bitcoin Price.app/", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x7D.html", "note": "First-stage lure app." },
+        { "kind": "path", "value": "/tmp/growth", "severity": "med", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x7D.html", "note": "Second-stage backdoor; the name is generic, so only this exact path counts." }
+      ]
+    },
+    {
+      "id": "bluenoroff-zoom-lure",
+      "name": "BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)",
+      "actor": "BlueNoroff (TA444), DPRK-linked (Huntress, as quoted by Objective-See); CrowdStrike names BlueNoroff Stardust Chollima",
+      "attribution": "vendor-attributed",
+      "summary": "A fake Zoom update AppleScript fetches a stager with a spoofed curl user agent and installs a Nim loader as a root LaunchDaemon.",
+      "indicators": [
+        { "kind": "plist", "value": "com.telegram2.update.agent.plist", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "LaunchDaemon of the persistent loader." },
+        { "kind": "path", "value": "/Library/Application Support/Frameworks/Telegram 2", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "The persistent Nim loader." },
+        { "kind": "path", "value": "/Library/CloudKitDaemon/", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Dropper working folder." },
+        { "kind": "signing-id", "value": "root_startup_loader_arm64", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Signing identifier of the Telegram 2 loader." },
+        { "kind": "path", "value": "**/zoom_sdk_support.scpt", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "The fake Zoom update script." },
+        { "kind": "path", "value": "/tmp/icloud_helper", "severity": "med", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Stager that the script curls down and runs." },
+        { "kind": "path", "value": "/Users/Shared/.pwd", "severity": "med", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Marker file the stage script touches." },
+        { "kind": "argv", "value": "curl1-mac", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "The spoofed curl user agent passed with -A." },
+        { "kind": "argv", "value": "web071zoom.us", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Stager host (network indicator)." },
+        { "kind": "argv", "value": "support.us05web-zoom.biz", "severity": "high", "confidence": "high", "source": "https://objective-see.org/blog/blog_0x84.html", "note": "Fake Zoom host (network indicator)." }
+      ]
+    },
+    {
+      "id": "evasive-panda-monlam",
+      "name": "Evasive Panda macOS downloader (Monlam watering hole, 2024)",
+      "actor": "Evasive Panda, also called BRONZE HIGHLAND and Daggerfly (ESET: high confidence)",
+      "attribution": "vendor-attributed, high confidence",
+      "summary": "A trojanized Tibetan-keyboard installer, signed with a development certificate that Apple revoked 18 days after signing, installs a downloader and a LaunchAgent.",
+      "indicators": [
+        { "kind": "team-id", "value": "2289F6V4BN", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/en/eset-research/evasive-panda-leverages-monlam-festival-target-tibetans/", "note": "Team ID of the Apple Development certificate that signed the Mach-O; revoked 2024-01-25." },
+        { "kind": "path", "value": "~/Library/Containers/CalendarFocusEXT/", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/en/eset-research/evasive-panda-leverages-monlam-festival-target-tibetans/", "note": "Install folder the postinstall script copies the Mach-O into." },
+        { "kind": "plist", "value": "com.Terminal.us.plist", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/en/eset-research/evasive-panda-leverages-monlam-festival-target-tibetans/", "note": "Persistence LaunchAgent. Its Label is empty in Objective-See's transcription, so only the file name is used." },
+        { "kind": "path", "value": "~/Library/SafariBrowser/Safari.app/Contents/MacOS/SafariBrower", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/en/eset-research/evasive-panda-leverages-monlam-festival-target-tibetans/", "note": "Where the downloaded next stage is run from; \"SafariBrower\" is the report's spelling." }
+      ]
+    },
+    {
+      "id": "macma",
+      "name": "MACMA",
+      "actor": "Possibly Daggerfly / Evasive Panda (Symantec: evidence \"to suggest\" it is part of the toolkit); Volexity deploys it under StormBamboo; Google TAG named no actor",
+      "attribution": "tentative",
+      "summary": "Backdoor first seen in a 2021 watering-hole campaign against Hong Kong; persists as a user LaunchAgent.",
+      "indicators": [
+        { "kind": "plist", "value": "com.UserAgent.va.plist", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x69.html", "note": "LaunchAgent of the analysed samples (Objective-See's reproduction)." },
+        { "kind": "path", "value": "~/Library/Preferences/UserAgent/lib/UserAgent", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x69.html", "note": "Implant binary the plist runs." }
+      ]
+    },
+    {
+      "id": "gimmick",
+      "name": "GIMMICK",
+      "actor": "Storm Cloud (Volexity, 2022), which Volexity later renamed StormBamboo, also called Evasive Panda; Volexity does not say how sure it is of the link",
+      "attribution": "tentative",
+      "summary": "Spyware that names its plist, binary and agent per sample, so only the plist suffix is stable.",
+      "indicators": [
+        { "kind": "plist", "value": "com.*.va.plist", "severity": "med", "confidence": "high", "source": "https://www.volexity.com/blog/2022/03/22/storm-cloud-on-the-horizon-gimmick-malware-strikes-at-macos/", "note": "Volexity: the name of the binary, plist and agent varies per sample; the .va.plist suffix is the constant." },
+        { "kind": "path", "value": "/var/root/Library/Preferences/CorelDRAW/CorelDRAW", "severity": "med", "confidence": "medium", "source": "https://objective-see.org/blog/blog_0x71.html", "note": "One analysed sample's install path." }
+      ]
+    },
+    {
+      "id": "dazzlespy",
+      "name": "DazzleSpy",
+      "actor": "No actor named by ESET, who also could not tie it to the 2020 LightSpy campaign. Not an Evasive Panda indicator.",
+      "attribution": "none",
+      "summary": "Backdoor delivered through a watering hole using a Safari exploit; stages under ~/.local and persists as an Apple-lookalike LaunchAgent.",
+      "indicators": [
+        { "kind": "path", "value": "~/.local/softwareupdate", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/2022/01/25/watering-hole-deploys-new-macos-malware-dazzlespy-asia/", "note": "The malware executable." },
+        { "kind": "path", "value": "~/.local/security/", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/2022/01/25/watering-hole-deploys-new-macos-malware-dazzlespy-asia/", "note": "Keychain-theft components (keystealDaemon, libkeystealClient.dylib)." },
+        { "kind": "path", "value": "~/.local/security.zip", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/2022/01/25/watering-hole-deploys-new-macos-malware-dazzlespy-asia/", "note": "Archive of those components." },
+        { "kind": "path", "value": "/var/folders/*/*/T/airportpaird", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/2022/01/25/watering-hole-deploys-new-macos-malware-dazzlespy-asia/", "note": "Decrypted payload written to $TMPDIR and made executable." },
+        { "kind": "plist", "value": "com.apple.softwareupdate.plist", "severity": "high", "confidence": "high", "source": "https://www.welivesecurity.com/2022/01/25/watering-hole-deploys-new-macos-malware-dazzlespy-asia/", "note": "Apple-lookalike LaunchAgent in the user's folder." }
+      ]
+    }
+  ]
+}
