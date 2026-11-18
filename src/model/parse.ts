@@ -85,7 +85,9 @@ function normalize(o: Json): NormEvent {
   const rawType = Object.keys(o.event)[0];
   if (rawType === undefined) throw new Error('empty event');
   const e = o.event[rawType] ?? {};
-  const kind = KIND_BY_KEY.get(rawType) ?? 'other';
+  // A close is only modelled when it changed the file: then it is a write, the only one a capture without `write` has.
+  const closeWrite = rawType === 'close' && e.modified === true;
+  const kind = closeWrite ? 'write' : KIND_BY_KEY.get(rawType) ?? 'other';
   const ev: NormEvent = {
     seq: o.global_seq_num ?? 0,
     time: o.time ?? '',
@@ -108,6 +110,9 @@ function normalize(o: Json): NormEvent {
       ev.stdinIsPipe = Array.isArray(e.fds)
         ? e.fds.some((f: Json) => f.fd === 0 && 'pipe' in f)
         : null;
+      ev.stdinIsSocket = Array.isArray(e.fds)
+        ? e.fds.some((f: Json) => f.fd === 0 && f.fdtype === 2)
+        : null;
       ev.script = e.script?.path ?? null;
       break;
     }
@@ -121,6 +126,7 @@ function normalize(o: Json): NormEvent {
     case 'unlink':
     case 'write':
       ev.path = e.target?.path;
+      if (closeWrite) ev.viaClose = true;
       break;
     case 'setextattr':
       ev.path = e.target?.path;

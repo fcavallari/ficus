@@ -4,7 +4,7 @@ import type { CaptureModel, FileOp, Image, PersistenceItem, Process } from '../s
 export function img(o: Partial<Image>): Image {
   return {
     token: '100:1', path: '/bin/x', signingId: 'com.example.x', teamId: null, isPlatform: false, csFlags: 0,
-    args: null, cwd: null, env: null, stdinIsPipe: null, script: null,
+    args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null,
     time: '2026-11-12T00:00:00.000Z', seq: 1, inherited: false, ...o,
   };
 }
