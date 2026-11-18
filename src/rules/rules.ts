@@ -894,14 +894,17 @@ export const RULES: Rule[] = [
       const unregistered: string[] = [];
       const elsewhere = new Map<string, string>();     // plist -> who its registration is attributed to
       const seen = new Set<string>();
+      const inPlace = new Map<string, boolean>();     // plist first reached by a write -> seen only at a close
       for (const op of p.fileOps) {
-        // A temp file renamed over the plist counts through the rename's destination.
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        // A temp file renamed over the plist counts through the rename's destination; a write (a `write` event, or a
+        // `close` marked modified) is a plist that already existed, overwritten in place.
+        const target = op.kind === 'create' || op.kind === 'write' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
         if (target === undefined) continue;
         const n = normPath(target);
         const key = n.toLowerCase();
         if (!LAUNCH_DIR.test(n) || seen.has(key)) continue;
         seen.add(key);
+        if (op.kind === 'write') inPlace.set(target, op.via === 'close');
         const items = m.persistence.filter(it => it.kind === 'add' && it.plistPath !== null && normPath(it.plistPath).toLowerCase() === key);
         if (items.length === 0) { unregistered.push(target); continue; }
         const owners = items.map(it => ({ it, owner: persistenceOwner(m, it) }));
@@ -916,8 +919,12 @@ export const RULES: Rule[] = [
       const suffix = elsewhere.size === 0 ? ' No registration event in the capture accounts for it.'
         : unregistered.length === 0 ? ` Its registration in the capture is attributed to ${names}, so that finding is on that row.`
         : ` Some have no registration event in the capture; the registration of the others is attributed to ${names}.`;
+      const shown = (h: string): string => (elsewhere.has(h) ? `${h} (registration attributed to ${elsewhere.get(h)})` : h);
+      const wrote = hits.filter(h => !inPlace.has(h)).map(shown);
+      const modified = hits.filter(h => inPlace.has(h)).map(h => `${shown(h)}${inPlace.get(h) ? ' (seen at close)' : ''}`);
       return {
-        evidence: `wrote ${hits.map(h => (elsewhere.has(h) ? `${h} (registration attributed to ${elsewhere.get(h)})` : h)).join(', ')}`,
+        evidence: [wrote.length > 0 ? `wrote ${wrote.join(', ')}` : null, modified.length > 0 ? `modified in place ${modified.join(', ')}` : null]
+          .filter(Boolean).join('; '),
         mitre: [...new Set([...kinds].flatMap(launchMitre))].sort(),
         explanation: `${plistBase(hits)}${suffix}`,
         ...(only === 'agent' ? { title: 'Launch agent plist written' } : only === 'daemon' ? { title: 'Launch daemon plist written' } : {}),

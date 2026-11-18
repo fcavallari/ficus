@@ -183,7 +183,7 @@ proc_obj() {
 
 # ---- events -----------------------------------------------------------------------------------------------------
 # Events go to fd 3 in call order, which must be time order; answer rows go to fd 4.
-EV_exec=9; EV_fork=11; EV_create=13; EV_exit=15; EV_rename=25; EV_btm_launch_item_add=124
+EV_exec=9; EV_fork=11; EV_close=12; EV_create=13; EV_exit=15; EV_rename=25; EV_write=33; EV_btm_launch_item_add=124
 
 # emit SECONDS handle event_name body_json
 emit() {
@@ -270,6 +270,12 @@ ev_create() {
   json_esc "$name"; n=$JSON_OUT
   emit "$1" "$2" create "{\"destination\":{\"new_path\":{\"dir\":$d,\"filename\":$n,\"mode\":33188}},\"destination_type\":1,\"acl\":null}"
 }
+
+# ev_write SECONDS handle path: data written to an existing file.
+ev_write() { file_obj "$3"; emit "$1" "$2" write "{\"target\":$FILE_OUT}"; }
+
+# ev_close SECONDS handle path modified(true|false): a file closed; modified says whether it was changed.
+ev_close() { file_obj "$3"; emit "$1" "$2" close "{\"modified\":$4,\"target\":$FILE_OUT,\"was_mapped_writable\":false}"; }
 
 # ev_rename SECONDS handle from to
 ev_rename() {
@@ -560,6 +566,16 @@ synthetic_story() {
   ev_create 111.2 "$cc" /Users/learner/proj/build/out.o
   ev_exit 111.3 "$cc"
   run 112.0 "$ZSH" 7672 9672 /usr/bin/touch touch -t 202001010000 /Users/learner/proj/build/out.o
+
+  # 16. An existing launch daemon plist is overwritten in place (cat with its output redirected onto it): no create
+  #     event, only a write and a close marked modified, seen when the capture records write or close.
+  local ow
+  ev_fork 115.0 "$ZSH" 7680 9680; ow=$LAST
+  ev_exec 115.1 "$ow" /bin/cat platform com.apple.cat '' "$CWD" tty cat /tmp/lab/updater.plist
+  ev_write 115.2 "$ow" /Library/LaunchDaemons/com.example.updater.plist
+  ev_close 115.3 "$ow" /Library/LaunchDaemons/com.example.updater.plist true
+  ev_exit 115.4 "$ow"
+  answer overwrite persistence-plist high queued 'cat /tmp/lab/updater.plist' 'An existing launch daemon plist is overwritten in place: no file is created, so only a write or a modified close shows it.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
