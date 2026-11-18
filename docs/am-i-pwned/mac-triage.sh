@@ -15,6 +15,33 @@ set -u
 umask 077
 export LC_ALL=C
 
+# ---- judging a setting: functions of what was read, so a test can feed them values (MAC_TRIAGE_SOURCE_ONLY=1 sources them) --
+# Each prints ok (the usual value), CHANGED (differs from the default in a way malware and adware use), note or unknown.
+is_off() { case $1 in 0|false|FALSE|False|NO|no) return 0 ;; *) return 1 ;; esac; }
+is_on() { case $1 in 1|true|TRUE|True|YES|yes) return 0 ;; *) return 1 ;; esac; }
+judge_firewall() { case $1 in *disabled*|*"State = 0"*) echo CHANGED ;; *enabled*|*"State = 1"*|*"State = 2"*) echo ok ;; *) echo unknown ;; esac; }
+judge_spctl() { case $1 in *"assessments enabled"*) echo ok ;; *"assessments disabled"*) echo CHANGED ;; *) echo unknown ;; esac; }
+judge_sip() { case $1 in *"Custom Configuration"*|*disabled*) echo CHANGED ;; *enabled*) echo ok ;; *) echo unknown ;; esac; }
+judge_bootargs() { case $1 in '') echo ok ;; *amfi_get_out_of_my_way*|*cs_enforcement_disable*|*amfi=*|*rootless=0*) echo CHANGED ;; *) echo note ;; esac; }
+judge_age() { if [ "$1" -gt 60 ]; then echo CHANGED; else echo ok; fi; }
+judge_sshd() {
+  if printf '%s\n' "$1" | grep -q -i -E '^[[:space:]]*(PermitRootLogin[[:space:]]+yes|PermitEmptyPasswords[[:space:]]+yes|AuthorizedKeysCommand[[:space:]]|ForceCommand[[:space:]]|PermitTunnel[[:space:]]+(yes|point|ethernet)|GatewayPorts[[:space:]]+(yes|clientspecified))'; then echo CHANGED
+  elif [ -n "$1" ]; then echo note; else echo ok; fi
+}
+# An authorization right as JSON (plutil -convert json). The usual admin rights are class user, group admin, password asked.
+judge_authdb() {
+  case $1 in
+    *'"class":"allow"'*|*'"rule":"allow"'*|*'"rule":["allow"'*) echo CHANGED ;;
+    *'"class":"user"'*)
+      case $1 in *'"authenticate-user":false'*) echo CHANGED ;; *'"group":"admin"'*) echo ok ;; *) echo CHANGED ;; esac ;;
+    '') echo unknown ;;
+    *) echo ok ;;
+  esac
+}
+# tmo SECONDS CMD...: stop a command that does not finish (a system tool waiting on something), so one check cannot hold the run.
+tmo() { local t=$1; shift; perl -e 'alarm shift; exec @ARGV' "$t" "$@"; }
+[ -z "${MAC_TRIAGE_SOURCE_ONLY:-}" ] || return 0
+
 VERSION=1
 OUT=''
 usage() { printf 'usage: bash mac-triage.sh [-o REPORT_FILE]\n  Writes one read-only report; default %s\n' "~/am-i-pwned-report-<UTC time>.txt"; }
@@ -47,7 +74,7 @@ run() {
   local label=$1 tmp rc cap=${CAP:-200}
   shift
   tmp=$(mktemp "${TMPDIR:-/tmp}/mac-triage.XXXXXX") || { cant "$label (no temporary file)"; return; }
-  "$@" > "$tmp" 2>&1
+  tmo "${RUN_TIMEOUT:-60}" "$@" > "$tmp" 2>&1
   rc=$?
   say "\$ $label"
   if [ ! -s "$tmp" ]; then
@@ -159,6 +186,71 @@ run 'firewall' /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
 run 'XProtect version' defaults read /Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info CFBundleShortVersionString
 run 'screen lock' sysadminctl -screenLock status
 pipeline 'screen saver idle time (seconds; 900 or less is the baseline)' "defaults -currentHost read com.apple.screensaver idleTime 2>&1 || echo 'not set: the system default applies'"
+say ''
+say '$ security settings that malware and adware switch off. Current state only: it does not say who changed a setting or when, and a managed (MDM) Mac may differ on purpose. "not set" means the default applies.'
+setting() { say "  $(printf '%-8s' "$1") $2: $3"; }
+dread() { defaults read "$1" "$2" 2>/dev/null || echo -; }
+squash() { printf '%s' "$1" | tr '\n' ' ' | cut -c1-110; }
+# Software updates, including the data updates that keep XProtect and the malware remover current.
+SU=/Library/Preferences/com.apple.SoftwareUpdate
+for pair in 'AutomaticCheckEnabled|Check for updates automatically|sec' 'ConfigDataInstall|Install system data files (XProtect and MRT updates)|sec' 'CriticalUpdateInstall|Install security responses and critical updates|sec' 'AutomaticDownload|Download updates automatically|pref' 'AutomaticallyInstallMacOSUpdates|Install macOS updates automatically|pref'; do
+  IFS='|' read -r key name kind <<EOF_PAIR
+$pair
+EOF_PAIR
+  v=$(dread "$SU" "$key")
+  if [ "$v" = - ]; then setting default "$name" "not set ($key)"
+  elif is_off "$v"; then if [ "$kind" = sec ]; then setting CHANGED "$name" "off ($key = $v)"; else setting note "$name" "off ($key = $v): a choice many people make"; fi
+  else setting ok "$name" "on ($key = $v)"; fi
+done
+fw=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1); setting "$(judge_firewall "$fw")" 'Application firewall' "$(squash "$fw")"
+setting info 'Firewall stealth mode (off is the default)' "$(squash "$(/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode 2>&1)")"
+sp=$(spctl --status 2>&1); setting "$(judge_spctl "$sp")" 'Gatekeeper' "$(squash "$sp")"
+gk=$(dread /Library/Preferences/com.apple.security GKAutoRearm)
+if [ "$gk" = - ]; then setting default 'Gatekeeper turns itself back on (GKAutoRearm)' 'not set'
+elif is_off "$gk"; then setting CHANGED 'Gatekeeper turns itself back on (GKAutoRearm)' "off ($gk): a Gatekeeper that was switched off stays off"
+else setting ok 'Gatekeeper turns itself back on (GKAutoRearm)' "on ($gk)"; fi
+for dom in com.apple.LaunchServices /Library/Preferences/com.apple.LaunchServices; do
+  q=$(dread "$dom" LSQuarantine)
+  if [ "$q" = - ]; then setting default "Quarantine flag on downloads, $dom (LSQuarantine)" 'not set'
+  elif is_off "$q"; then setting CHANGED "Quarantine flag on downloads, $dom (LSQuarantine)" "off ($q): downloads are not flagged, on versions that honour it"
+  else setting ok "Quarantine flag on downloads, $dom (LSQuarantine)" "on ($q)"; fi
+done
+sip=$(csrutil status 2>&1); setting "$(judge_sip "$sip")" 'System Integrity Protection' "$(squash "$sip")"
+ar=$(csrutil authenticated-root status 2>&1); setting "$(judge_sip "$ar")" 'Sealed system volume' "$(squash "$ar")"
+ba=$(nvram boot-args 2>/dev/null | cut -f2-)
+if [ -z "$ba" ]; then setting default 'Boot arguments' 'not set'; else setting "$(judge_bootargs "$ba")" 'Boot arguments (a flag that weakens code-signing enforcement is CHANGED)' "$ba"; fi
+lv=$(dread /Library/Preferences/com.apple.security.libraryvalidation DisableLibraryValidation)
+if [ "$lv" = - ]; then setting default 'Library validation (DisableLibraryValidation)' 'not set'
+elif is_on "$lv"; then setting CHANGED 'Library validation (DisableLibraryValidation)' "disabled ($lv): any library can be loaded into any app"
+else setting ok 'Library validation (DisableLibraryValidation)' "on ($lv)"; fi
+for dom in system "gui/$(id -u)"; do
+  dis=$(tmo 20 launchctl print-disabled "$dom" 2>/dev/null | grep -E '=> (disabled|true)' | grep -i -E 'xprotect|mrt|syspolicy|softwareupdate|amfi|socketfilter|alf|tccd|trustd' | sed 's/^[[:space:]]*//')
+  if [ -z "$dis" ]; then setting ok "Apple security services disabled in launchd ($dom)" 'none'
+  else setting CHANGED "Apple security services disabled in launchd ($dom)" "$(squash "$dis")"; fi
+done
+al=$(dread /Library/Preferences/com.apple.loginwindow autoLoginUser)
+if [ "$al" = - ]; then setting ok 'Automatic login' 'off'; else setting CHANGED 'Automatic login' "on for $al: anyone at the keyboard gets in"; fi
+gu=$(dread /Library/Preferences/com.apple.loginwindow GuestEnabled)
+if [ "$gu" = - ]; then setting default 'Guest account at the login window' 'not set'
+elif is_on "$gu"; then setting CHANGED 'Guest account at the login window' "on ($gu)"; else setting ok 'Guest account at the login window' "off ($gu)"; fi
+ssh=$(cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null | grep -v -E '^[[:space:]]*(#|$)' | grep -i -E '^[[:space:]]*(PermitRootLogin|PermitEmptyPasswords|PasswordAuthentication|AuthorizedKeysCommand|ForceCommand|PermitTunnel|GatewayPorts)[[:space:]]')
+if [ -z "$ssh" ]; then setting ok 'SSH server settings that matter (sshd_config)' 'none set (the defaults apply)'
+else setting "$(judge_sshd "$ssh")" 'SSH server settings that matter (sshd_config)' "$(squash "$ssh")"; fi
+for right in system.privilege.admin system.preferences system.preferences.security system.install.software; do
+  rec=$(tmo 20 security authorizationdb read "$right" 2>/dev/null | plutil -convert json -o - - 2>/dev/null)
+  setting "$(judge_authdb "$rec")" "Authorization right $right (who may do it, and whether a password is asked)" "$(squash "$(printf '%s' "$rec" | grep -o -E '"(class|group|authenticate-user|rule)":("[^"]*"|true|false|\[[^]]*\])' | tr '\n' ' ')")"
+done
+if [ -e "/Library/Security/Trust Settings/Admin.plist" ]; then setting note 'Custom root certificates trusted by every user' "present, modified $(stat -f '%Sm' -t '%Y-%m-%d' '/Library/Security/Trust Settings/Admin.plist' 2>/dev/null): ask the person what it is, and to list the trusted roots themselves (command in references/security-settings.md)"
+else setting ok 'Custom root certificates trusted by every user' 'none (no Admin.plist)'; fi
+yara=/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Resources/XProtect.yara
+if [ -e "$yara" ]; then
+  age=$(( ( $(date +%s) - $(stat -f %m "$yara") ) / 86400 ))
+  setting "$(judge_age "$age")" 'XProtect signatures last updated' "$age days ago (more than 60 is CHANGED: an unverified threshold; updates normally arrive within weeks)"
+else setting unknown 'XProtect signatures last updated' 'XProtect.yara not found'; fi
+setting info 'XProtect Remediator version' "$(squash "$(defaults read /Library/Apple/System/Library/CoreServices/XProtect.app/Contents/Info CFBundleShortVersionString 2>&1)")"
+pipeline 'XProtect and MRT updates installed, latest six (name, version, install date)' "perl -e 'alarm 60; exec @ARGV' system_profiler SPInstallHistoryDataType 2>/dev/null | awk '/^    [A-Za-z0-9_.-]+:\$/ { name = \$1; sub(/:\$/, \"\", name) } /^      Version:/ { ver = \$2 } /^      Install Date:/ { if (name ~ /XProtect|MRT/) { d = \$0; sub(/^ *Install Date: */, \"\", d); rows[++n] = name \" \" ver \", \" d } } END { for (i = (n > 6 ? n - 5 : 1); i <= n; i++) print rows[i] }'"
+note 'Not readable without admin: systemsetup -getremotelogin (Remote Login). Ask the person to run it if it matters.'
+
 pipeline 'EDR or AV jobs and processes (names only)' "launchctl list | grep -i -E 'crowdstrike|falcon|sentinel|jamf|defender|wdav|carbonblack|sophos|malwarebytes|santa' ; $PS_PATHS | grep -i -E 'crowdstrike|falcon|sentinel|jamf|defender|wdav|carbonblack|sophos|malwarebytes|santa' | cut -f5"
 
 section "2 Accounts"

@@ -10,6 +10,26 @@ export function originalParentImage(m: CaptureModel, p: Process): Image | undefi
   return parent ? imageAt(parent, p.firstSeq) : undefined;
 }
 
+const SSHD = new Set(['sshd', 'sshd-session']);
+
+/**
+ * True when sshd (or sshd-session) is among this process's ancestors, by original parent (current parent when that
+ * is unknown). Each ancestor is judged by its latest program. At most 64 hops, and a loop in bad data stops the walk.
+ */
+export function sshAncestor(m: CaptureModel, p: Process): boolean {
+  const seen = new Set<ProcId>([p.id]);
+  let id = p.originalParent ?? p.currentParent;
+  for (let hops = 0; id !== null && hops < 64 && !seen.has(id); hops++) {
+    seen.add(id);
+    const a = m.processes.get(id);
+    if (!a) return false;
+    const last = [...a.images].reverse().find(i => !i.inherited) ?? a.images[a.images.length - 1];
+    if (SSHD.has(basename(last?.path ?? null))) return true;
+    id = a.originalParent ?? a.currentParent;
+  }
+  return false;
+}
+
 /** Each live (non-ghost) process under its original parent, in capture order, built once per model. */
 const childIndexes = new WeakMap<CaptureModel, Map<ProcId, Process[]>>();
 

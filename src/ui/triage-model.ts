@@ -178,7 +178,7 @@ export interface CoverageNote { id: string; level: 'warn' | 'info'; title: strin
  * signature, so they are known without exec events; command lines, working directories and script paths are not.
  */
 const ARG_CHECKS = ['fake-prompt', 'osascript-script', 'keychain-access', 'security-setting-change', 'dscl-authonly', 'launchctl-load',
-  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'download', 'archive-staging', 'recon', 'known-indicator'];
+  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'reverse-shell', 'timestomp', 'download', 'archive-staging', 'recon', 'known-indicator'];
 const EXPECTED: { type: string; gives: string; checks: string[]; level?: 'warn' | 'info' }[] = [
   { type: 'exec', gives: 'command lines, working directories or script paths (programs and signatures still come from every event\'s process, so the location and signature checks can fire)',
     checks: [...ARG_CHECKS, 'odd-location-exec'] },
@@ -221,8 +221,8 @@ export function coverage(m: CaptureModel): { versions: number[]; notes: Coverage
     const all = noFds === execs;
     notes.push({
       id: 'stdin', level: 'warn', title: `${all ? 'No' : `${n(noFds)} of ${n(execs)}`} exec events carry file-descriptor data`,
-      detail: `${versions.length > 0 && versions.every(v => v < MODERN_SCHEMA) ? `eslogger schema ${versions.map(v => `v${v}`).join(', ')} predates v${MODERN_SCHEMA}, the first with an exec event's open file descriptors. ` : ''}Without them a shell reading from a pipe looks the same as one reading a file, so these checks cannot fire on ${all ? 'any exec' : 'those execs'}.`,
-      checks: ['shell-from-pipe', 'osascript-script'],
+      detail: `${versions.length > 0 && versions.every(v => v < MODERN_SCHEMA) ? `eslogger schema ${versions.map(v => `v${v}`).join(', ')} predates v${MODERN_SCHEMA}, the first with an exec event's open file descriptors. ` : ''}Without them a shell reading from a pipe or a socket looks the same as one reading a file, so these checks cannot fire on ${all ? 'any exec' : 'those execs'}.`,
+      checks: ['shell-from-pipe', 'osascript-script', 'reverse-shell'],
     });
   } else if (execs > 0 && versions.length > 0 && versions.every(v => v < MODERN_SCHEMA)) {
     // The header flags the old schema by its number; the data itself says whether the piped-shell checks lost anything.
@@ -242,6 +242,15 @@ export function coverage(m: CaptureModel): { versions: number[]; notes: Coverage
         checks: e.checks,
       });
     }
+  }
+  // write and close are left out of the recommended capture (both are noisy); without either, a plist that already
+  // existed and was overwritten in place leaves no trace.
+  if (stats.kinds && !(stats.kinds.write ?? 0) && !(stats.kinds.close ?? 0) && !(stats.otherEvents.close ?? 0)) {
+    notes.push({
+      id: 'none-write-close', level: 'info', title: 'No write or close events',
+      detail: 'A launch agent or daemon plist that already existed and was overwritten in place shows only as a write, or a close marked modified. This capture has neither, so such an overwrite cannot be seen; a plist created or renamed into place still is. Both event types are optional and noisy, so the recommended capture leaves them out.',
+      checks: ['persistence-plist'],
+    });
   }
   if (missedExec > 0) {
     notes.push({

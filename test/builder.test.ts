@@ -333,3 +333,19 @@ test('matching ids record nothing', () => {
   const m = buildModel([line({ seq: 1, proc: cred(100), event: { write: { target: { path: '/tmp/a' } } } })]);
   expect(m.processes.get('100:1000')!.credMismatches).toBeUndefined();
 });
+
+test('modified close is a write FileOp marked via close; unmodified closes are only counted', () => {
+  const base = JSON.parse(readLines('synthetic-lab.jsonl').find(l => l.includes('"exec":{'))!);
+  let seq = 1000;
+  const close = (path: string, modified: boolean) => JSON.stringify({
+    ...base, global_seq_num: seq++, process: base.event.exec.target,
+    event: { close: { modified, target: { path, path_truncated: false }, was_mapped_writable: false } },
+  });
+  const plist = '/Users/u/Library/LaunchAgents/a.plist';
+  const m = buildModel([JSON.stringify(base), close('/tmp/a', false), close('/tmp/b', false), close('/tmp/c', false), close(plist, true)]);
+  const pid: number = base.event.exec.target.audit_token.pid;
+  const p = [...m.processes.values()].find(x => x.pid === pid && x.fileOps.length > 0)!;
+  expect(p.fileOps).toEqual([expect.objectContaining({ kind: 'write', path: plist, via: 'close' })]);
+  expect(m.stats.otherEvents.close).toBe(3);
+  expect(m.stats.kinds?.close).toBe(1);
+});

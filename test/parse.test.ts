@@ -184,3 +184,41 @@ test('util helpers', () => {
   expect(fileUrlToPath('file:///Users/a/My%20App.app/')).toBe('/Users/a/My App.app/');
   expect(fileUrlToPath(null)).toBeNull();
 });
+
+/** A raw eslogger line from the synthetic lab with `event` replaced; `fds` set on an exec when given. */
+function rawWith(kind: 'exec' | 'other', mutate: (e: Record<string, any>) => void): string {
+  const line = readLines('synthetic-lab.jsonl').find(l => kind === 'exec' ? l.includes('"exec":{') : true)!;
+  const o = JSON.parse(line);
+  mutate(o);
+  return JSON.stringify(o);
+}
+const parsed = (l: string): NormEvent => { const e = parseLine(l); if (!isEvent(e)) throw new Error('not an event'); return e; };
+const SOCKETS = [{ fd: 0, fdtype: 2 }, { fd: 1, fdtype: 2 }, { fd: 2, fdtype: 2 }];
+
+test('exec: stdin socket', () => {
+  const ev = parsed(rawWith('exec', o => { o.event.exec.fds = SOCKETS; }));
+  expect(ev.stdinIsSocket).toBe(true);
+  expect(ev.stdinIsPipe).toBe(false);
+});
+
+test('exec: stdin vnode is not a socket; no fds is null', () => {
+  const vnode = parsed(rawWith('exec', o => { o.event.exec.fds = [{ fd: 0, fdtype: 1 }, { fd: 1, fdtype: 2 }]; }));
+  const noFds = parsed(rawWith('exec', o => { delete o.event.exec.fds; }));
+  expect(vnode.stdinIsSocket).toBe(false);
+  expect(noFds.stdinIsSocket).toBeNull();
+});
+
+const closeEvent = (modified: boolean) => ({
+  close: { modified, target: { path: '/Library/LaunchDaemons/x.plist', path_truncated: false }, was_mapped_writable: false },
+});
+
+test('close modified becomes a write from a close', () => {
+  const ev = parsed(rawWith('other', o => { o.event = closeEvent(true); }));
+  expect(ev).toMatchObject({ kind: 'write', rawType: 'close', path: '/Library/LaunchDaemons/x.plist', viaClose: true });
+});
+
+test('close not modified is other', () => {
+  const ev = parsed(rawWith('other', o => { o.event = closeEvent(false); }));
+  expect(ev.kind).toBe('other');
+  expect(ev.path).toBeUndefined();
+});

@@ -1,0 +1,31 @@
+# Security settings malware and adware change
+
+`mac-triage.sh` section 1 prints each of these with a label: `ok` (the usual value), `default` (not set, so the system default applies), `CHANGED` (differs from the default in a way malware or adware uses), `note`, `info` or `unknown`. This page says what each one is, how it is weakened, and how to read a `CHANGED`.
+
+**A `CHANGED` is a lead, not proof.** The script reads the current state. It cannot say who changed a setting, when, or why: people, administrators and MDM profiles change these too, and a managed Mac may differ on purpose (`profiles status -type enrollment` in section 3 says whether it is enrolled). Ask the person whether they or their IT team did it. Never say a Mac is clean because every line is `ok`: malware that changes none of these is common, and this page lists what is readable without admin rights, not everything.
+
+| Setting | Read with | Usual value | How it is weakened | Why it matters |
+| --- | --- | --- | --- | --- |
+| Check for updates, install data files and security updates | `defaults read /Library/Preferences/com.apple.SoftwareUpdate` keys `AutomaticCheckEnabled`, `ConfigDataInstall`, `CriticalUpdateInstall`; `softwareupdate --schedule` | not set, or 1 | `defaults write` of the key to `false`, or the Software Update pane | `ConfigDataInstall` is what delivers new XProtect and malware-remover data; off, the Mac stops learning about new malware. `AutomaticDownload` and `AutomaticallyInstallMacOSUpdates` off are `note` only: many people choose that |
+| XProtect signatures last updated | modification date of `XProtect.yara`; `system_profiler SPInstallHistoryDataType` | days to a few weeks | the update setting above, or blocking Apple's update hosts | A date that has stopped moving means updates are not arriving. The 60-day threshold is not verified |
+| Application firewall | `socketfilterfw --getglobalstate` | enabled | `socketfilterfw --setglobalstate off`, `defaults write` on the `alf` domain | The firewall decides which programs may accept connections. Stealth mode off is the default, shown as `info` |
+| Gatekeeper | `spctl --status` | assessments enabled | `spctl --global-disable` or `--master-disable` (from macOS 15 only reveals the "Anywhere" option), a GUI choice | Downloaded apps run without the check |
+| Gatekeeper auto re-arm | `defaults read /Library/Preferences/com.apple.security GKAutoRearm` | not set | `defaults write` to false | A Gatekeeper that was switched off stays off |
+| Quarantine flag on downloads | `defaults read com.apple.LaunchServices LSQuarantine` (user and `/Library/Preferences`) | not set | `defaults write` to false | Downloads are not flagged, on macOS versions that still honour the key |
+| System Integrity Protection | `csrutil status` | enabled | `csrutil disable` (from Recovery), or a custom configuration | Protected system files and processes become writable. `enabled (Custom Configuration)` is `CHANGED` |
+| Sealed system volume | `csrutil authenticated-root status` | enabled | `csrutil authenticated-root disable` (from Recovery) | The check that the system volume is Apple's original is off |
+| Boot arguments | `nvram boot-args` | not set | `nvram boot-args=…` as root | Flags such as `amfi_get_out_of_my_way`, `cs_enforcement_disable` or `rootless=0` weaken code-signing enforcement. Other flags are a `note` (a developer's `-v` is normal) |
+| Library validation | `defaults read /Library/Preferences/com.apple.security.libraryvalidation DisableLibraryValidation` | not set | `defaults write` to true, as root | Any library can be loaded into any app, which is how code is injected into signed programs |
+| Apple security services disabled in launchd | `launchctl print-disabled system` and `gui/<uid>` | none of XProtect, MRT, syspolicy, software update, AMFI, socket filter, TCC, trust | `launchctl disable` | A protection daemon that is switched off does not run. Apple disables a few unrelated services by default, which the script ignores |
+| Automatic login and guest account | `com.apple.loginwindow` keys `autoLoginUser`, `GuestEnabled` | not set / off | the Users pane, `defaults write` | Anyone at the keyboard gets in. A person's own choice is common on a home Mac |
+| SSH server settings | `/etc/ssh/sshd_config` and `sshd_config.d`, non-comment lines for the keys that matter | none set | editing the file as root | `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `AuthorizedKeysCommand`, `ForceCommand`, `PermitTunnel` and `GatewayPorts` are `CHANGED`. Only matters if Remote Login is on (needs admin to read: ask the person) |
+| Authorization rights | `security authorizationdb read` for `system.privilege.admin`, `system.preferences`, `system.preferences.security`, `system.install.software` | class `user`, group `admin`, a password asked | `security authorizationdb write` | A right set to `allow`, no password asked, or a group wider than `admin` lets software take admin actions without asking |
+| Custom root certificates trusted by every user | existence and date of `/Library/Security/Trust Settings/Admin.plist` | absent | `security add-trusted-cert -d` | A root the Mac trusts lets whoever holds its key read HTTPS traffic or sign things the Mac accepts. A company proxy or a developer tool such as mkcert also sets it, so this is a `note`: ask, and have the person run `security dump-trust-settings -d` themselves |
+
+## Reading the result
+
+- **`CHANGED` with no explanation from the person** is level 2 of *Choosing the verdict* (`reading-the-result.md`): a security control that is off and they do not know why. Name the setting, its value and the command that read it.
+- **A `CHANGED` next to another finding** (a launch item, a process in an odd place, a known indicator) corroborates it: say so. The highest level still decides the verdict.
+- **MDM-managed Macs:** if section 3 shows an MDM enrollment, report a deviation as context and say it may be policy.
+- **Not readable without admin:** Remote Login (`systemsetup -getremotelogin`), the full firewall rule list, `sudoers` contents. Give the person the command; never run `sudo`.
+- **What this cannot see:** a change made and then reverted, anything stored in a place only root reads, and any malware that works without changing a setting.

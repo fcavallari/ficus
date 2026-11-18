@@ -18,6 +18,8 @@ defaults read /Library/Apple/System/Library/CoreServices/XProtect.bundle/Content
 sysadminctl -screenLock status
 ```
 
+The security settings malware and adware change (software and security updates, XProtect age, Gatekeeper, quarantine, boot arguments, library validation, launchd, authorization rights) are read by `mac-triage.sh` and explained in `security-settings.md`. By hand, the commands are in that page's table.
+
 An EDR or AV that should be running: look for it in `launchctl list` and `ps` (for example CrowdStrike, SentinelOne, Jamf Protect, Defender). Security controls that are off and the person does not know why are an escalation row.
 
 ## 2. Accounts

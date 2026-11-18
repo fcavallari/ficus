@@ -7,7 +7,7 @@ function imageFrom(info: ProcInfo, seq: number): Image {
   return {
     token: info.token, path: info.path, signingId: info.signingId, teamId: info.teamId,
     isPlatform: info.isPlatform, csFlags: info.csFlags,
-    args: null, cwd: null, env: null, stdinIsPipe: null, script: null,
+    args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null,
     time: null, seq, inherited: false,
   };
 }
@@ -170,7 +170,7 @@ export class ModelBuilder {
         p.images.push({
           ...imageFrom(target, ev.seq),
           args: ev.args ?? null, cwd: ev.cwd ?? null, env: ev.env ?? null,
-          stdinIsPipe: ev.stdinIsPipe ?? null, script: ev.script ?? null, time: ev.time,
+          stdinIsPipe: ev.stdinIsPipe ?? null, stdinIsSocket: ev.stdinIsSocket ?? null, script: ev.script ?? null, time: ev.time,
         });
         this.tokenIndex.set(target.token, p.id);
         this.noteIds(p, target, ev.seq, ev.time);
@@ -185,6 +185,7 @@ export class ModelBuilder {
         const op: FileOp = { kind: ev.kind, path: ev.path, time: ev.time, seq: ev.seq };
         if (ev.toPath !== undefined) op.toPath = ev.toPath;
         if (ev.xattr !== undefined) op.xattr = ev.xattr;
+        if (ev.viaClose) op.via = 'close';
         p.fileOps.push(op);
         break;
       }
