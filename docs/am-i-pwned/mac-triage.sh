@@ -31,6 +31,9 @@ done
 [ -n "$OUT" ] || OUT=$HOME/am-i-pwned-report-$(date -u +%Y%m%dT%H%M%SZ).txt
 [ ! -e "$OUT" ] || { echo "$OUT already exists; not overwriting it. Pick another with -o." >&2; exit 1; }
 : > "$OUT" || { echo "cannot write $OUT" >&2; exit 1; }
+# One row per program (running now, or run by a launch item): source R or L, signature kind, team, signing ID, path.
+SIGFILE=$(mktemp "${TMPDIR:-/tmp}/mac-triage-sig.XXXXXX") || { echo "cannot make a temporary file" >&2; exit 1; }
+trap 'rm -f "$SIGFILE"' EXIT
 
 say() { printf '%s\n' "$*" >> "$OUT"; }
 section() { say ''; say "=== $* ==="; }
@@ -239,6 +242,94 @@ done)
 if [ -n "$gone" ]; then say "$gone"; else say "(none)"; fi
 pipeline 'remote debugging ports (the flag only; command lines are never printed)' "ps -axo command | grep -o -E -- '--remote-debugging-port=[0-9]+'"
 
+
+# Who signed each program running now (or run by a launch item), outside the system folders. The signature is read with
+# codesign -dv, not verified, and a revoked certificate cannot be seen offline. On Apple Silicon nothing runs fully
+# unsigned (the linker signs ad hoc), so an ad-hoc signature is the signal there, and where the program sits says what it means.
+launch_programs() {
+  local dir plist prog a0
+  for dir in /Library/LaunchAgents /Library/LaunchDaemons "$HOME/Library/LaunchAgents"; do
+    [ -d "$dir" ] || continue
+    for plist in "$dir"/*.plist; do
+      [ -f "$plist" ] || continue
+      prog=$(plutil -extract Program raw -o - "$plist" 2>/dev/null || true)
+      a0=$(plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)
+      printf '%s\n' "${prog:-$a0}"
+    done
+  done
+}
+# kind: platform (Apple), team (a developer team), adhoc (no developer identity), noteam (signed, no team ID), unsigned, unreadable.
+sig_row() {
+  local out team sid kind
+  out=$(codesign -dv --verbose=4 "$1" 2>&1)
+  team=$(printf '%s\n' "$out" | sed -n 's/^TeamIdentifier=//p' | head -n 1)
+  sid=$(printf '%s\n' "$out" | sed -n 's/^Identifier=//p' | head -n 1)
+  if printf '%s\n' "$out" | grep -q 'not signed at all'; then kind=unsigned
+  elif printf '%s\n' "$out" | grep -q '^Platform identifier='; then kind=platform
+  elif printf '%s\n' "$out" | grep -q '^Signature=adhoc'; then kind=adhoc
+  elif [ -n "$team" ] && [ "$team" != 'not set' ]; then kind=team
+  elif [ -n "$sid" ]; then kind=noteam
+  else kind=unreadable; fi
+  printf '%s\t%s\t%s\t%s\n' "$kind" "${team:--}" "${sid:--}" "$1"
+}
+NOT_SYSTEM='^/(System|usr/(libexec|sbin|bin)|bin|sbin|Library/Apple)/'
+running=$(ps -axo pid,ppid,user,etime,comm | awk 'NR > 1 { c = $5; for (i = 6; i <= NF; i++) c = c " " $i; print c }' | grep '^/' | grep -v -E "$NOT_SYSTEM" | sort -u | head -n 600)
+launched=$(launch_programs | grep '^/' | grep -v -E "$NOT_SYSTEM" | sort -u | head -n 300)
+all=$(printf '%s\n%s\n' "$running" "$launched" | grep . | sort -u)
+while IFS= read -r p; do
+  [ -e "$p" ] || continue
+  src=L
+  printf '%s\n' "$running" | grep -qxF -- "$p" && src=R
+  printf '%s\t%s\n' "$src" "$(sig_row "$p")" >> "$SIGFILE"
+done <<EOF_ALL
+$all
+EOF_ALL
+say ''
+say '$ running programs outside the system folders, by how they are signed (read, not verified)'
+awk -F'\t' '
+function tooling(seg,   l) { l = tolower(seg); return (l in T) || l ~ /^go-build/ }
+# Where a program sits: the same places as Ficus (src/rules/locations.ts). Strong places are LOOK; developer tooling is context.
+function place(p,   rest, n, parts, i, seg, inT) {
+  if (p ~ /\/AppTranslocation\//) return "App Translocation";
+  if (p ~ /^(\/private)?\/(tmp|var\/tmp|var\/folders)\//) return "temp folder";
+  if (p ~ /^\/Users\/Shared\//) return "/Users/Shared";
+  if (p ~ /^\/Volumes\//) return "/Volumes";
+  if (p ~ /^\/Users\/[^\/]+\/Downloads\//) return "Downloads";
+  if (p ~ /^\/Users\/[^\/]+\//) {
+    rest = p; sub(/^\/Users\/[^\/]+\//, "", rest);
+    n = split(rest, parts, "/");
+    inT = 0;
+    for (i = 1; i < n; i++) {
+      seg = parts[i];
+      if (substr(seg, 1, 1) == ".") { if (i == 1) return "home dot-folder"; return (inT || tooling(seg)) ? "tooling folder" : "hidden folder" }
+      if (tooling(seg)) inT = 1;
+    }
+    return "home folder";
+  }
+  if (p ~ /^\/(opt\/homebrew|usr\/local|nix)\//) return "package-manager folder";
+  return "installed";
+}
+function strong(w) { return w == "temp folder" || w == "/Users/Shared" || w == "App Translocation" || w == "/Volumes" || w == "Downloads" || w == "hidden folder" }
+function weak(w) { return w == "home dot-folder" || w == "tooling folder" || w == "package-manager folder" }
+BEGIN { split(".git .venv venv .tox .direnv .husky node_modules .pnpm-store .build .terraform .next .cargo .gradle .m2 .cache .npm .yarn target deriveddata", a, " "); for (k in a) T[a[k]] = 1 }
+$1 == "R" {
+  n[$2]++; total++;
+  w = place($5); lookalike = ($4 ~ /^com\.apple\./ && $2 != "platform" && $2 != "team");
+  if ($2 == "adhoc" || $2 == "unsigned" || $2 == "noteam" || lookalike || ($2 == "team" && $4 ~ /^com\.apple\./)) {
+    kind = ($2 == "adhoc" ? "ad-hoc signed" : $2 == "unsigned" ? "UNSIGNED" : $2 == "noteam" ? "signed with no team ID" : "signed by team " $3);
+    if (lookalike) label = "LOOK   "; else if ($2 == "team") label = "CHECK  "; else if (strong(w)) label = "LOOK   "; else if (weak(w)) label = "context"; else label = "note   ";
+    line = "  " label " " kind ", " w ": " $5 "  (signing ID " $4 ")" (lookalike ? "; CLAIMS AN APPLE IDENTIFIER without being Apple platform code" : ($2 == "team" ? "; a com.apple.* ID under a developer team: Apple signs a few apps this way, compare the team" : ""));
+    list[++m] = line;
+  }
+}
+END {
+  printf "  Apple platform %d, developer team %d, ad-hoc %d, signed with no team ID %d, unsigned %d, unreadable %d (of %d)\n", n["platform"], n["team"], n["adhoc"], n["noteam"], n["unsigned"], n["unreadable"], total;
+  for (i = 1; i <= m && i <= 100; i++) print list[i];
+  if (m > 100) printf "  # ... %d more\n", m - 100;
+  if (m == 0) print "  (every running program outside the system folders is Apple platform code or signed by a developer team)";
+}' "$SIGFILE" >> "$OUT"
+say 'LOOK = ad-hoc or unsigned in a place a normal install does not run from, or claiming an Apple identifier. context = developer tooling (Homebrew, caches, virtualenvs). note = elsewhere.'
+
 section "5 Network"
 note "lsof as the user shows only the user's own processes."
 pipeline 'listening TCP sockets' "lsof -nP -iTCP -sTCP:LISTEN"
@@ -289,40 +380,21 @@ EOF_HITS
 done <<EOF_PATHS
 $KNOWN_PATHS
 EOF_PATHS
-# Signing teams and identifiers of the programs launch items run and of the processes running now (system folders left out).
-launch_programs() {
-  local dir plist prog a0
-  for dir in /Library/LaunchAgents /Library/LaunchDaemons "$HOME/Library/LaunchAgents"; do
-    [ -d "$dir" ] || continue
-    for plist in "$dir"/*.plist; do
-      [ -f "$plist" ] || continue
-      prog=$(plutil -extract Program raw -o - "$plist" 2>/dev/null || true)
-      a0=$(plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)
-      printf '%s\n' "${prog:-$a0}"
-    done
-  done
-}
-progs=$( { ps -axo pid,ppid,user,etime,comm | awk 'NR > 1 { c = $5; for (i = 6; i <= NF; i++) c = c " " $i; print c }'; launch_programs; } \
-  | grep '^/' | grep -v -E '^/(System|usr/(libexec|sbin|bin)|bin|sbin|Library/Apple)/' | sort -u | head -n 600)
+# Signing teams and identifiers of the programs launch items run and of the processes running now: the table section 4 built.
 checked=0
-while IFS= read -r prog; do
-  [ -e "$prog" ] || continue
+while IFS=$'\t' read -r src kind team sid prog; do
+  [ -n "$prog" ] || continue
   checked=$((checked + 1))
-  sig=$(codesign -dv --verbose=4 "$prog" 2>&1 | grep -E '^(TeamIdentifier|Identifier)=')
-  team=$(printf '%s\n' "$sig" | sed -n 's/^TeamIdentifier=//p')
-  sid=$(printf '%s\n' "$sig" | sed -n 's/^Identifier=//p')
-  while IFS='|' read -r kind fam sev val; do
+  while IFS='|' read -r idkind fam sev val; do
     [ -n "$val" ] || continue
-    if { [ "$kind" = team ] && [ "$team" = "$val" ]; } || { [ "$kind" = signing ] && [ "$sid" = "$val" ]; }; then
+    if { [ "$idkind" = team ] && [ "$team" = "$val" ]; } || { [ "$idkind" = signing ] && [ "$sid" = "$val" ]; }; then
       known=$((known + 1))
-      say "MATCH [$sev] $fam: $prog is signed with the published $kind $val"
+      say "MATCH [$sev] $fam: $prog is signed with the published $idkind $val"
     fi
   done <<EOF_IDS
 $KNOWN_IDS
 EOF_IDS
-done <<EOF_PROGS
-$progs
-EOF_PROGS
+done < "$SIGFILE"
 say "checked the signatures of $checked programs outside the system folders"
 [ "$known" -gt 0 ] || say "(no published indicator found)"
 

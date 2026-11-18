@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -109,6 +109,37 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
       expect(code).toMatch(/already exists; not overwriting/);
     });
 
+    /** The awk that places a program (`function tooling` … `BEGIN`), run on its own over some paths. */
+    const placeOf = (paths: string[]): string[] => {
+      const from = code.indexOf('function tooling');
+      const fns = code.slice(from, code.indexOf('$1 == "R" {', from));
+      const prog = `${fns}\n{ print place($0) }`;
+      return spawnSync('awk', [prog], { input: paths.join('\n'), encoding: 'utf8' }).stdout.trimEnd().split('\n');
+    };
+
+    test('places a program as Ficus does: strong odd places, developer tooling, and elsewhere', () => {
+      expect(placeOf([
+        '/tmp/x', '/private/var/folders/ab/cd/T/x', '/var/tmp/x', '/Users/Shared/x', '/Volumes/Disk/x', '/Users/bob/Downloads/x',
+        '/private/var/folders/ab/cd/T/AppTranslocation/ABC/d/x.app/Contents/MacOS/x',
+        '/Users/bob/.cache/uv/x/bin/python', '/Users/bob/.vscode/extensions/e/bin/pet', '/Users/bob/.cargo/bin/rg',
+        '/Users/bob/Desktop/.hidden/tool', '/Users/bob/Desktop/.hidden/node_modules/.bin/x', '/Users/bob/Projects/node_modules/.bin/x',
+        '/Users/bob/Library/Application Support/Code/User/x', '/Users/bob/bin/tool', '/opt/homebrew/bin/uv', '/usr/local/bin/x', '/Applications/A.app/Contents/MacOS/A',
+      ])).toEqual([
+        'temp folder', 'temp folder', 'temp folder', '/Users/Shared', '/Volumes', 'Downloads', 'App Translocation',
+        'home dot-folder', 'home dot-folder', 'home dot-folder',
+        'hidden folder', 'hidden folder',           // a tooling folder below a buried hidden one does not soften it
+        'tooling folder',
+        'home folder', 'home folder', 'package-manager folder', 'package-manager folder', 'installed',
+      ]);
+    });
+
+    test('its list of developer tooling folders is the one Ficus uses', () => {
+      const ficus = /const TOOLING_DIRS = new Set\(\[([^\]]*)\]\)/.exec(fs.readFileSync(path.resolve(__dirname, '..', 'src', 'rules', 'locations.ts'), 'utf8'))![1]!;
+      const fromTs = [...ficus.matchAll(/'([^']+)'/g)].map(m => m[1]!).sort();
+      const fromSh = /BEGIN \{ split\("([^"]+)"/.exec(code)![1]!.split(' ').sort();
+      expect(fromSh).toEqual(fromTs);
+    });
+
     // The real run: macOS only, as the current user, on a throwaway HOME with planted harmless artifacts.
     test.skipIf(process.platform !== 'darwin')('finds planted artifacts, leaves later launch arguments unread, and says what it could not check', () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ficus-pwned-'));
@@ -146,6 +177,35 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
         expect(again.status).toBe(1);
       } finally {
         fs.rmSync(home, { recursive: true, force: true });
+      }
+    }, 150_000);
+
+    test.skipIf(process.platform !== 'darwin')('lists an ad-hoc program running from a temp folder, and one claiming an Apple identifier', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ficus-sig-'));
+      const kids: ReturnType<typeof spawn>[] = [];
+      try {
+        const plant = (name: string, id: string | null): void => {
+          const file = path.join(dir, name);
+          fs.copyFileSync('/bin/sleep', file);
+          expect(spawnSync('codesign', ['-f', '-s', '-', ...(id ? ['-i', id] : []), file], { encoding: 'utf8' }).status).toBe(0);
+          kids.push(spawn(file, ['120'], { stdio: 'ignore', detached: true }));
+        };
+        plant('adhoc-tool', null);
+        plant('softwareupdated', 'com.apple.softwareupdated');
+        const out = path.join(dir, 'report.txt');
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ficus-sig-home-'));
+        const r = spawnSync('/bin/bash', [SCRIPT, '-o', out], { encoding: 'utf8', env: { ...process.env, HOME: home }, timeout: 120_000 });
+        expect(r.status, r.stderr).toBe(0);
+        const report = fs.readFileSync(out, 'utf8');
+        const line = (name: string): string => report.split('\n').find(l => l.includes(`/${name}  (`)) ?? '';
+        expect(line('adhoc-tool')).toMatch(/^ {2}LOOK {3} ad-hoc signed, temp folder: /);
+        expect(line('softwareupdated')).toMatch(/^ {2}LOOK {3} ad-hoc signed, temp folder: .*CLAIMS AN APPLE IDENTIFIER/);
+        expect(report).toMatch(/Apple platform \d+, developer team \d+, ad-hoc \d+, signed with no team ID \d+, unsigned \d+, unreadable \d+ \(of \d+\)/);
+        expect(report).toContain('(read, not verified)');
+        fs.rmSync(home, { recursive: true, force: true });
+      } finally {
+        for (const k of kids) { try { process.kill(-k.pid!, 'SIGKILL'); } catch { try { k.kill('SIGKILL'); } catch { /* already gone */ } } }
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     }, 150_000);
   });
