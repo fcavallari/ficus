@@ -2510,3 +2510,30 @@ test('header button works when the active capture is not loaded', async () => {
   expect(json.summary.rows).toBeGreaterThan(0);
   expect(await screen.findByText(/Left out, not loaded: gone\.jsonl\./)).toBeInTheDocument();
 });
+
+test('the Timeline tab lays out the flagged lineage as lanes, replays moments and opens a lane in the detail pane', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  await user.click(screen.getByRole('tab', { name: 'Timeline' }));
+  const lanes = () => within(screen.getByRole('listbox', { name: 'Process lanes' })).getAllByRole('option');
+  const flaggedLanes = lanes().length;
+  expect(flaggedLanes).toBeGreaterThan(0);
+  // The flagged processes' lanes say so, with the severity in words.
+  expect(lanes().some(o => /flagged (high|medium|low)/.test(o.getAttribute('aria-label')!))).toBe(true);
+
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'all');
+  expect(lanes().length).toBeGreaterThan(flaggedLanes);
+
+  await user.click(screen.getByRole('button', { name: 'Next moment' }));
+  expect(within(screen.getByRole('list', { name: 'Current moment' })).getAllByRole('listitem')).toHaveLength(1);
+  expect(screen.getByText(/^1 of \d+$/)).toBeInTheDocument();
+  expect(document.querySelectorAll('.lrow.now')).toHaveLength(1);
+
+  const lane = lanes()[0]!;
+  await user.click(lane);
+  expect(lane).toHaveAttribute('aria-selected', 'true');
+  const name = lane.getAttribute('aria-label')!.split(',')[0]!;
+  expect(within(screen.getByRole('region', { name: 'Selected process' })).getByRole('heading', { level: 2 })).toHaveTextContent(name);
+});
