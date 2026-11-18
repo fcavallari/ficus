@@ -1,7 +1,7 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
-  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
+  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
@@ -644,6 +644,21 @@ function reverseShellMitre(img: Image): string {
   return /^python[0-9.]*$/.test(n) ? 'T1059.006' : /^(?:perl|ruby|php)[0-9.]*$/.test(n) ? 'T1059' : 'T1059.004';
 }
 
+/** touch: -A adjust, -d date, -r reference file, -t timestamp take a value. SetFile: -a, -c, -d, -m, -t do. */
+const TOUCH_SPEC: OptSpec = { shortValues: 'Adrt', longValues: [] };
+const SETFILE_SPEC: OptSpec = { shortValues: 'acdmt', longValues: [] };
+
+/** The programs that ran in a capture (every exec'd image), by `normPath(path).toLowerCase()`, built once per model. */
+const programsRunCache = new WeakMap<CaptureModel, Set<string>>();
+function programsRun(m: CaptureModel): Set<string> {
+  const cached = programsRunCache.get(m);
+  if (cached) return cached;
+  const set = new Set<string>();
+  for (const p of m.processes.values()) for (const i of p.images) if (!i.inherited && i.path !== null) set.add(normPath(i.path).toLowerCase());
+  programsRunCache.set(m, set);
+  return set;
+}
+
 /** openssl digest commands, where -d means debug output rather than decode. */
 const OPENSSL_DIGESTS = /^(?:dgst|md4|md5|sha1|sha224|sha256|sha384|sha512|rmd160|ripemd160)$/;
 
@@ -928,6 +943,27 @@ export const RULES: Rule[] = [
       const a = rest(img);
       return hasShortFlag(a, 'c') || (hasShortFlag(a, 'd') && a.includes('com.apple.quarantine'))
         ? { evidence: cmdline(img) } : null;
+    },
+  },
+  {
+    id: 'timestomp', title: 'File dates faked', severity: 'low', levels: ['high', 'low'], gated: 'when-low',
+    explanation: "Set a file's dates by hand with `touch -r`, `-t`, `-d` or `-A`, or `SetFile -d` or `-m`, so it looks older than it is or as old as a file around it. High when the file is a launch agent or daemon plist, a program that ran in this capture, or something in a temporary, shared, Downloads or hidden folder; the reference file of `touch -r` shows which legitimate item it was made to look like. Build scripts set dates for reproducible output, so any other file is context only. A program that changes dates through the system API instead of these tools leaves no trace in a capture.",
+    mitre: ['T1070.006'], scope: 'image',
+    match: ({ m, img }) => {
+      const n = basename(img.path);
+      const spec = n === 'touch' ? TOUCH_SPEC : n === 'SetFile' ? SETFILE_SPEC : null;
+      if (spec === null || !img.args) return null;
+      const o = parseOpts(rest(img), spec);
+      const dating = n === 'touch' ? ['r', 't', 'd', 'A'] : ['d', 'm'];
+      const set = o.shorts.find(s => dating.includes(s.opt) && s.value !== undefined);
+      if (set === undefined || o.positionals.length === 0) return null;
+      const targets = o.positionals.map(t => resolvePath(t, img.cwd));
+      const ran = programsRun(m);
+      const strong = targets.find(t => LAUNCH_DIR.test(normPath(t)) || ran.has(normPath(t).toLowerCase())
+        || oddLocation(t)?.strength === 'strong');
+      const target = strong ?? targets[0]!;
+      const how = set.opt === 'r' ? `dated like ${set.value}` : `set to ${set.value}`;
+      return { evidence: `${cmdline(img)}; ${target} ${how}`, severity: strong !== undefined ? 'high' : 'low' };
     },
   },
   {

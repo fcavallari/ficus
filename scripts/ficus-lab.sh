@@ -549,6 +549,17 @@ synthetic_story() {
   ev_fork 107.5 "$node" 7665 9665; git=$LAST
   ev_exec 107.6 "$git" /usr/bin/git platform com.apple.git '' "$CWD" socket git status --porcelain
   ev_exit 107.9 "$git"
+
+  # 15. The shell gives the stealer's launch agent plist the dates of an ordinary one, so it does not stand out by date.
+  run 110.0 "$ZSH" 7670 9670 /usr/bin/touch touch -r /Library/LaunchAgents/com.example.agent.plist "$AGENTS/com.learner.syncd.plist"
+  answer timestomp timestomp high queued 'touch -r /Library' 'touch -r copies the dates of another launch agent plist onto the stealer'"'"'s, so it looks as old as its neighbours.'
+  #     Not timestamp faking: a build sets the date of what it just compiled, for reproducible output (context only).
+  local cc
+  ev_fork 111.0 "$ZSH" 7671 9671; cc=$LAST
+  ev_exec 111.1 "$cc" /usr/bin/cc platform com.apple.cc '' /Users/learner/proj tty cc -o build/out.o main.c
+  ev_create 111.2 "$cc" /Users/learner/proj/build/out.o
+  ev_exit 111.3 "$cc"
+  run 112.0 "$ZSH" 7672 9672 /usr/bin/touch touch -t 202001010000 /Users/learner/proj/build/out.o
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -596,6 +607,7 @@ live_answers() {
   answer orphan orphaned low queued 'sleep 3' 'Its parent exited, so it ends up under launchd.'
   answer persist persistence-item high queued 'agent-template.plist' 'cp writes a launch agent plist into ~/Library/LaunchAgents (removed at the end) and macOS registers it; it runs a shell, so it is high. macOS likely shows a "Background Items Added" notification: that is what a real infection looks like too.'
   answer persist-load launchctl-load high queued 'launchctl bootstrap' 'launchctl starts the job now (it only runs "exit 0").'
+  answer stomp timestomp high queued 'touch -r /etc/hosts' 'touch -r gives the lab'"'"'s launch agent plist the dates of /etc/hosts, so it looks older than it is.'
   answer burst recon low burst sw_vers 'Three discovery tools within a minute under one shell: a recon burst.'
   answer burst recon low burst 'uname -a' 'Part of the same burst.'
   answer burst recon low burst hostname 'Part of the same burst.'
@@ -697,6 +709,7 @@ live_steps() {
   /bin/mkdir -p "$HOME/Library/LaunchAgents"
   step 'launch agent plist written (removed at the end)' /bin/cp "$plist_src" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
   step 'launchctl bootstrap' /bin/launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
+  step 'plist dates faked' /usr/bin/touch -r /etc/hosts "$HOME/Library/LaunchAgents/$LIVE_LABEL.plist"
   printf '/usr/bin/sw_vers\n/usr/bin/uname -a\n/bin/hostname\n:\n' > "$LAB/recon.sh"
   step 'recon burst' /bin/sh "$LAB/recon.sh"
   step 'ps (setuid root)' /bin/ps -p $$ -o pid,comm

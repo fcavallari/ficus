@@ -105,6 +105,13 @@ describe('the synthetic story', () => {
     }
   });
 
+  test('a build setting the date of what it compiled is timestomp context only, not queued', () => {
+    const p = byMarker(m, 'touch -t 202001010000');
+    expect((a.contextOnly.get(p.id) ?? []).map(f => [f.ruleId, f.severity])).toContainEqual(['timestomp', 'low']);
+    expect((a.findings.get(p.id) ?? []).map(f => f.ruleId)).not.toContain('timestomp');
+    expect(queueStatus(a, p)).toBe('context');
+  });
+
   test('the key covers the queue concepts', () => {
     expect([...new Set(key.map(r => r.queue))].sort()).toEqual(['burst', 'context', 'in-chain', 'item', 'queued']);
   });
