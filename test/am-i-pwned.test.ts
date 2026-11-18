@@ -109,6 +109,70 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
       expect(code).toMatch(/already exists; not overwriting/);
     });
 
+    /** A judging function of the script, called with `args` (the script is sourced, not run). */
+    const judge = (fn: string, ...args: string[]): string =>
+      spawnSync('/bin/bash', ['-c', 'MAC_TRIAGE_SOURCE_ONLY=1 . "$0"; "$@"', SCRIPT, fn, ...args], { encoding: 'utf8' }).stdout.trim();
+
+    test('judges the firewall, Gatekeeper and SIP from what the tools print', () => {
+      expect(judge('judge_firewall', 'Firewall is enabled. (State = 1)')).toBe('ok');
+      expect(judge('judge_firewall', 'Firewall is enabled. (State = 2)')).toBe('ok');
+      expect(judge('judge_firewall', 'Firewall is disabled. (State = 0)')).toBe('CHANGED');
+      expect(judge('judge_firewall', 'something else')).toBe('unknown');
+      expect(judge('judge_spctl', 'assessments enabled')).toBe('ok');
+      expect(judge('judge_spctl', 'assessments disabled')).toBe('CHANGED');
+      expect(judge('judge_sip', 'System Integrity Protection status: enabled.')).toBe('ok');
+      expect(judge('judge_sip', 'System Integrity Protection status: disabled.')).toBe('CHANGED');
+      expect(judge('judge_sip', 'System Integrity Protection status: enabled (Custom Configuration).')).toBe('CHANGED');
+      expect(judge('judge_sip', 'Authenticated Root status: enabled')).toBe('ok');
+      expect(judge('judge_sip', 'Authenticated Root status: disabled')).toBe('CHANGED');
+    });
+
+    test('judges boot arguments, library validation values, the XProtect age and the SSH settings', () => {
+      expect(judge('judge_bootargs', '')).toBe('ok');
+      expect(judge('judge_bootargs', '-v debug=0x144')).toBe('note');                       // a developer's flags are not a weakening
+      expect(judge('judge_bootargs', 'amfi_get_out_of_my_way=1')).toBe('CHANGED');
+      expect(judge('judge_bootargs', '-v cs_enforcement_disable=1')).toBe('CHANGED');
+      expect(judge('judge_age', '11')).toBe('ok');
+      expect(judge('judge_age', '60')).toBe('ok');
+      expect(judge('judge_age', '61')).toBe('CHANGED');
+      expect(judge('judge_sshd', '')).toBe('ok');
+      expect(judge('judge_sshd', 'PasswordAuthentication no')).toBe('note');
+      expect(judge('judge_sshd', 'PermitRootLogin yes')).toBe('CHANGED');
+      expect(judge('judge_sshd', 'PermitRootLogin prohibit-password\nForceCommand /tmp/x')).toBe('CHANGED');
+      for (const [fn, v, want] of [['is_off', '0', 0], ['is_off', 'false', 0], ['is_off', 'NO', 0], ['is_off', '1', 1], ['is_on', '1', 0], ['is_on', 'true', 0], ['is_on', '0', 1]] as const) {
+        expect(spawnSync('/bin/bash', ['-c', 'MAC_TRIAGE_SOURCE_ONLY=1 . "$0"; "$@"', SCRIPT, fn, v]).status, `${fn} ${v}`).toBe(want);
+      }
+    });
+
+    test('judges an authorization right: the usual admin rights are fine, a loosened one is not', () => {
+      const usual = '{"class":"user","group":"admin","authenticate-user":true,"shared":false,"allow-root":true}';
+      expect(judge('judge_authdb', usual)).toBe('ok');
+      expect(judge('judge_authdb', '{"class":"rule","rule":["is-root","entitled","authenticate-admin-nonshared"]}')).toBe('ok');
+      expect(judge('judge_authdb', '{"class":"allow"}')).toBe('CHANGED');
+      expect(judge('judge_authdb', '{"class":"rule","rule":"allow"}')).toBe('CHANGED');
+      expect(judge('judge_authdb', '{"class":"rule","rule":["allow"]}')).toBe('CHANGED');
+      expect(judge('judge_authdb', '{"class":"user","group":"admin","authenticate-user":false}')).toBe('CHANGED');   // no password asked
+      expect(judge('judge_authdb', '{"class":"user","group":"everyone","authenticate-user":true}')).toBe('CHANGED'); // a wider group
+      expect(judge('judge_authdb', '')).toBe('unknown');
+    });
+
+    test('a command that does not finish is stopped, and reported as a failure of that check only', () => {
+      const t0 = Date.now();
+      const r = spawnSync('/bin/bash', ['-c', 'MAC_TRIAGE_SOURCE_ONLY=1 . "$0"; tmo 1 sleep 20; echo "rc=$?"', SCRIPT], { encoding: 'utf8', timeout: 15_000 });
+      expect(r.stdout.trim()).toBe('rc=142');
+      expect(Date.now() - t0).toBeLessThan(10_000);
+    });
+
+    test('every setting the script reads is explained on the settings page', () => {
+      const page = read('references/security-settings.md');
+      for (const key of ['AutomaticCheckEnabled', 'ConfigDataInstall', 'CriticalUpdateInstall', 'AutomaticDownload', 'AutomaticallyInstallMacOSUpdates',
+        'GKAutoRearm', 'LSQuarantine', 'DisableLibraryValidation', 'boot-args', 'authorizationdb', 'Admin.plist', 'XProtect.yara', 'print-disabled',
+        'autoLoginUser', 'GuestEnabled', 'sshd_config', 'csrutil authenticated-root', 'socketfilterfw']) {
+        expect(code, `script reads ${key}`).toContain(key);
+        expect(page, `page explains ${key}`).toContain(key);
+      }
+    });
+
     /** The awk that places a program (`function tooling` … `BEGIN`), run on its own over some paths. */
     const placeOf = (paths: string[]): string[] => {
       const from = code.indexOf('function tooling');
@@ -170,6 +234,10 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
         expect(report).toMatch(/MATCH \[high\] ChillyHell: .*\/Library\/com\.apple\.qtop \(/);
         expect(report).toMatch(/MATCH \[high\] DazzleSpy: .*\/\.local\/softwareupdate \(/);
         expect(report).not.toContain('(no published indicator found)');
+        expect(report).toContain('security settings that malware and adware switch off');
+        for (const name of ['Application firewall', 'Gatekeeper', 'System Integrity Protection', 'Boot arguments', 'XProtect signatures last updated', 'Authorization right system.privilege.admin']) {
+          expect(report, name).toMatch(new RegExp(`\\n {2}(ok|CHANGED|note|default|info|unknown) +${name}`));   // whatever this Mac's values are
+        }
         expect(report).toContain('end of report');
         expect((fs.statSync(out).mode & 0o777).toString(8)).toBe('600');
         // A second run does not overwrite the first.

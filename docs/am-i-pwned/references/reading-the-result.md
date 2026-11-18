@@ -19,6 +19,7 @@ The agent's verdict is a starting point. Use this table to decide what to do wit
 | MDM profile you did not enroll in | None | Always |
 | Accessibility / Screen Recording / Input Monitoring / Apple Events grant | Apps you use for that purpose | Any app you do not recognize, especially a recent grant |
 | Security control off (FileVault, SIP, Gatekeeper, firewall) | You turned it off and remember why | Off and you do not know why |
+| A `CHANGED` line in `mac-triage.sh` section 1: security updates off, XProtect not updating, Gatekeeper or quarantine switched off, a boot argument that weakens code signing, library validation off, an Apple security service disabled, an authorization right loosened (see `security-settings.md`) | Your IT team's policy on a managed Mac; a developer's own choice that you remember making | Changed and you do not know why. Name the setting and its value, and say it is a lead: the script cannot see who changed it |
 | A match with an entry of `known-indicators.md` (a path, launch plist or signing team that vendors published for a named family) | None | A match with a **high** entry: always, and name the family and the source. A match with a **medium** entry: escalate, and say how sure the entry is. A miss means nothing |
 | You pasted a command from a web page into Terminal or Script Editor, or typed your password into a prompt you did not start | None | Always. Treat as likely compromised |
 
