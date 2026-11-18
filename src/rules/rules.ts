@@ -1013,7 +1013,10 @@ export const RULES: Rule[] = [
       const lang = socketLang(img);
       // Once per process: macOS /bin/sh re-execs /bin/bash with the same arguments and the same stdin.
       const socket = lang !== null && !p.images.slice(0, imgIndex).some(i => !i.inherited && socketLang(i) !== null);
-      const cmd = reverseShellCommand(img);
+      const before = p.images.slice(0, imgIndex).filter(i => !i.inherited);
+      // The same command line once per process too: /bin/sh re-execs /bin/bash with the arguments it was given.
+      const found = reverseShellCommand(img);
+      const cmd = found !== null && before.some(i => i.args !== null && img.args !== null && i.args.join('\0') === img.args.join('\0')) ? null : found;
       if (!socket && cmd === null) return null;
       const viaSsh = socket && cmd === null && sshAncestor(m, p);
       const evidence = [
