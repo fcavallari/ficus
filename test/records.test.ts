@@ -144,6 +144,7 @@ test('Mac Monitor records are ordered by mach_time: its sequence numbers are per
   }).reverse();
   const c = await loadCapture(new Blob([records.join('\n')]));
   expect(c.model.stats.events).toBe(111);
+  expect(c.model.stats.seqGaps).toBeUndefined();   // per-client numbers say nothing about dropped events
   expect(shape(c.analysis.queue)).toEqual(shape(base.analysis.queue));
   // seq is the record's place in mach_time order, so it stays unique (btm ids and React keys are built from it).
   expect(c.model.stats.firstSeq).toBe(0);

@@ -419,7 +419,8 @@ export function GuideScreen({ section }: { section: string }) {
             <Snippet title="One exec event, trimmed">{EXEC_SAMPLE}</Snippet>
             <ul className="gbullets">
               <li><C>time</C>, <C>mach_time</C> and <C>global_seq_num</C> put events in order; <C>seq_num</C> counts per event
-                type.</li>
+                type. <C>global_seq_num</C> counts up by one for every event the recorder is given, so a jump means events were
+                dropped (the capture was too busy to keep up); Ficus says how many are missing in the capture coverage.</li>
               <li><C>process</C> is <em>who did it</em>. In an <C>exec</C> it is the process <em>before</em> the exec; what it
                 became is <C>event.exec.target</C>, and the command line is <C>event.exec.args</C>.</li>
               <li><C>event</C> holds exactly one key, the event type, and under it what happened.</li>
