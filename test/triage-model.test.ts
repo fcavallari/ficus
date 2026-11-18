@@ -9,7 +9,7 @@ import { realTest } from './real';
 
 const img = (o: Partial<Image>): Image => ({
   token: '1:1', path: null, signingId: null, teamId: null, isPlatform: false, csFlags: 0,
-  args: null, cwd: null, env: null, stdinIsPipe: null, script: null, time: null, seq: 0, inherited: false, ...o,
+  args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null, time: null, seq: 0, inherited: false, ...o,
 });
 const proc = (images: Image[]): Process => ({
   id: '1:1', pid: 1, ghost: false, images, forkParent: null, originalPpid: null, ppid: null, parentToken: null,

@@ -551,7 +551,7 @@ async function withSession(name: LabName = 'synthetic-lab.jsonl'): Promise<{ sto
 
 const img = (over: Partial<Image>): Image => ({
   token: '1:1', path: null, signingId: null, teamId: null, isPlatform: false, csFlags: 0,
-  args: null, cwd: null, env: null, stdinIsPipe: null, script: null, time: null, seq: 0, inherited: false, ...over,
+  args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null, time: null, seq: 0, inherited: false, ...over,
 });
 
 test('setVerdict stores a snapshot, keeps the note when omitted, and bumps session.updated', async () => {

@@ -18,7 +18,7 @@ const verdict = (sessionId: string, fingerprint: string, procKey: string, status
 });
 const img = (path: string | null, over: Partial<Image> = {}): Image => ({
   token: '1:1', path, signingId: null, teamId: null, isPlatform: false, csFlags: 0,
-  args: null, cwd: null, env: null, stdinIsPipe: null, script: null, time: null, seq: 0, inherited: false, ...over,
+  args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null, time: null, seq: 0, inherited: false, ...over,
 });
 
 test('same fingerprint dedupes', async () => {

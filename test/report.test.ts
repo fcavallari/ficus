@@ -63,7 +63,7 @@ test('process detail: pid, ancestry, images, no environment', () => {
 
 test('signatureOf names the signing state in fixed words', () => {
   const img = (o: Partial<Image>): Image => ({ token: 't', path: '/x', signingId: null, teamId: null, isPlatform: false, csFlags: 0,
-    args: null, cwd: null, env: null, stdinIsPipe: null, script: null, time: null, seq: 0, inherited: false, ...o });
+    args: null, cwd: null, env: null, stdinIsPipe: null, stdinIsSocket: null, script: null, time: null, seq: 0, inherited: false, ...o });
   expect(signatureOf(img({ isPlatform: true, signingId: 'com.apple.ls' }))).toBe('apple-platform');
   expect(signatureOf(img({}))).toBe('unsigned');
   expect(signatureOf(img({ signingId: 'a.out', csFlags: 0x2 }))).toBe('adhoc');

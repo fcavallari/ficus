@@ -27,6 +27,10 @@ export interface NormEvent {
   child?: ProcInfo;                                         // fork
   target?: ProcInfo; args?: string[]; cwd?: string | null;  // exec
   env?: string[]; stdinIsPipe?: boolean | null; script?: string | null;
+  /** Exec: fd 0 is a socket (fdtype 2); null when the exec carried no fds. */
+  stdinIsSocket?: boolean | null;
+  /** A `write` that came from a `close` event marked modified, not from a `write` event. */
+  viaClose?: true;
   path?: string; toPath?: string; xattr?: string;           // file ops
   btm?: BtmInfo;
 }
@@ -35,11 +39,15 @@ export interface Image {
   isPlatform: boolean; csFlags: number;
   args: string[] | null; cwd: string | null; env: string[] | null;   // null when not from an exec event
   stdinIsPipe: boolean | null; script: string | null;
+  /** fd 0 was a socket at exec; null when the exec carried no fds. */
+  stdinIsSocket: boolean | null;
   time: string | null; seq: number;   // for an inherited image: the fork event's time and seq
   inherited: boolean;   // true for the copy a fork child starts with; rules skip these
 }
 export interface FileOp { kind: 'create' | 'rename' | 'unlink' | 'write' | 'setextattr';
-  path: string; toPath?: string; xattr?: string; time: string; seq: number }
+  path: string; toPath?: string; xattr?: string; time: string; seq: number;
+  /** A write seen only as a `close` event marked modified. */
+  via?: 'close' }
 export interface Process {
   id: ProcId; pid: number; ghost: boolean; images: Image[];
   forkParent: ProcId | null;
