@@ -4,7 +4,7 @@ import { buildModel } from '../src/model/builder';
 import { analyze } from '../src/rules/engine';
 import type { Verdict } from '../src/session/store';
 import { processTimeline, recordedSpan } from '../src/ui/timeline';
-import { coverage, overview, verdictKey } from '../src/ui/triage-model';
+import { captureInfo, coverage, overview, verdictKey } from '../src/ui/triage-model';
 import { readLines } from './fixtures';
 import { procByPid, queued } from './helpers';
 
@@ -157,4 +157,52 @@ test('a launch item appears on the timeline of each process it names, with that 
     expect(rows[0]!.kind).toBe(item.kind === 'add' ? 'btm_add' : 'btm_remove');
     expect(rows[0]!.findings.length > 0).toBe(cited.has(item.id));
   }
+});
+
+// --- events missing from the sequence ------------------------------------------------------------------------------
+
+/** The lab with the events numbered in `drop` removed: what an eslogger that fell behind would have written. */
+const without = (drop: number[]): LoadedCapture => labWith(o => (drop.includes(o['global_seq_num'] as number) ? null : o));
+
+test('numbers missing from global_seq_num are counted, and the separate holes too', () => {
+  const stats = without([5, 6, 7, 20]).model.stats;
+  expect(stats.events).toBe(107);
+  expect(stats.seqGaps).toBe(4);
+  expect(stats.seqGapRuns).toBe(2);
+});
+
+test('a capture that lost nothing has no gap, and a late start, a repeated number and the last events are not gaps', () => {
+  expect(lab().model.stats.seqGaps).toBe(0);
+  expect(without([0, 1, 2]).model.stats.seqGaps).toBe(0);          // the capture simply started later
+  expect(without([110]).model.stats.seqGaps).toBe(0);              // the end is not a hole
+  const twice = labWith(o => ({ ...o, global_seq_num: Math.floor((o['global_seq_num'] as number) / 2) }));
+  expect(twice.model.stats.seqGaps).toBe(0);                        // repeated numbers, nothing missing
+  expect(coverage(lab().model).notes.some(n => n.id === 'seq-gaps')).toBe(false);
+});
+
+test('a record without a numeric global_seq_num takes no part in the count, and its placeholder 0 is no hole', () => {
+  const cap = labWith(o => (o['global_seq_num'] === 30 ? { ...o, global_seq_num: undefined } : o));
+  expect(cap.model.stats.events).toBe(111);
+  // Only the number it should have carried is absent; the placeholder 0 it sorts under does not add anything.
+  expect(cap.model.stats.seqGaps).toBe(1);
+  expect(cap.model.stats.seqGapRuns).toBe(1);
+});
+
+test('the coverage note and the header line say how many events are missing, and what that can hide', () => {
+  const m = without([5, 6, 7, 20]).model;
+  const note = coverage(m).notes.find(n => n.id === 'seq-gaps')!;
+  expect(note.level).toBe('warn');
+  expect(note.title).toBe('4 events are missing from the sequence, in 2 places');
+  expect(note.detail).toMatch(/drops events when the recorder falls behind/);
+  expect(note.detail).toMatch(/lines were removed afterwards/);
+  expect(note.detail).toMatch(/a count of what is missing, not a list/);
+  expect(captureInfo(m.stats).line).toContain('4 events missing from the sequence');
+  expect(coverage(without([5]).model).notes.find(n => n.id === 'seq-gaps')!.title).toBe('1 event is missing from the sequence');
+});
+
+test('a Mac Monitor trace is not checked: its sequence numbers restart per ES client', () => {
+  // mach_time orders such a trace; with it present the numbers are renumbered and carry no gap information.
+  const cap = labWith(o => ({ ...o, telemetry_version: '1', mach_time: 1000 + (o['global_seq_num'] as number) * 10, global_seq_num: (o['global_seq_num'] as number) * 3 }));
+  expect(cap.model.stats.seqGaps).toBeUndefined();
+  expect(coverage(cap.model).notes.some(n => n.id === 'seq-gaps')).toBe(false);
 });

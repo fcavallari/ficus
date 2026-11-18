@@ -116,6 +116,7 @@ export function captureInfo(stats: CaptureStats): { line: string | null; older: 
   const parts: string[] = [];
   const unit = stats.layout === 'objects' ? 'record' : 'line';
   if (stats.badLines > 0) parts.push(`${stats.badLines.toLocaleString('en-US')} unreadable ${unit}${stats.badLines === 1 ? '' : 's'}`);
+  if (stats.seqGaps) parts.push(`${stats.seqGaps.toLocaleString('en-US')} ${stats.seqGaps === 1 ? 'event' : 'events'} missing from the sequence`);
   const other = Object.entries(stats.otherEvents).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   if (other.length > 0) {
     const shown = other.slice(0, MAX_OTHER_SHOWN).map(([t, n]) => `${t} ×${n.toLocaleString('en-US')}`);
@@ -261,6 +262,16 @@ export function coverage(m: CaptureModel): { versions: number[]; notes: Coverage
     notes.push({
       id: 'bad', level: 'warn', title: `${n(stats.badLines)} unreadable ${unit}${stats.badLines === 1 ? '' : 's'}`,
       detail: `They were not JSON, or not an eslogger event, and were skipped. Whatever they held is missing from the tree, the queue and every timeline.`,
+      checks: [],
+    });
+  }
+  if (stats.seqGaps) {
+    const gaps = stats.seqGaps;
+    const runs = stats.seqGapRuns ?? 1;
+    notes.push({
+      id: 'seq-gaps', level: 'warn',
+      title: `${n(gaps)} ${gaps === 1 ? 'event is' : 'events are'} missing from the sequence${runs > 1 ? `, in ${n(runs)} places` : ''}`,
+      detail: `Endpoint Security numbers every event it delivers to the recorder (global_seq_num), so a capture that lost nothing counts up without a break. These numbers are absent: it drops events when the recorder falls behind (a busy Mac, a slow disk or terminal), or lines were removed afterwards (an unreadable line above, or a cleaner that dropped an event). A missing fork or exec can leave a process without its parent or its program, and a missing event of any other kind is something that happened and is not shown. This is a count of what is missing, not a list of it.`,
       checks: [],
     });
   }

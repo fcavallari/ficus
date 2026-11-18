@@ -21,6 +21,8 @@ export interface NormEvent {
   seq: number; time: string; kind: EventKind; rawType: string; version: number;
   /** A Mac Monitor record's mach_time: it orders the trace, since Mac Monitor's sequence numbers are per ES client. */
   machTime?: number;
+  /** The record carried no numeric global_seq_num, so `seq` is a placeholder 0 and takes no part in gap counting. */
+  seqMissing?: true;
   proc: ProcInfo;
   child?: ProcInfo;                                         // fork
   target?: ProcInfo; args?: string[]; cwd?: string | null;  // exec
@@ -65,6 +67,12 @@ export interface CaptureStats { lines: number; events: number; badLines: number;
   otherEvents: Record<string, number>; versions: number[];
   /** Modelled events by eslogger event type (`exec`, `btm_launch_item_add`…), so a missing type can be told apart from an empty one. */
   kinds?: Record<string, number>;
+  /**
+   * Numbers missing from the global_seq_num sequence, and how many separate holes they form: Endpoint Security numbers
+   * every event it delivers, so a hole is an event dropped (the recorder fell behind) or removed afterwards. Set for an
+   * eslogger capture, 0 when it is complete; absent for a Mac Monitor trace, whose numbers restart per ES client.
+   */
+  seqGaps?: number; seqGapRuns?: number;
   firstSeq: number | null; firstTime: string | null; lastTime: string | null }
 export interface CaptureModel { processes: Map<ProcId, Process>; tokenIndex: Map<TokenKey, ProcId>;
   persistence: PersistenceItem[]; stats: CaptureStats }

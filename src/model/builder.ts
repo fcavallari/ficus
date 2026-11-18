@@ -24,6 +24,24 @@ function newProcess(info: ProcInfo, image: Image, seq: number): Process {
 }
 
 /**
+ * The numbers missing between the first and the last global_seq_num of events in sequence order: Endpoint Security
+ * numbers every event it delivers to the recorder, so the sequence is consecutive in a complete capture, and a hole is
+ * an event it dropped or one removed afterwards. A first number above zero is not a hole (the capture may start late), and
+ * a repeated number is not one either. Records without a numeric number are left out.
+ */
+function seqGaps(events: NormEvent[]): { missing: number; runs: number } {
+  let missing = 0;
+  let runs = 0;
+  let prev: number | null = null;
+  for (const e of events) {
+    if (e.seqMissing) continue;
+    if (prev !== null && e.seq > prev + 1) { missing += e.seq - prev - 1; runs++; }
+    prev = e.seq;
+  }
+  return { missing, runs };
+}
+
+/**
  * Buffers parsed lines; finish() applies them in global_seq_num order. A Mac Monitor trace is applied in mach_time
  * order instead (ties in file order), and its events are renumbered by that order: Mac Monitor's global_seq_num counts
  * the messages of each of its ES clients, so one trace holds several sequences that start over.
@@ -52,6 +70,8 @@ export class ModelBuilder {
       ? this.events.sort((a, b) => (a.machTime ?? 0) - (b.machTime ?? 0))
       : this.events.sort((a, b) => a.seq - b.seq);
     if (byMachTime) events.forEach((e, i) => { e.seq = i; });
+    // Only an eslogger capture has one sequence to check; a Mac Monitor trace was renumbered by mach_time just above.
+    const gaps = byMachTime ? null : seqGaps(events);
     for (const ev of events) this.apply(ev);
     const first = events[0];
     const last = events[events.length - 1];
@@ -60,6 +80,7 @@ export class ModelBuilder {
       otherEvents: Object.fromEntries(this.otherEvents),
       kinds: Object.fromEntries(this.kinds),
       versions: [...new Set(events.map(e => e.version))].sort((a, b) => a - b),
+      ...(gaps ? { seqGaps: gaps.missing, seqGapRuns: gaps.runs } : {}),
       firstSeq: first ? first.seq : null,
       firstTime: first ? first.time : null,
       lastTime: last ? last.time : null,
