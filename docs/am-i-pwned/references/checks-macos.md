@@ -102,6 +102,15 @@ ps -axo pid,ppid,user,etime,comm | grep -E '/tmp/|/var/folders/|/Downloads/|/\.T
 ps -axo command | grep -o -E -- '--remote-debugging-port=[0-9]+'
 ```
 
+Signatures of the programs that are running. `mac-triage.sh` does this for every program outside the system folders and the launch items' programs; by hand, resolve a suspect with `codesign -dv --verbose=4` (see *Resolving a binary*). The signature is read, not verified, and a revoked certificate cannot be seen offline, so a signed program is not thereby safe (3CX, ChillyHell and others were signed). The labels the script puts on an ad-hoc or unsigned program:
+
+| Label | Means | What to do |
+| --- | --- | --- |
+| `LOOK` | Ad-hoc or unsigned, and running from temp, Downloads, `/Users/Shared`, `/Volumes`, App Translocation or a hidden folder buried under a visible one; or its signing ID claims `com.apple.*` without being Apple platform code | Level 2 of the verdict rule (*Process from an unusual path*, *Signing mismatch*). A claimed Apple identifier on a non-platform binary is the *Always* row for `com.apple.*` items |
+| `CHECK` | A `com.apple.*` signing ID under a developer team | Apple signs a few apps this way (Xcode, iWork, GarageBand): compare the team with Ficus's `APPLE_TEAM_IDS` in `src/rules/rules.ts` (some are unverified), and say what you could not confirm |
+| `context` | Ad-hoc in developer tooling: Homebrew, `~/.cache`, `.cargo`, virtualenvs, `node_modules`, VS Code extensions | Normal on a developer Mac; a finding only next to something else |
+| `note` | Ad-hoc elsewhere (for example an extension's helper under Application Support) | Ask whether the person installed it |
+
 Note a process whose binary was deleted from disk (the `comm` path no longer exists: `ls` it). For any suspect, resolve the binary (below) and look at its parent chain (`ps -o ppid=` repeatedly). An interpreter (`python`, `osascript`, `bash`, `curl`, `node`) with a parent you cannot explain is the strongest process signal: it is what a pasted ClickFix command, a malicious VS Code or Xcode project, or a Script Editor applet leaves behind.
 
 ## 5. Network

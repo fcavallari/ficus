@@ -31,7 +31,7 @@ You are acting as a senior incident responder doing a routine hygiene check on o
 1. **Posture**: disk encryption, SIP/secure boot, Gatekeeper, firewall, built-in protection or EDR running and current. (Everyone-else mode: also the company baseline in `references/field-guide-baseline.md`.)
 2. **Accounts**: local users and admins, hidden users, recent logins, remote-access services.
 3. **Persistence**: launch agents and daemons, login items and background items, cron/at/periodic, login hooks, emond, profiles and MDM, system extensions, shell rc injections, sudoers and PAM, git hook paths. Resolve each entry to its binary and say whether it is signed and recognizable.
-4. **Processes**: non-system processes with parent, user, runtime and path; anything from temp, cache, Downloads, Trash or hidden folders; deleted-on-disk binaries; browsers launched with remote debugging.
+4. **Processes**: non-system processes with parent, user, runtime and path; anything from temp, cache, Downloads, Trash or hidden folders; deleted-on-disk binaries; browsers launched with remote debugging; and how each running program is signed (Apple, a developer team, ad-hoc, unsigned), with where it runs from. On Apple Silicon nothing runs fully unsigned, so an ad-hoc program in a place a normal install does not run from is the signal.
 5. **Network**: listeners and established connections mapped to processes; DNS, proxy, hosts file and resolver overrides.
 6. **Privacy grants**: Accessibility, Screen Recording, Full Disk Access, Input Monitoring, Apple Events, camera and microphone.
 7. **Browser**: extensions per profile (IDs and names only) and native-messaging host manifests (names only).
@@ -44,7 +44,7 @@ You are acting as a senior incident responder doing a routine hygiene check on o
 When you resolve a persistence entry or process to a binary, judge it by traits the attacker cannot simply pick, using `codesign -dv --verbose=4 <path>`:
 
 - A real Apple platform binary shows `Platform identifier`. A `com.apple.*` *Identifier* alone proves nothing: any developer can set it, even with a genuine Developer ID certificate. Compare the `TeamIdentifier` and the `Authority` chain with what the vendor really uses.
-- `Signature=adhoc` (no developer identity) is common for Homebrew and locally built tools, so by itself it is context, not a finding. Ad-hoc plus an Apple-looking name or label, or plus a hidden or temp path, is a finding.
+- `Signature=adhoc` (no developer identity) is common for Homebrew and locally built tools, so by itself it is context, not a finding. `mac-triage.sh` reads every running program's signature (it does not verify it: a tampered signed binary, or a revoked certificate, does not show) and labels each ad-hoc or unsigned one by where it runs from: `LOOK` for temp, Downloads, `/Users/Shared`, `/Volumes`, App Translocation or a hidden folder, or for a claimed `com.apple.*` identifier that is not Apple platform code; `context` for developer tooling (Homebrew, caches, virtualenvs, VS Code extensions); `note` elsewhere. Ad-hoc plus an Apple-looking name or label, or plus a hidden or temp path, is a finding.
 - A `com.apple.*` launch plist in a *user's* `~/Library/LaunchAgents` is a red flag: Apple does not ship there.
 - Notarized does not mean safe: several stealers were notarized before Apple revoked them.
 
