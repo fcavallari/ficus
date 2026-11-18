@@ -15,7 +15,7 @@ import type { CaptureRec, RoutineRec, Session, Status, Store, Verdict } from '..
 import { fetchDevFixture } from './dev';
 import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from './triage-model';
 
-export type View = 'triage' | 'tree' | 'confirmed';
+export type View = 'triage' | 'tree' | 'timeline' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
 /** The last verdict pressed (button or key), so it can be taken back: on which capture, from what, to what. */
 export interface LastVerdict { procKey: string; fingerprint: string; from: Status; to: Status; name: string }

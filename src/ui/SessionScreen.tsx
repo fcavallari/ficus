@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { handlesSupported, pickCaptureFiles, sourcedFromDrop } from '../session/capture-files';
 import { Fig, Mark, Wordmark } from './Brand';
+import { TimelineView } from './TimelineView';
 import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
 import { guideHref } from './route';
 import { StoreErrorBanner } from './StoreErrorBanner';
@@ -17,6 +18,7 @@ const CAPTURE_CMD =
 const TABS: { id: View; label: string }[] = [
   { id: 'triage', label: 'Triage' },
   { id: 'tree', label: 'Tree' },
+  { id: 'timeline', label: 'Timeline' },
   { id: 'confirmed', label: 'Suspicious' },
 ];
 
@@ -373,7 +375,7 @@ export function SessionScreen() {
         </div>
 
         <section role="tabpanel" id="view-panel" aria-labelledby={`tab-${c.view}`} className={`tabpanel${c.view !== 'confirmed' && !bigDrop ? ' panes' : ''}`}>
-          {c.view === 'confirmed' ? <ConfirmedTab /> : bigDrop ? <DropZone over={over} /> : c.view === 'triage' ? <TriageView /> : <TreeView />}
+          {c.view === 'confirmed' ? <ConfirmedTab /> : bigDrop ? <DropZone over={over} /> : c.view === 'triage' ? <TriageView /> : c.view === 'timeline' ? <TimelineView /> : <TreeView />}
         </section>
       </main>
     </div>

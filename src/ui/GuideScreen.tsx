@@ -486,6 +486,8 @@ export function GuideScreen({ section }: { section: string }) {
               <div><dt><RootSwatch kind="responsible" />Responsible</dt><dd>The app macOS holds accountable. Reconnects helpers
                 and services to the app behind them.</dd></div>
             </dl>
+            <p>The Timeline tab hangs the same roots on a time axis: each process is a bar from when it appeared to when it
+              exited, and a root drops from its parent at the moment it appeared. Replay walks through it in order.</p>
             <p>When the three disagree, the disagreement is itself a lead: a shell whose current parent is launchd but whose
               original parent was an app from Downloads went out of its way to look unrelated.</p>
           </Section>
