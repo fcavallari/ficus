@@ -178,15 +178,15 @@ export interface CoverageNote { id: string; level: 'warn' | 'info'; title: strin
  * signature, so they are known without exec events; command lines, working directories and script paths are not.
  */
 const ARG_CHECKS = ['fake-prompt', 'osascript-script', 'keychain-access', 'security-setting-change', 'dscl-authonly', 'launchctl-load',
-  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'download', 'archive-staging', 'recon'];
+  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'download', 'archive-staging', 'recon', 'known-indicator'];
 const EXPECTED: { type: string; gives: string; checks: string[]; level?: 'warn' | 'info' }[] = [
   { type: 'exec', gives: 'command lines, working directories or script paths (programs and signatures still come from every event\'s process, so the location and signature checks can fire)',
     checks: [...ARG_CHECKS, 'odd-location-exec'] },
   { type: 'fork', gives: 'which process instance forked each child, or when. Each process is still tied to its parent through its own parent pid and token, which can point at the wrong process when a pid was reused, and a child that ran nothing of its own may be missing',
     checks: [], level: 'warn' },
   { type: 'exit', gives: 'when processes ended', checks: [] },
-  { type: 'create', gives: 'files written', checks: ['persistence-plist', 'download'] },
-  { type: 'rename', gives: 'files moved into place', checks: ['persistence-plist'] },
+  { type: 'create', gives: 'files written', checks: ['persistence-plist', 'download', 'known-indicator'] },
+  { type: 'rename', gives: 'files moved into place', checks: ['persistence-plist', 'known-indicator'] },
   { type: 'unlink', gives: 'files deleted', checks: [] },
   { type: 'setextattr', gives: 'extended attributes set on files', checks: [] },
   { type: 'btm_launch_item_add', gives: 'launch items, login items, agents and daemons registered', checks: ['persistence-item', 'persistence-plist'] },

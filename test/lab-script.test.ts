@@ -82,7 +82,11 @@ describe('the synthetic story', () => {
     const fired = new Set<string>();
     for (const list of [...a.findings.values(), ...a.contextOnly.values()]) for (const f of list) fired.add(f.ruleId);
     for (const q of a.queue) for (const f of q.findings) fired.add(f.ruleId);
-    expect(RULES.map(r => r.id).filter(id => !fired.has(id))).toEqual([]);
+    // A rule that needs a real family's published name has no scene here: the lab's files and programs carry harmless names
+    // of its own, and putting a published one in would change every count that reads the lab. Its own test makes it fire.
+    const elsewhere = new Set(['known-indicator']);
+    expect(RULES.map(r => r.id).filter(id => !fired.has(id) && !elsewhere.has(id))).toEqual([]);
+    expect(fired.has('known-indicator'), 'the lab must stay free of published family names').toBe(false);
   });
 
   test('every finding\'s severity is in its rule\'s stated range', () => {

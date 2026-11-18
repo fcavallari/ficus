@@ -34,6 +34,7 @@ Check, in this order:
 - Privacy grants: apps with Accessibility, Screen Recording, Full Disk Access, Input Monitoring, Apple Events, or equivalent, with the grant time.
 - Browser: installed extensions per profile (IDs and names only) and native-messaging host names.
 - Recent change: files modified in persistence paths in the last 14 days; recent quarantine/download events (app and time only, no URLs).
+- Known indicators: only if I paste a list of them below (the skill's references/known-indicators.md), look for those file paths, launch plist names and code-signing team IDs. Never use indicators from memory: a wrong one wastes my time or hides a real problem. With no list, say this check was not done. A match is strong evidence and a miss proves nothing.
 - Ask me: did I paste a command from a web page into Terminal or Script Editor recently, and did a password prompt appear that I did not start? If yes to either, treat the machine as likely compromised.
 
 Output format:
@@ -75,6 +76,7 @@ Check, in this order:
 - Running programs: anything running from temp, cache, Downloads, Trash, or hidden folders; anything unsigned or impersonating a system name; a scripting program (python, osascript, bash, curl) started by something I can't explain.
 - Network: programs listening for connections; established connections to unfamiliar destinations; changed DNS, proxy, or hosts-file settings.
 - Privacy permissions: apps with Accessibility, Screen Recording, Full Disk Access, Input Monitoring, Apple Events, camera, or microphone, and whether I plausibly granted them.
+- Known indicators: only if I paste a list of them below (the skill's references/known-indicators.md), look for those file paths, launch item names and code-signing team IDs. Never use indicators from memory. With no list, say this check was not done. A match means contact Security; no match proves nothing.
 - Recent downloads and newly installed apps in the last 30 days.
 
 Output format:

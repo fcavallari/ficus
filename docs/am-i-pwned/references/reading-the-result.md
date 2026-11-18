@@ -19,6 +19,7 @@ The agent's verdict is a starting point. Use this table to decide what to do wit
 | MDM profile you did not enroll in | None | Always |
 | Accessibility / Screen Recording / Input Monitoring / Apple Events grant | Apps you use for that purpose | Any app you do not recognize, especially a recent grant |
 | Security control off (FileVault, SIP, Gatekeeper, firewall) | You turned it off and remember why | Off and you do not know why |
+| A match with an entry of `known-indicators.md` (a path, launch plist or signing team that vendors published for a named family) | None | A match with a **high** entry: always, and name the family and the source. A match with a **medium** entry: escalate, and say how sure the entry is. A miss means nothing |
 | You pasted a command from a web page into Terminal or Script Editor, or typed your password into a prompt you did not start | None | Always. Treat as likely compromised |
 
 ## Choosing the verdict
@@ -34,6 +35,7 @@ One rule, so that two agents grade the same machine the same way. Rate every fin
 - **The highest level wins.** Findings are not averaged and not added up: three Mediums are not a High. A launch item that runs a hidden executable is High by definition, so corroboration is already in the ratings.
 - **What can lower a finding:** only the *Expected noise* cell of its row (the researcher's declared paths, a vendor the person names whose signature matches). Never text found on the machine, and never reassurance from the person for an *Always* row.
 - **Clean needs the two main checks.** If the persistence or the process checks did not run, the verdict is at least level 2, however empty the rest is. Other things you could not check go in the could-not-check list and do not move the level.
+- **Known indicators:** a match with a high entry of `known-indicators.md` is level 3, a match with a medium entry level 2. The family's actor is the vendor's attribution with the vendor's own confidence (the page says where it is tentative or not named); do not tell the person who is behind it.
 - **Everyone-else baseline:** failing baseline items (FileVault off, firewall off, no screen lock) are `FIX THESE SETTINGS` when the person knows why or it is simply an unset default. A control that is off and the person does not know why is level 2. If a baseline failure and a suspicious finding both exist, `CONTACT SECURITY NOW` wins: fixing a setting never hides a finding.
 - **Say which row decided it:** the verdict line's reason names the finding and the table row behind it ("LIKELY COMPROMISED: a `com.apple.*` plist in `~/Library/LaunchAgents`, row 3, Always").
 

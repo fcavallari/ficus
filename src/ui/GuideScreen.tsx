@@ -71,6 +71,13 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     what: <>Optional, but more common in newer families: a launch agent or login item so a backdoor survives reboot.</>,
     rules: ['persistence-item', 'persistence-plist', 'launchctl-load'],
   },
+  {
+    name: 'Known families',
+    what: <>Not a behaviour but a name: a signing team, a file path or a command-line string that a security vendor published for
+      a named malware family (ChillyHell, KANDYKORN, FlexibleFerret, an Evasive Panda downloader and others). A match is strong,
+      and a miss proves nothing, because families rename their files between samples.</>,
+    rules: ['known-indicator'],
+  },
 ];
 
 /** A path, command or field name in running text. */

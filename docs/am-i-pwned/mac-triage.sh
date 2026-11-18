@@ -65,6 +65,75 @@ pipeline() { NO_MATCH_OK=1 run "$1" /bin/sh -c "$2"; }
 # A process comm column holds a path that can contain spaces: print pid, ppid, user, etime and the whole path.
 PS_PATHS='ps -axo pid,ppid,user,etime,comm | awk '"'"'NR > 1 { c = $5; for (i = 6; i <= NF; i++) c = c " " $i; print $1 "\t" $2 "\t" $3 "\t" $4 "\t" c }'"'"
 
+# Indicators that vendors published for named malware families, generated from src/rules/indicators.json.
+# BEGIN GENERATED INDICATORS (scripts/gen-indicators.mjs, from src/rules/indicators.json: edit that file, not this block)
+# kind|family|severity|value (kind: team = code-signing team ID, signing = signing identifier)
+KNOWN_IDS='team|ChillyHell|high|R868N47FV5
+team|ChillyHell|high|F645668Q3H
+signing|KANDYKORN|high|HLOADER-5555494485b460f1e2343dffaef9b94d01136320
+signing|BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|root_startup_loader_arm64
+team|Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|2289F6V4BN'
+# family|severity|path (a leading ~/ is the home folder, * is a glob, a trailing / is a folder)
+KNOWN_PATHS='ChillyHell|high|/Library/LaunchAgents/com.apple.qtop.plist
+ChillyHell|high|/Library/LaunchDaemons/com.apple.qtop.plist
+ChillyHell|high|~/Library/LaunchAgents/com.apple.qtop.plist
+ChillyHell|high|~/Library/com.apple.qtop/
+ChillyHell|high|/usr/local/bin/qtop
+ChillyHell|med|/tmp/kworker
+FlexibleFerret|high|/Library/LaunchAgents/com.driver9990as7tpatch.plist
+FlexibleFerret|high|/Library/LaunchDaemons/com.driver9990as7tpatch.plist
+FlexibleFerret|high|~/Library/LaunchAgents/com.driver9990as7tpatch.plist
+FlexibleFerret|med|/var/tmp/macpatch.sh
+FlexibleFerret|med|/var/tmp/CDrivers.zip
+FlexibleFerret|med|/var/tmp/CDrivers/
+FlexibleFerret|med|~/Library/LaunchAgents/us.zoom.ZoomDaemon.plist
+FlexibleFerret|med|/var/tmp/InstallerAlert.app/
+FlexibleFerret|med|/var/tmp/versus.app/
+Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)|high|~/.n2/
+Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)|high|~/.npl
+Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)|high|/Volumes/MiroTalk/MiroTalk.app/Contents/MacOS/Jami
+Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)|med|~/.vscode/vscode-bootstrap.sh
+Contagious Interview toolchain (BeaverTail, InvisibleFerret, OtterCookie)|med|~/Library/LaunchAgents/com.onedrive.launcher.plist
+KANDYKORN|high|/Users/Shared/FinderTools
+KANDYKORN|high|/Users/Shared/.sld
+KANDYKORN|high|/Library/Caches/com.apple.safari.ck
+KANDYKORN|high|/Applications/Discord.app/Contents/MacOS/.lock
+RustBucket|high|/Users/Shared/.pd
+RustBucket|high|~/Library/Metadata/System Update
+RustBucket|high|/Library/LaunchAgents/com.apple.systemupdate.plist
+RustBucket|high|/Library/LaunchDaemons/com.apple.systemupdate.plist
+RustBucket|high|~/Library/LaunchAgents/com.apple.systemupdate.plist
+HiddenRisk|high|/tmp/.zsh_init_success
+HiddenRisk|med|/tmp/growth
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|/Library/LaunchAgents/com.telegram2.update.agent.plist
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|/Library/LaunchDaemons/com.telegram2.update.agent.plist
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|~/Library/LaunchAgents/com.telegram2.update.agent.plist
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|/Library/Application Support/Frameworks/Telegram 2
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|high|/Library/CloudKitDaemon/
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|med|/tmp/icloud_helper
+BlueNoroff fake-Zoom chain (Huntress; the NimDoor lure)|med|/Users/Shared/.pwd
+Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|~/Library/Containers/CalendarFocusEXT/
+Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|/Library/LaunchAgents/com.Terminal.us.plist
+Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|/Library/LaunchDaemons/com.Terminal.us.plist
+Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|~/Library/LaunchAgents/com.Terminal.us.plist
+Evasive Panda macOS downloader (Monlam watering hole, 2024)|high|~/Library/SafariBrowser/Safari.app/Contents/MacOS/SafariBrower
+MACMA|med|/Library/LaunchAgents/com.UserAgent.va.plist
+MACMA|med|/Library/LaunchDaemons/com.UserAgent.va.plist
+MACMA|med|~/Library/LaunchAgents/com.UserAgent.va.plist
+MACMA|med|~/Library/Preferences/UserAgent/lib/UserAgent
+GIMMICK|med|/Library/LaunchAgents/com.*.va.plist
+GIMMICK|med|/Library/LaunchDaemons/com.*.va.plist
+GIMMICK|med|~/Library/LaunchAgents/com.*.va.plist
+GIMMICK|med|/var/root/Library/Preferences/CorelDRAW/CorelDRAW
+DazzleSpy|high|~/.local/softwareupdate
+DazzleSpy|high|~/.local/security/
+DazzleSpy|high|~/.local/security.zip
+DazzleSpy|high|/var/folders/*/*/T/airportpaird
+DazzleSpy|high|/Library/LaunchAgents/com.apple.softwareupdate.plist
+DazzleSpy|high|/Library/LaunchDaemons/com.apple.softwareupdate.plist
+DazzleSpy|high|~/Library/LaunchAgents/com.apple.softwareupdate.plist'
+# END GENERATED INDICATORS
+
 # ---------------------------------------------------------------------------------------------------------------------
 say "am-i-pwned mac-triage v$VERSION"
 say "generated (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -201,7 +270,63 @@ section "8 Recent change"
 pipeline 'persistence files modified in the last 14 days' "find /Library/LaunchAgents /Library/LaunchDaemons \"\$HOME/Library/LaunchAgents\" /etc/periodic /etc/emond.d -type f -mtime -14 2>/dev/null"
 run 'recent download and quarantine events (app and time only, never a URL; needs Full Disk Access)' sqlite3 -readonly "$HOME/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2" "select LSQuarantineAgentName, datetime(LSQuarantineTimeStamp+978307200,'unixepoch') from LSQuarantineEvent order by LSQuarantineTimeStamp desc limit 40"
 
-section "9 For the person (a device cannot show these; the reader must ask)"
+section "9 Known indicators (published for named malware families; finding none proves nothing)"
+say "Looks for the file paths, launch plists and code-signing teams that vendors published for named macOS families (references/known-indicators.md lists them with sources). Command-line words are not looked for here: command lines are off limits. A family renames its files between samples and this list ages, so a miss is not a clean bill of health."
+known=0
+# Files and folders (this user's home only; a glob's matches are printed with size and time, never read).
+while IFS='|' read -r fam sev pat; do
+  [ -n "$pat" ] || continue
+  case $pat in '~/'*) pat=$HOME/${pat#\~/} ;; esac
+  pat=${pat%/}
+  hits=$(compgen -G "$pat" 2>/dev/null) || continue
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    known=$((known + 1))
+    say "MATCH [$sev] $fam: $hit ($(stat -f '%z bytes, modified %Sm' -t '%Y-%m-%d %H:%M' "$hit" 2>/dev/null))"
+  done <<EOF_HITS
+$hits
+EOF_HITS
+done <<EOF_PATHS
+$KNOWN_PATHS
+EOF_PATHS
+# Signing teams and identifiers of the programs launch items run and of the processes running now (system folders left out).
+launch_programs() {
+  local dir plist prog a0
+  for dir in /Library/LaunchAgents /Library/LaunchDaemons "$HOME/Library/LaunchAgents"; do
+    [ -d "$dir" ] || continue
+    for plist in "$dir"/*.plist; do
+      [ -f "$plist" ] || continue
+      prog=$(plutil -extract Program raw -o - "$plist" 2>/dev/null || true)
+      a0=$(plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)
+      printf '%s\n' "${prog:-$a0}"
+    done
+  done
+}
+progs=$( { ps -axo pid,ppid,user,etime,comm | awk 'NR > 1 { c = $5; for (i = 6; i <= NF; i++) c = c " " $i; print c }'; launch_programs; } \
+  | grep '^/' | grep -v -E '^/(System|usr/(libexec|sbin|bin)|bin|sbin|Library/Apple)/' | sort -u | head -n 600)
+checked=0
+while IFS= read -r prog; do
+  [ -e "$prog" ] || continue
+  checked=$((checked + 1))
+  sig=$(codesign -dv --verbose=4 "$prog" 2>&1 | grep -E '^(TeamIdentifier|Identifier)=')
+  team=$(printf '%s\n' "$sig" | sed -n 's/^TeamIdentifier=//p')
+  sid=$(printf '%s\n' "$sig" | sed -n 's/^Identifier=//p')
+  while IFS='|' read -r kind fam sev val; do
+    [ -n "$val" ] || continue
+    if { [ "$kind" = team ] && [ "$team" = "$val" ]; } || { [ "$kind" = signing ] && [ "$sid" = "$val" ]; }; then
+      known=$((known + 1))
+      say "MATCH [$sev] $fam: $prog is signed with the published $kind $val"
+    fi
+  done <<EOF_IDS
+$KNOWN_IDS
+EOF_IDS
+done <<EOF_PROGS
+$progs
+EOF_PROGS
+say "checked the signatures of $checked programs outside the system folders"
+[ "$known" -gt 0 ] || say "(no published indicator found)"
+
+section "10 For the person (a device cannot show these; the reader must ask)"
 say "- Did you paste a command from a web page into Terminal or Script Editor (a 'fix', 'verify you are human' or 'install' instruction)?"
 say "- Did a password prompt appear that you did not start, and did you type your password into it?"
 say "A yes to either: treat the machine as likely compromised, and contact Security Ops."
