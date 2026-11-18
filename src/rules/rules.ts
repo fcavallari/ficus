@@ -21,7 +21,7 @@ export interface Rule {
   id: string; title: string; severity: Severity; explanation: string;
   /**
    * Every severity a finding of this rule can have, highest first, for a rule whose matches set their own. Omitted when
-   * every finding has `severity`. The README's rules table states the same ranges, and a test keeps the two in step.
+   * every finding has `severity`. The rules table in docs/rules.md states the same ranges, and a test keeps the two in step.
    */
   levels?: Severity[];
   /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. Empty only for a trait rule. */

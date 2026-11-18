@@ -6,8 +6,8 @@ import { analyze } from '../src/rules/engine';
 import { RULES, ruleLevels, SEVERITY_RANK, type Severity } from '../src/rules/rules';
 import { hasRealCaptures, readLines, REAL_FIXTURES, type FixtureName } from './fixtures';
 
-// Each rule says which severities its findings can have. The guide filters on that range, and the README's rules
-// table states it in words, so the two must agree.
+// Each rule says which severities its findings can have. The guide filters on that range, and the rules
+// table in docs/rules.md states it in words, so the two must agree.
 
 test('a rule\'s range holds its own severity, highest first, with no repeats', () => {
   for (const r of RULES) {
@@ -30,14 +30,14 @@ test.each(CAPTURES)('every finding in %s has a severity its rule says it can rea
   for (const f of all) expect(ruleLevels(RULES.find(r => r.id === f.ruleId)!), `${f.ruleId}: ${f.evidence}`).toContain(f.severity);
 });
 
-test('the README\'s rules table states the same range for every rule', () => {
-  const readme = fs.readFileSync(path.resolve(__dirname, '..', 'README.md'), 'utf8');
+test('the rules table in docs/rules.md states the same range for every rule', () => {
+  const readme = fs.readFileSync(path.resolve(__dirname, '..', 'docs', 'rules.md'), 'utf8');
   const stated = new Map<string, Severity[]>();
   for (const m of readme.matchAll(/^\| `([a-z-]+)` \| ([a-z, ]+?) \|/gm)) {
     stated.set(m[1]!, m[2]!.split(/, | or /).map(s => s.trim() as Severity));
   }
   for (const r of RULES) {
-    expect(stated.has(r.id), `${r.id} is missing from the README's rules table`).toBe(true);
+    expect(stated.has(r.id), `${r.id} is missing from the rules table in docs/rules.md`).toBe(true);
     expect([...stated.get(r.id)!].sort(), r.id).toEqual([...ruleLevels(r)].sort());
   }
 });

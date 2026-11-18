@@ -24,7 +24,7 @@ CLEAN_PROGRAM=$HERE/ficus-clean.jq
 JQ=${FICUS_CLEAN_JQ:-/usr/bin/jq}
 KINDS="user realname name volume host email seed data"
 KEY_HEADER=$'kind\tplaceholder\treal'
-# The recorder, with the event list from the README's Capturing section. It runs as root under STOP_WRAPPER, through
+# The recorder, with the event list from docs/capturing.md. It runs as root under STOP_WRAPPER, through
 # SUDO_CMD (empty: as you, for the tests).
 RECORDER=(eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove)
 SUDO_CMD=sudo

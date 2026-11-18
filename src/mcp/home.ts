@@ -98,7 +98,7 @@ export function cleanedCapturePath(p: FicusPaths, name: string, now: number = Da
   if (!hasKey(p, name)) {
     throw new CaptureRefused(
       `"${shortName(name)}" was not made by the Ficus cleaner (no key for it). Ask the person to record a new capture with the command from ficus_record_command. ` +
-        `To clean a capture they already have, see the README section 'Cleaning a capture before it leaves the Mac'.`,
+        `To clean a capture they already have, see docs/cleaning-captures.md in the Ficus repository.`,
     );
   }
   if (now - st.mtimeMs < STILL_WRITING_MS) {
