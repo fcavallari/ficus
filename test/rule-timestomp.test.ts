@@ -30,9 +30,16 @@ describe('timestomp', () => {
   });
 
   test('relative target resolves against cwd', () => {
-    const f = all(one(touch(['-t', '202001010000', 'helper'], '/tmp/x')));
+    const f = all(one(touch(['-t', '202001010000', 'helper'], '/Users/Shared/x')));
     expect(f.map(x => x.severity)).toEqual(['high']);
-    expect(f[0]!.evidence).toContain('/tmp/x/helper');
+    expect(f[0]!.evidence).toContain('/Users/Shared/x/helper');
+  });
+
+  test('a build in a temporary folder setting dates is low: temp folders do not count', () => {
+    expect(all(one(touch(['-t', '202001010000', 'out.o'], '/private/tmp/libfoo-20261117-1234-abc/build'))).map(x => x.severity)).toEqual(['low']);
+    expect(all(one(touch(['-r', 'configure.ac', 'aclocal.m4'], '/private/tmp/gettext-0.22'))).map(x => x.severity)).toEqual(['low']);
+    expect(all(one(touch(['-d', '@0', 'dist/app'], '/var/folders/xx/yy/T/pip-build-abc'))).map(x => x.severity)).toEqual(['low']);
+    expect(all(one(touch(['-r', '/etc/hosts', '/Users/u/Downloads/.hidden/agent']))).map(x => x.severity)).toEqual(['high']);
   });
 
   test('target a program the capture ran is high', () => {

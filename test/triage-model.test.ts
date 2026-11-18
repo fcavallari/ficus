@@ -91,3 +91,16 @@ test('coverage counts a program change without an exec, not a process that preda
   expect(changes).toBeGreaterThan(0);
   expect(note?.title.startsWith(`${changes} program change`)).toBe(true);
 });
+
+test('header notes name the new checks: reverse-shell needs fds, both new rules need command lines', () => {
+  const p = (images: Image[]): Process => ({
+    id: '1:1', pid: 1, ghost: false, images, forkParent: null, originalPpid: null, ppid: null, parentToken: null,
+    responsibleToken: null, originalParent: null, currentParent: null, responsible: null, startTime: null, exitTime: null,
+    firstSeq: 0, fileOps: [],
+  });
+  const stats: CaptureStats = { lines: 1, events: 1, badLines: 0, otherEvents: {}, versions: [11], firstSeq: 0, firstTime: null, lastTime: null, kinds: { fork: 1 } };
+  const m = { processes: new Map([['1:1', p([img({ path: '/bin/sh', args: ['sh'] })])]]), tokenIndex: new Map(), persistence: [], stats };
+  const notes = coverage(m).notes;
+  expect(notes.find(n => n.id === 'stdin')?.checks).toContain('reverse-shell');
+  expect(notes.find(n => n.id === 'none-exec')?.checks).toEqual(expect.arrayContaining(['reverse-shell', 'timestomp']));
+});

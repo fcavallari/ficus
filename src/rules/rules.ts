@@ -598,13 +598,49 @@ const DEV_NET = /\/dev\/(?:tcp|udp)\//;
 /** The shell's own output (and errors) sent to the socket: `>& /dev/tcp/…`, `&> /dev/tcp/…`, or input taken from it with `<&`. */
 const DEV_NET_DUP = /(?:>&|&>|<&)\s*\/dev\/(?:tcp|udp)\//;
 /** A descriptor opened read-write on the socket, to be wired to the shell: `exec 5<>/dev/tcp/…`. */
-const DEV_NET_EXEC = /\bexec\s+\d+\s*<>\s*\/dev\/(?:tcp|udp)\//;
+const DEV_NET_EXEC = /\bexec\s+(\d+)\s*<>\s*\/dev\/(?:tcp|udp)\//;
 /** A plain redirection to the socket, which only makes a reverse shell together with stdin tied to it (`0>&1`, `0<&1`). */
 const DEV_NET_REDIRECT = /[<>]\s*\/dev\/(?:tcp|udp)\//;
 const STDIN_DUP = /(?:^|[^\d])0\s*[<>]&\s*[12]\b/;
 const NC_NAMES = /^(?:nc|ncat|netcat)$/;
-const INLINE_FLAG: Record<string, string> = { python: 'c', perl: 'eE', ruby: 'e', php: 'r' };
-const INLINE_SOCKET_SHELL = /\b(?:dup2|pty\.spawn|subprocess|exec|system|IO\.popen|popen|spawn)\b|open\(\s*STD(?:IN|OUT)/;
+/** A command word in a shell script: at the start, or after `;`, `|`, `&` or `(`, with or without a folder. */
+const cmdWord = (names: string): RegExp => new RegExp(`(?:^|[;|&(]\\s*)(?:\\S*/)?(?:${names})(?=\\s|$)`);
+const NC_CMD = cmdWord('nc|ncat|netcat');
+const SHELL_CMD = cmdWord('sh|bash|zsh|dash|ksh');
+/** A shell taking its input from a descriptor or a pipe: `sh <&196`, `… | bash`, or `while read line; do $line`. */
+const shellOnFd = (script: string, fd: string): boolean =>
+  new RegExp(`(?:^|[;|&(]\\s*)(?:\\S*/)?(?:sh|bash|zsh|dash|ksh)\\b[^;|&]*[<>]&\\s*${fd}\\b`).test(script)
+  || /\|\s*(?:\S*\/)?(?:sh|bash|zsh|dash|ksh)\b/.test(script)
+  || /\bwhile\s+read\s+\w+[^]*\$\w+/.test(script);
+
+/** Inline-code options per interpreter: the letter that takes code, letters whose value is attached or next, and letters after which the rest is not ours. */
+const INLINE_LANGS: [RegExp, { name: string; inline: string; withValue: string; stop: string }][] = [
+  [/^python[0-9.]*$/, { name: 'python', inline: 'c', withValue: 'WX', stop: 'm' }],
+  [/^perl[0-9.]*$/, { name: 'perl', inline: 'eE', withValue: 'IMmxdi', stop: '' }],
+  [/^ruby[0-9.]*$/, { name: 'ruby', inline: 'e', withValue: 'IrCE', stop: '' }],
+  [/^php[0-9.]*$/, { name: 'php', inline: 'r', withValue: 'cdfzt', stop: '' }],
+];
+/** Code that opens a connection. */
+const CONNECTS = /socket\.socket\(|create_connection\(|\.connect\(|\bconnect\s*\(|IO::Socket|TCPSocket|fsockopen|stream_socket_client/;
+/** Code that hands the connection to a shell: duplicates descriptors, spawns a pty, or runs a shell on them. */
+const HANDS_OFF = /dup2|fileno|pty\.spawn|open\s*\(\s*STD(?:IN|OUT|ERR)|STD(?:IN|OUT)\.reopen|IO\.popen|[<>]&\s*(?:%d|\d)|\/bin\/(?:ba|z|da)?sh\b|\bsh\s+-i\b/;
+
+/** The inline code an interpreter runs (`-c CODE`, `-cCODE`, `-e CODE`…), read only up to its script or module argument. */
+function inlineCode(spec: { inline: string; withValue: string; stop: string }, a: string[]): string[] {
+  const code: string[] = [];
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    if (x === '--' || x === '-' || !x.startsWith('-')) break;
+    if (x.startsWith('--')) continue;
+    for (let k = 1; k < x.length; k++) {
+      const ch = x[k]!;
+      if (spec.stop.includes(ch)) return code;
+      if (spec.inline.includes(ch)) { const v = x.slice(k + 1) || a[++i]; if (v !== undefined) code.push(v); break; }
+      if (spec.withValue.includes(ch)) { if (x.slice(k + 1) === '') i++; break; }
+    }
+  }
+  return code;
+}
 
 /**
  * The reverse-shell pattern in this image's command line, as a short label, or null. Matching is on words, never on
@@ -617,9 +653,10 @@ export function reverseShellCommand(img: Image): string | null {
   if (a.length === 0) return null;
   if (SHELL_NAME.test(n) && hasShortFlag(a, 'c')) {
     const script = a.join(' ');
-    if (DEV_NET.test(script) && (DEV_NET_DUP.test(script) || DEV_NET_EXEC.test(script)
+    const fd = DEV_NET_EXEC.exec(script)?.[1];
+    if (DEV_NET.test(script) && (DEV_NET_DUP.test(script) || (fd !== undefined && shellOnFd(script, fd))
       || (DEV_NET_REDIRECT.test(script) && STDIN_DUP.test(script)))) return '/dev/tcp redirect';
-    if (/\bmk(?:fifo\b|nod\b[^;|&]*\sp\b)/.test(script) && /\b(?:nc|ncat|netcat)\b/.test(script)) return 'fifo + nc';
+    if (/\bmk(?:fifo\b|nod\b[^;|&]*\sp\b)/.test(script) && NC_CMD.test(script) && SHELL_CMD.test(script)) return 'fifo + nc';
     if (/\bzmodload\b[^;|&]*\bzsh\/net\/tcp\b/.test(script) && /\bztcp\b/.test(script)) return 'zsh ztcp';
     return null;
   }
@@ -630,10 +667,10 @@ export function reverseShellCommand(img: Image): string | null {
     return runs ? `${n} runs a program` : null;
   }
   if (n === 'socat') return a.some(x => /^(?:exec|system):/i.test(x)) ? 'socat exec:' : null;
-  const lang = Object.keys(INLINE_FLAG).find(k => new RegExp(`^${k}[0-9.]*$`).test(n));
-  if (lang !== undefined && [...INLINE_FLAG[lang]!].some(l => hasShortFlag(a, l))) {
-    const code = a.join(' ');
-    if (/socket/i.test(code) && INLINE_SOCKET_SHELL.test(code)) return `${lang} socket + shell`;
+  const inline = INLINE_LANGS.find(([re]) => re.test(n))?.[1];
+  if (inline !== undefined) {
+    const code = inlineCode(inline, a).join('\n');
+    if (CONNECTS.test(code) && HANDS_OFF.test(code)) return `${inline.name} socket + shell`;
   }
   return null;
 }
@@ -647,6 +684,15 @@ function reverseShellMitre(img: Image): string {
 /** touch: -A adjust, -d date, -r reference file, -t timestamp take a value. SetFile: -a, -c, -d, -m, -t do. */
 const TOUCH_SPEC: OptSpec = { shortValues: 'Adrt', longValues: [] };
 const SETFILE_SPEC: OptSpec = { shortValues: 'acdmt', longValues: [] };
+
+/**
+ * A strong odd place other than a temporary folder: source builds (Homebrew, pip, node-gyp) unpack and set dates in
+ * /tmp and /var/folders all day, so a temporary folder alone does not make a date change suspicious.
+ */
+const strongNotTemp = (path: string): boolean => {
+  const where = oddLocation(path);
+  return where !== null && where.strength === 'strong' && where.kind !== 'temp';
+};
 
 /** The programs that ran in a capture (every exec'd image), by `normPath(path).toLowerCase()`, built once per model. */
 const programsRunCache = new WeakMap<CaptureModel, Set<string>>();
@@ -954,7 +1000,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'timestomp', title: 'File dates faked', severity: 'low', levels: ['high', 'low'], gated: 'when-low',
-    explanation: "Set a file's dates by hand with `touch -r`, `-t`, `-d` or `-A`, or `SetFile -d` or `-m`, so it looks older than it is or as old as a file around it. High when the file is a launch agent or daemon plist, a program that ran in this capture, or something in a temporary, shared, Downloads or hidden folder; the reference file of `touch -r` shows which legitimate item it was made to look like. Build scripts set dates for reproducible output, so any other file is context only. A program that changes dates through the system API instead of these tools leaves no trace in a capture.",
+    explanation: "Set a file's dates by hand with `touch -r`, `-t`, `-d` or `-A`, or `SetFile -d` or `-m`, so it looks older than it is or as old as a file around it. High when the file is a launch agent or daemon plist, a program that ran in this capture, or something in a shared, Downloads or hidden folder (not a temporary folder, where source builds set dates all day); the reference file of `touch -r` shows which legitimate item it was made to look like. Build scripts set dates for reproducible output, so any other file is context only. A program that changes dates through the system API instead of these tools leaves no trace in a capture.",
     mitre: ['T1070.006'], scope: 'image',
     match: ({ m, img }) => {
       const n = basename(img.path);
@@ -967,7 +1013,7 @@ export const RULES: Rule[] = [
       const targets = o.positionals.map(t => resolvePath(t, img.cwd));
       const ran = programsRun(m);
       const strong = targets.find(t => LAUNCH_DIR.test(normPath(t)) || ran.has(normPath(t).toLowerCase())
-        || oddLocation(t)?.strength === 'strong');
+        || strongNotTemp(t));
       const target = strong ?? targets[0]!;
       const how = set.opt === 'r' ? `dated like ${set.value}` : `set to ${set.value}`;
       return { evidence: `${cmdline(img)}; ${target} ${how}`, severity: strong !== undefined ? 'high' : 'low' };

@@ -126,7 +126,7 @@ test('a complete-looking v11 capture gets no stdin note; dropping the fds data n
   expect(note.level).toBe('warn');
   expect(note.title).toMatch(/^No exec events carry file-descriptor data$/);
   expect(note.detail).toMatch(/schema v6 predates v11/);
-  expect(note.checks).toEqual(['shell-from-pipe', 'osascript-script']);
+  expect(note.checks).toEqual(['shell-from-pipe', 'osascript-script', 'reverse-shell']);
 });
 
 test('a missing event type is reported as missing, never as proof that nothing happened', () => {
