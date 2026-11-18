@@ -45,7 +45,7 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     name: 'Execution',
     what: <>The pasted command runs: <C>curl … | bash</C>, a base64 blob decoded on the fly, an AppleScript stager, an app
       that quietly opens a shell.</>,
-    rules: ['shell-from-pipe', 'clickfix-paste-chain', 'payload-decode', 'osascript-script', 'shell-under-app', 'risky-parent-spawn'],
+    rules: ['shell-from-pipe', 'clickfix-paste-chain', 'reverse-shell', 'payload-decode', 'osascript-script', 'shell-under-app', 'risky-parent-spawn'],
   },
   {
     name: 'Getting past the defences',

@@ -16,6 +16,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1070.004': 'File Deletion',
   'T1074.001': 'Local Data Staging',
   'T1082': 'System Information Discovery',
+  'T1095': 'Non-Application Layer Protocol',
   'T1105': 'Ingress Tool Transfer',
   'T1140': 'Deobfuscate/Decode Files or Information',
   'T1204.002': 'Malicious File',

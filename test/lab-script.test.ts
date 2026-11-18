@@ -97,6 +97,14 @@ describe('the synthetic story', () => {
     }
   });
 
+  test('look-alikes of a reverse shell raise no reverse-shell finding', () => {
+    for (const marker of ['</dev/tcp/localhost/5432', 'git status --porcelain']) {
+      const p = byMarker(m, marker);
+      const ids = [...(a.findings.get(p.id) ?? []), ...(a.contextOnly.get(p.id) ?? [])].map(f => f.ruleId);
+      expect(ids, marker).not.toContain('reverse-shell');
+    }
+  });
+
   test('the key covers the queue concepts', () => {
     expect([...new Set(key.map(r => r.queue))].sort()).toEqual(['burst', 'context', 'in-chain', 'item', 'queued']);
   });

