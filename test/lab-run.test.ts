@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 // lab/lab-run.sh runs one sample (or a baseline) end to end. Here it runs against a stub `tart`, a stub launcher and a stub
 // isolation check, so no VM starts. The stubs log every call to one file, so the tests can check the order of the steps.
 const SCRIPT = path.resolve(__dirname, '..', 'lab', 'lab-run.sh');
-const HEADER = 'family\tzip\tsha256\trecipe\twindow_s\tnotes';
+const HEADER = 'family\tzip\tsha256\trecipe\twindow_s\tnotes\tsource';
 const SHA = 'a'.repeat(64);
 
 // A stub tart. `exec` looks at the command text; STUB_FAIL_ON makes any command containing that text fail; STUB_ES picks how
@@ -68,8 +68,9 @@ const index = (needle: string | RegExp) => calls().findIndex(c => (typeof needle
 const runDirs = (name: string) => (fs.existsSync(path.join(data, 'runs', name)) ? fs.readdirSync(path.join(data, 'runs', name)).sort() : []);
 const meta = (name: string, id: string) => JSON.parse(fs.readFileSync(path.join(data, 'runs', name, id, 'meta.json'), 'utf8')) as Record<string, unknown>;
 
-function manifestRow(family: string, recipe = 'exec:run.sh', window = '1', zip = `${family}.zip`) {
-  fs.appendFileSync(path.join(dir, 'manifest.tsv'), `${family}\t${zip}\t${SHA}\t${recipe}\t${window}\t\n`);
+function manifestRow(family: string, recipe = 'exec:run.sh', window = '1', zip = `${family}.zip`, source?: string) {
+  // The source column is optional: a row without it is an objective-see sample.
+  fs.appendFileSync(path.join(dir, 'manifest.tsv'), `${family}\t${zip}\t${SHA}\t${recipe}\t${window}\t${source === undefined ? '' : `\t${source}`}\n`);
   fs.mkdirSync(path.join(data, 'samples'), { recursive: true });
   fs.writeFileSync(path.join(data, 'samples', zip), 'PK\u0003\u0004zip bytes');
 }
@@ -122,7 +123,7 @@ describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
     // eslogger is stopped before the post-state is collected, so the collecting does not enter the capture
     expect(index('pkill')).toBeLessThan(index('guest-collect.sh'));
     const m = meta('banshee', 'fixed');
-    expect(m).toMatchObject({ run_id: 'fixed', family: 'Banshee', sample_sha256: SHA, guest_image: 'lab-gold', guest_macos: '26.6.2', network_mode: 'fake-internet',
+    expect(m).toMatchObject({ run_id: 'fixed', family: 'Banshee', sample_sha256: SHA, source: 'objective-see', guest_image: 'lab-gold', guest_macos: '26.6.2', network_mode: 'fake-internet',
       recipe: 'exec:run.sh', window_s: 1, status: 'ok', eslogger_exited_early: false });
     const capture = path.join(data, 'runs', 'banshee', 'fixed', 'capture.jsonl');
     expect(m.capture_bytes).toBe(fs.statSync(capture).size);
@@ -274,6 +275,39 @@ describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
     expect(run(['--baseline', 'idle', 'Banshee']).status).toBe(2);
     expect(run(['--baseline', 'nope']).status).toBe(2);
     expect(run(['--baseline']).status).toBe(2);
+    expect(calls()).toEqual([]);
+  });
+
+  test('an objective-see row (the source column empty or absent) is opened with unzip and the password infect3d', () => {
+    manifestRow('Banshee', 'exec:run.sh', '1', 'Banshee.zip', 'objective-see');
+    expect(run(['Banshee'], { LAB_RUN_ID: 'a' }).status).toBe(0);
+    expect(calls().some(c => c.includes('/usr/bin/unzip') && c.includes('-P infect3d'))).toBe(true);
+    expect(calls().some(c => c.includes('7zz'))).toBe(false);
+  });
+
+  test('a bazaar row is opened with 7zz and the password infected, never with unzip, and meta.json says bazaar', () => {
+    manifestRow('Bazaar-AMOS-fdcd5d21', 'manual', '1', 'Bazaar-AMOS-fdcd5d21.zip', 'bazaar');
+    const r = run(['Bazaar-AMOS-fdcd5d21'], { LAB_RUN_ID: 'fixed' }, '\n');
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls().some(c => c.includes('7zz x') && c.includes('-pinfected'))).toBe(true);
+    expect(calls().some(c => c.includes('/usr/bin/unzip') || c.includes('infect3d'))).toBe(false);
+    expect(index('7zz x')).toBeLessThan(index('FICUS_LAB_START fixed'));
+    expect(meta('bazaar-amos-fdcd5d21', 'fixed')).toMatchObject({ source: 'bazaar', status: 'ok' });
+  });
+
+  test('a bazaar zip that 7zz cannot open (or a guest without 7zz) fails the run and says to use the main image', () => {
+    manifestRow('Bazaar-X', 'manual', '1', 'Bazaar-X.zip', 'bazaar');
+    const r = run(['Bazaar-X'], { LAB_RUN_ID: 'fixed', STUB_FAIL_ON: '7zz x' }, '\n');
+    expect(r.status).toBe(1);
+    expect(String(meta('bazaar-x', 'fixed').reason)).toMatch(/7zz.*main image/);
+    expect(index('tart delete run-fixed')).toBeGreaterThan(-1);
+  });
+
+  test('an unknown source in the manifest is refused with exit 2 and starts nothing', () => {
+    manifestRow('Odd', 'exec:run.sh', '1', 'Odd.zip', 'carrier-pigeon');
+    const r = run(['Odd']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('carrier-pigeon');
     expect(calls()).toEqual([]);
   });
 

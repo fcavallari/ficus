@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 // lab/fetch-sample.sh downloads one zip from the objective-see/malware repository and records its hash. It must never
 // extract or open what it fetched. These tests use a stub curl (LAB_CURL) so nothing is downloaded.
 const SCRIPT = path.resolve(__dirname, '..', 'lab', 'fetch-sample.sh');
-const HEADER = 'family\tzip\tsha256\trecipe\twindow_s\tnotes';
+const HEADER = 'family\tzip\tsha256\trecipe\twindow_s\tnotes\tsource';
 
 const CURL_STUB = `#!/bin/bash
 echo "curl $*" >> "$STUB_LOG"
@@ -58,8 +58,8 @@ describe('lab/fetch-sample.sh', () => {
     expect(calls()[0]).toContain('-fL');
     expect(rows()[0]).toBe(HEADER);
     expect(rows()).toHaveLength(2);
-    const [family, file, sha, recipe, window, notes] = rows()[1]!.split('\t');
-    expect([family, file, recipe, window, notes]).toEqual(['BlackHole (Musminim)', 'BlackHole (Musminim).zip', 'manual', '600', '']);
+    const [family, file, sha, recipe, window, notes, source] = rows()[1]!.split('\t');
+    expect([family, file, recipe, window, notes, source]).toEqual(['BlackHole (Musminim)', 'BlackHole (Musminim).zip', 'manual', '600', '', 'objective-see']);
     const expected = spawnSync('shasum', ['-a', '256', zip], { encoding: 'utf8' }).stdout.split(' ')[0];
     expect(sha).toBe(expected);
   });

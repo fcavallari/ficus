@@ -1,3 +1,4 @@
-family	zip	sha256	recipe	window_s	notes
-KoiStealer	KoiStealer.zip	83bb2328002335affedb0df26725856bfe02e755550750be73a3f7ba62409eec	manual	600	
-HeartBreaker	HeartBreaker.zip	30eb363fa4764c1c53b865c26a8fc110f4287d4502c430db39ff2a3b1bdac60e	manual	600	
+family	zip	sha256	recipe	window_s	notes	source
+KoiStealer	KoiStealer.zip	83bb2328002335affedb0df26725856bfe02e755550750be73a3f7ba62409eec	manual	600		objective-see
+HeartBreaker	HeartBreaker.zip	30eb363fa4764c1c53b865c26a8fc110f4287d4502c430db39ff2a3b1bdac60e	manual	600		objective-see
+Bazaar-AMOS-fdcd5d21	Bazaar-AMOS-fdcd5d21.zip	647d5701e46b69a3c306023a4229e200b34c1fe0773f025df16b3e8ecb94736f	manual	600	bazaar:fdcd5d218a0cc440c6da0e7e4189d92f9d6792db48bedcf07137991f965ebc96 AMOS	bazaar

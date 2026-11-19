@@ -4,7 +4,8 @@
 #   lab/lab-run.sh [--manual] [--window SECONDS] [--max-bytes N] [--keep-vm] [--image NAME] FAMILY
 #   lab/lab-run.sh [--image NAME] --baseline idle|benign
 #
-# FAMILY is a row of lab/manifest.tsv (see fetch-sample.sh). The run: clone the golden guest and the gateway, start them on the
+# FAMILY is a row of lab/manifest.tsv (see fetch-sample.sh for objective-see samples and fetch-bazaar.sh for MalwareBazaar; the
+# row's source column picks how the zip is opened in the guest: unzip for objective-see, 7zz for bazaar). The run: clone the golden guest and the gateway, start them on the
 # private cable (lab-net.py), prove the guest reaches only the gateway (check-isolation.sh), start eslogger through `tart exec`
 # streaming to the host, copy the zip into the guest and unzip it there, launch it by its recipe, wait for the window, collect the
 # guest's post-state and the gateway's pcap, then stop and delete both clones. Samples are never extracted or run on the host.
@@ -42,7 +43,7 @@ DEFAULT_WINDOW=600
 DEFAULT_MAX_BYTES=2147483648
 SAMPLE_DIR='$HOME/Downloads/sample'   # inside the guest; single-quoted on purpose
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 bad_usage() { [ -n "$1" ] && echo "error: $1" >&2; usage >&2; exit 2; }
 
 MANUAL=0; KEEP=0; WINDOW=""; MAX_BYTES=$DEFAULT_MAX_BYTES; BASELINE=""; FAMILY=""
@@ -67,7 +68,7 @@ case "$GUEST_IMAGE" in ''|-*|*/*|*[[:space:]]*) bad_usage "--image / LAB_GUEST_I
 command -v jq >/dev/null 2>&1 || { echo "error: jq is required" >&2; exit 2; }
 
 # --- what to run ---------------------------------------------------------------------------------------------------------
-SAMPLE_SHA=""; RECIPE=""; ZIP=""
+SAMPLE_SHA=""; RECIPE=""; ZIP=""; SOURCE=lab
 if [ -n "$BASELINE" ]; then
   [ -z "$FAMILY" ] || bad_usage "a baseline takes no family"
   case "$BASELINE" in
@@ -80,11 +81,13 @@ else
   [ -n "$FAMILY" ] || bad_usage ""
   ( lab_check_name "$FAMILY" ) 2>&1 || exit 2
   NAME=$FAMILY
-  row=$(awk -F'\t' -v f="$FAMILY" 'NR > 1 && $1 == f { print $2 "\t" $3 "\t" $4 "\t" $5; exit }' "$MANIFEST" 2>/dev/null)
-  [ -n "$row" ] || { echo "error: '$FAMILY' is not in $MANIFEST (fetch it with fetch-sample.sh)" >&2; exit 2; }
-  IFS=$'\t' read -r zipname SAMPLE_SHA RECIPE manifest_window <<EOF
+  row=$(awk -F'\t' -v f="$FAMILY" 'NR > 1 && $1 == f { print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $7; exit }' "$MANIFEST" 2>/dev/null)
+  [ -n "$row" ] || { echo "error: '$FAMILY' is not in $MANIFEST (fetch it with fetch-sample.sh or fetch-bazaar.sh)" >&2; exit 2; }
+  IFS=$'\t' read -r zipname SAMPLE_SHA RECIPE manifest_window SOURCE <<EOF
 $row
 EOF
+  SOURCE=${SOURCE:-objective-see}   # a row without the column is an objective-see sample
+  case "$SOURCE" in objective-see|bazaar) ;; *) echo "error: '$FAMILY' has an unknown source '$SOURCE' in the manifest (objective-see or bazaar)" >&2; exit 2 ;; esac
   ZIP="$(lab_data_dir)/samples/$zipname"
   [ -f "$ZIP" ] || { echo "error: $ZIP is not on disk (fetch it with fetch-sample.sh)" >&2; exit 2; }
   [ -n "$WINDOW" ] || WINDOW=${manifest_window:-$DEFAULT_WINDOW}
@@ -113,10 +116,10 @@ log() { printf '==> %s\n' "$*" >&2; }
 write_meta() {
   local bytes=0
   [ -f "$CAPTURE" ] && bytes=$(wc -c < "$CAPTURE" | tr -d ' ')
-  jq -n --arg run_id "$RUN_ID" --arg family "$NAME" --arg sha "$SAMPLE_SHA" --arg image "$GUEST_IMAGE" --arg macos "$GUEST_MACOS" \
+  jq -n --arg run_id "$RUN_ID" --arg family "$NAME" --arg sha "$SAMPLE_SHA" --arg source "$SOURCE" --arg image "$GUEST_IMAGE" --arg macos "$GUEST_MACOS" \
     --arg events "$EVENTS" --arg recipe "$RECIPE" --argjson window "$WINDOW" --arg started "$STARTED" \
     --arg ended "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$STATUS" --arg reason "$REASON" --argjson early "$EARLY" --argjson bytes "$bytes" '
-    { run_id: $run_id, family: $family, sample_sha256: $sha, guest_image: $image, guest_macos: $macos,
+    { run_id: $run_id, family: $family, sample_sha256: $sha, source: $source, guest_image: $image, guest_macos: $macos,
       eslogger_events: ($events | split(" ")), network_mode: "fake-internet", recipe: $recipe, window_s: $window,
       started_utc: $started, ended_utc: $ended, status: $status, reason: $reason, eslogger_exited_early: $early, capture_bytes: $bytes }' \
     > "$RUN_DIR/meta.json.tmp" && mv "$RUN_DIR/meta.json.tmp" "$RUN_DIR/meta.json"
@@ -230,8 +233,14 @@ done
 if [ -n "$ZIP" ]; then
   log "copying the sample in and unzipping it in the guest"
   "$TART" exec -i "$GUEST" /bin/sh -c 'cat > /tmp/sample.zip' < "$ZIP" || fail "copying the zip into the guest failed"
-  "$TART" exec "$GUEST" /bin/sh -c 'mkdir -p "$HOME/Downloads/sample" && /usr/bin/unzip -q -o -P infect3d -d "$HOME/Downloads/sample" /tmp/sample.zip; rc=$?; rm -f /tmp/sample.zip; exit $rc' \
-    || fail "unzip failed in the guest (wrong password, an encryption macOS unzip cannot read, or a damaged zip)"
+  if [ "$SOURCE" = bazaar ]; then
+    # MalwareBazaar's zips are AES-encrypted (password "infected"), which macOS unzip cannot open: 7zz does, if the guest image has it.
+    "$TART" exec "$GUEST" /bin/sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; command -v 7zz >/dev/null || { echo "7zz is not installed in this guest" >&2; exit 127; }; mkdir -p "$HOME/Downloads/sample" && 7zz x -y -pinfected -o"$HOME/Downloads/sample" /tmp/sample.zip >/dev/null; rc=$?; rm -f /tmp/sample.zip; exit $rc' \
+      || fail "extracting the MalwareBazaar zip with 7zz failed in the guest (is 7zz installed? the lean image has none: use the main image)"
+  else
+    "$TART" exec "$GUEST" /bin/sh -c 'mkdir -p "$HOME/Downloads/sample" && /usr/bin/unzip -q -o -P infect3d -d "$HOME/Downloads/sample" /tmp/sample.zip; rc=$?; rm -f /tmp/sample.zip; exit $rc' \
+      || fail "unzip failed in the guest (wrong password, an encryption macOS unzip cannot read, or a damaged zip)"
+  fi
   "$TART" exec "$GUEST" /usr/bin/true FICUS_LAB_START "$RUN_ID" >/dev/null 2>&1
   kind=${RECIPE%%:*}; arg=${RECIPE#*:}
   if [ "$MANUAL" = 1 ]; then

