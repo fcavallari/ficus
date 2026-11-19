@@ -3,12 +3,17 @@
 import fs from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { buildModel } from '../src/model/builder';
+import { ancestry } from '../src/model/relations';
 import type { CaptureModel, ProcId } from '../src/model/types';
 import { analyze, type Finding } from '../src/rules/engine';
 import { RULES, type Severity } from '../src/rules/rules';
 
-/** One finding of one capture. `queued` is false for a context-only finding (it would not enter the triage queue by itself). */
-export interface FindingRow { ruleId: string; severity: Severity; process: string; evidence: string; mitre: string[]; queued: boolean }
+/**
+ * One finding of one capture. `queued` is false for a context-only finding (it would not enter the triage queue by itself).
+ * `lineage` is the programs of the process's ancestors, nearest first (empty for a launch-item finding), so a run can be
+ * narrowed to the sample's own process tree with `filterUnder`.
+ */
+export interface FindingRow { ruleId: string; severity: Severity; process: string; evidence: string; mitre: string[]; queued: boolean; lineage: string[] }
 
 export interface Summary {
   badLines: number; events: number; processes: number; versions: number[];
@@ -47,17 +52,21 @@ export function summarize(lines: Iterable<string>): Summary {
   const a = analyze(m);
   const rows: FindingRow[] = [];
   const seen = new Set<string>();
-  const add = (f: Finding, process: string, queued: boolean) => {
+  const lineageOf = (id: ProcId | null): string[] => (id === null ? [] : ancestry(m, id).map(p => processLabel(m, p)));
+  const add = (f: Finding, process: string, queued: boolean, id: ProcId | null) => {
     const key = [f.ruleId, f.severity, process, f.evidence].join('\u0000');
     if (seen.has(key)) return;
     seen.add(key);
-    rows.push({ ruleId: f.ruleId, severity: f.severity, process, evidence: f.evidence, mitre: [...f.mitre], queued });
+    rows.push({ ruleId: f.ruleId, severity: f.severity, process, evidence: f.evidence, mitre: [...f.mitre], queued, lineage: lineageOf(id) });
   };
   for (const q of a.queue) {
-    for (const f of q.findings) add(f, q.kind === 'persistence' ? persistenceLabel(m, q.persistenceId) : processLabel(m, q.procId, f.imgIndex), true);
+    for (const f of q.findings) {
+      if (q.kind === 'persistence') add(f, persistenceLabel(m, q.persistenceId), true, null);
+      else add(f, processLabel(m, q.procId, f.imgIndex), true, q.procId);
+    }
   }
-  for (const [id, list] of a.findings) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false);
-  for (const [id, list] of a.contextOnly) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false);
+  for (const [id, list] of a.findings) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false, id);
+  for (const [id, list] of a.contextOnly) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false, id);
   return {
     badLines: m.stats.badLines, events: m.stats.events, processes: m.processes.size, versions: m.stats.versions,
     otherEvents: m.stats.otherEvents, seqGaps: m.stats.seqGaps ?? 0, rows,
@@ -89,6 +98,16 @@ export function countDrops(lines: Iterable<string>, ignore: string[] = ['close']
     if (holes > 0) { byType[type] = holes; total += holes; }
   }
   return { total, byType };
+}
+
+/**
+ * Only the findings about the sample itself: those whose process, or any ancestor, has NEEDLE in its program path. A lab capture
+ * also holds the guest's own activity (macOS's crash reporter running system_profiler, a `tart exec` command, a background
+ * service), and comparing every finding with a report would count that as the sample's behavior.
+ */
+export function filterUnder(rows: FindingRow[], needle: string): FindingRow[] {
+  if (needle === '') throw new Error('--under needs a part of the sample\'s program path, not an empty string');
+  return rows.filter(r => r.process.includes(needle) || r.lineage.some(p => p.includes(needle)));
 }
 
 /** Which checks cannot fire on captures of an older schema (Ficus's stdin checks need 11). */
@@ -141,13 +160,17 @@ function table(head: string[], body: string[][]): string {
   return [line(head), line(head.map(() => '---')), ...body.map(line)].join('\n') + '\n';
 }
 
-/** The gap report for one sample, in Markdown. */
-export function gapMarkdown(family: string, c: Comparison): string {
+/** The gap report for one sample, in Markdown. `under`, when given, says the findings were limited to that sample's process tree. */
+export function gapMarkdown(family: string, c: Comparison, under?: string): string {
   const expected = (list: ExpectedRow[]) => table(['behavior', 'MITRE', 'rule', 'source'], list.map(e => [e.behavior, e.mitre, e.rule, e.source]));
   return [
     `# ${family}`,
     '',
     `Hit ${c.hit.length}, miss ${c.miss.length}, gap ${c.gap.length}, review ${c.review.length}.`,
+    '',
+    under === undefined
+      ? 'All findings in the capture were compared, including the guest\'s own activity.'
+      : `Only findings about the process tree under \`${under.replace(/`/g, '')}\` were compared.`,
     '',
     '## Hit', '', 'A rule fired for a behavior the reports describe.', '', expected(c.hit),
     '## Miss', '', 'A rule exists for the behavior and did not fire. Check the capture: a rule to fix, or the sample did not do it here.', '', expected(c.miss),

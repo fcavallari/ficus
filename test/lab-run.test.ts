@@ -305,6 +305,16 @@ describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
     }
   });
 
+  test('a manifest row whose recipe is "manual" behaves like --manual: a guest window, no launch, wait for Enter', () => {
+    manifestRow('Fam', 'manual');
+    const r = run(['Fam'], { LAB_RUN_ID: 'fixed' }, '\n');
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls().some(c => c.startsWith('launcher') && c.includes('--guest-window'))).toBe(true);
+    expect(calls().some(c => c.includes('nohup') || c.includes('installer') || c.includes('hdiutil'))).toBe(false);
+    expect(index('-P infect3d')).toBeGreaterThan(-1); // still unzipped in the guest
+    expect(meta('fam', 'fixed')).toMatchObject({ status: 'ok', recipe: 'manual' });
+  });
+
   test('an unknown recipe kind fails the run with a clear reason', () => {
     manifestRow('Fam', 'teleport:x');
     const r = run(['Fam'], { LAB_RUN_ID: 'fixed' });

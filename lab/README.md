@@ -66,6 +66,10 @@ npm run build:lab                           # once: writes dist-lab/lab-summariz
 node dist-lab/lab-summarize.mjs "$FICUS_LAB_DATA/runs/atomicstealer/<run-id>" lab/expected/AtomicStealer.tsv
 ```
 
+For a manual run, or any run whose capture holds more than the sample, add `--under <part of the sample's program path>` (for example
+`--under VisualStudioHelper`): the capture also holds your own `tart exec` commands and macOS's own activity (a crash reporter running
+`system_profiler`, background services), and counting those as the sample's behavior gives false hits.
+
 That prints the findings and writes `gap.md` in the run folder. The facts about the capture go to stderr, including **dropped events**
 (found from each event type's own sequence numbers; `close` is not counted, since the harness filters it on purpose) and which
 Ficus checks cannot fire on this schema version.
@@ -83,7 +87,9 @@ A zip holding a script that writes a fake launch agent, fetches a file from the 
 - **eslogger's JSON keys are not in a fixed order**, so a text filter for `"modified":false` missed most close events; the harness filters with `jq`.
 - **Ficus's global sequence-gap count is useless on a lab capture**: the harness removes unmodified `close` events, which leaves tens of thousands of holes (30,514 in the stand-in run). The summarizer counts drops per event type instead, which are gapless in a complete capture (0 in that run).
 - **Ficus has no rule for `xp_malware_detected`, `tcc_modify` or `gatekeeper_user_override`**, although its guide lists them as events to record. XProtect detections are high-value evidence; a candidate rule for Task 10.
-- **Whether macOS `unzip` can open the real objective-see zips is untested** (it handles the old ZipCrypto encryption, not AES). Task 9 will show.
+- **macOS `unzip` opened the first real objective-see zip (KoiStealer)**, so those are the older ZipCrypto encryption. MalwareBazaar's zips are AES (compression type 99), which macOS `unzip` cannot open.
+- **A `manual` recipe means a window and a wait**, and the run folder then holds your own commands. Inspect a sample first with read-only commands (`file`, `codesign -dvv`, `strings`, `otool -L`) through `tart exec`, never on the host.
+- **`tart exec` commands that need a permission trigger a prompt in the guest**: a `screencapture` through the guest agent raised a Screen Recording prompt. Harmless (the clone is thrown away), but it shows in screenshots.
 
 ## Baselines (2026-11-19)
 
@@ -91,4 +97,17 @@ A zip holding a script that writes a fake launch agent, fetches a file from the 
 activity (20 findings, none high: recon, `download`, `archive-staging` and similar). The 10-minute idle run was also the first long
 `tart exec` stream: it held, 22,904 events and 49 MB, no dropped events. Re-run both baselines after any rule change.
 
-Not built yet: the pilot runs and the rule fixes. See the plan, Tasks 9 and 10.
+## Pilot results
+
+Per family: what the run did, and Ficus's comparison with the public report (`--under` = limited to the sample's own process tree).
+
+### KoiStealer (2026-11-19, objective-see/malware `KoiStealer.zip`, 2.8 MB, `manual` recipe)
+
+- **Opening it:** macOS `unzip -P infect3d` opened the zip in the guest (the older encryption). One universal Mach-O, `KoiStealer/VisualStudioHelper`, ad-hoc signed, identifier `update_agent-…`; the readme points to the Unit 42 article "RustDoor and Koi Stealer for macOS…" (2025-02-26).
+- **It is not the article's build.** Its sha256 (`adde2970…`) is none of the article's three Koi hashes, and the article names `VisualStudioHelper` only for RustDoor. Its strings show things the article does not state for Koi: a `com.apple.update_agent` launch agent, cron and `.zshrc` persistence, Chrome injection, `launch-agent`/`inject-rc`/`dialog` options, `dscl authonly` password checking.
+- **What it did here:** launched with no arguments (`./VisualStudioHelper`), it loops: it runs `VisualStudioHelper --dialog` (the fake password dialog helper), which **aborts every time with `SIGABRT`** ("abort() called"; macOS shows "Problem Report for VisualStudioHelper"), then `dscl . authonly admin` with an empty answer. 528 turns in about three minutes, about 20 MB of capture a minute. It never got a password, so it never reached the stealing or the upload: no network contact beyond macOS's own Apple lookups. Why the helper aborts in this guest is not known.
+- **Ficus, under the sample:** `odd-location-exec` (high), `dscl-authonly` (high), `adhoc` (low), `orphaned` (low). Against the article: hit 0, miss 4, gap 4, review 2. The 4 misses (`fake-prompt`, `recon`, `credential-store-copy`, `osascript-script`) are behaviors the sample did not get to in this run, not rule faults. The 2 review rows are real: `odd-location-exec` is right, and `dscl-authonly` is the stealer's password check, which the article does not describe.
+- **Gaps with no rule:** `tccutil reset AppleEvents`, muting the volume around the upload, the encrypted HTTP upload (eslogger cannot see it), and the Visual Studio update disguise.
+- **A false hit, caught:** a comparison over every finding in the capture first reported 1 hit (`recon`). That came from my own `ps` commands and from macOS's crash reporter running `system_profiler` after each abort, not from the sample. `--under` removes it.
+
+Not built yet: more pilot runs and the rule fixes. See the plan, Tasks 9 and 10.

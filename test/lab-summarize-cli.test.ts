@@ -61,6 +61,23 @@ describe('lab-summarize.mjs', () => {
     expect(bad.stderr).toContain('no-such-rule');
   });
 
+  test('--under keeps only the findings about that program and its descendants, and says so in gap.md', () => {
+    const all = run(runDir);
+    const some = run('--under', 'xattr', runDir, path.join(tmp, 'expected.tsv'));
+    expect(some.status, some.stderr).toBe(0);
+    const lines = some.stdout.trimEnd().split('\n');
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.length).toBeLessThan(all.stdout.trimEnd().split('\n').length);
+    expect(some.stderr).toMatch(/kept \d+ of \d+ findings: the process tree under "xattr"/);
+    expect(fs.readFileSync(path.join(runDir, 'gap.md'), 'utf8')).toContain('process tree under `xattr`');
+    expect(run('--under=xattr', runDir).stdout).toBe(some.stdout);
+  });
+
+  test('--under with no value, or with an empty value, is a usage error', () => {
+    expect(run(runDir, '--under').status).toBe(2);
+    expect(run('--under', '', runDir).status).toBe(2);
+  });
+
   test('says when the capture is of an older schema', () => {
     const old = path.join(tmp, 'old');
     fs.mkdirSync(old);

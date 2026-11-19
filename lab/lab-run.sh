@@ -83,6 +83,8 @@ EOF
   ZIP="$(lab_data_dir)/samples/$zipname"
   [ -f "$ZIP" ] || { echo "error: $ZIP is not on disk (fetch it with fetch-sample.sh)" >&2; exit 2; }
   [ -n "$WINDOW" ] || WINDOW=${manifest_window:-$DEFAULT_WINDOW}
+  # A row marked `manual` means "I launch it by hand", so it opens the window and waits like --manual.
+  case "$RECIPE" in manual|manual:*) MANUAL=1 ;; esac
 fi
 
 # --- the run folder (never reuses one) --------------------------------------------------------------------------------------

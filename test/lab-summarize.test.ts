@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { compare, countDrops, findingsTsv, gapMarkdown, linesOf, parseExpected, schemaNotes, summarize, type FindingRow } from '../lab/summarize-core';
+import { compare, countDrops, filterUnder, findingsTsv, gapMarkdown, linesOf, parseExpected, schemaNotes, summarize, type FindingRow } from '../lab/summarize-core';
 import { RULES } from '../src/rules/rules';
 
 // lab/summarize-core.ts turns a lab capture into findings (through Ficus's own model and rules) and compares them with the
@@ -13,7 +13,7 @@ const SYNTHETIC = execFileSync('/bin/bash', [path.resolve(__dirname, '..', 'scri
 const UNMODELLED = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'lab-unmodelled-events.jsonl'), 'utf8').split('\n');
 
 const row = (ruleId: string, severity: FindingRow['severity'] = 'med', extra: Partial<FindingRow> = {}): FindingRow =>
-  ({ ruleId, severity, process: '/bin/x', evidence: 'e', mitre: [], queued: true, ...extra });
+  ({ ruleId, severity, process: '/bin/x', evidence: 'e', mitre: [], queued: true, lineage: [], ...extra });
 const HEADER = 'behavior\tmitre\trule\tsource';
 
 describe('summarize', () => {
@@ -69,6 +69,41 @@ describe('summarize', () => {
     const withoutOne = [...lines.slice(0, 3), ...lines.slice(4)];
     expect(summarize(withoutOne).seqGaps).toBeGreaterThan(0);
     expect(s.seqGaps).toBe(0);
+  });
+});
+
+describe('lineage and filterUnder', () => {
+  const s = summarize(SYNTHETIC);
+
+  test('a process finding carries the programs of its ancestors, nearest first; a launch-item finding has none', () => {
+    const withLineage = s.rows.filter(r => r.lineage.length > 0);
+    expect(withLineage.length).toBeGreaterThan(0);
+    for (const r of withLineage) for (const p of r.lineage) expect(p, r.ruleId).not.toBe('');
+  });
+
+  test('keeps the process itself and its descendants, and drops the rest', () => {
+    const parent = s.rows.find(r => r.lineage.length > 0)!.lineage[0]!;
+    const kept = filterUnder(s.rows, parent);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(s.rows.length);
+    for (const r of kept) expect(r.process.includes(parent) || r.lineage.some(p => p.includes(parent)), r.evidence).toBe(true);
+    const dropped = s.rows.filter(r => !kept.includes(r));
+    for (const r of dropped) expect(r.process.includes(parent) || r.lineage.some(p => p.includes(parent))).toBe(false);
+  });
+
+  test('a program that is nowhere in the capture keeps nothing, and an empty needle is refused', () => {
+    expect(filterUnder(s.rows, 'no-such-program-anywhere')).toEqual([]);
+    expect(() => filterUnder(s.rows, '')).toThrow(/--under/);
+  });
+
+  test('a comparison on the filtered rows does not count the guest\'s own activity as a hit', () => {
+    const rows = [row('recon', 'low', { process: '/usr/bin/ps', lineage: ['/usr/libexec/tart-guest-agent'] }),
+      row('dscl-authonly', 'high', { process: '/usr/bin/dscl', lineage: ['/tmp/sample/Helper', '/bin/bash'] })];
+    const mine = filterUnder(rows, '/tmp/sample/Helper');
+    const c = compare(mine, [{ behavior: 'Fingerprints the Mac', mitre: 'x', rule: 'recon', source: 's' }]);
+    expect(c.hit).toEqual([]);
+    expect(c.miss).toHaveLength(1);
+    expect(c.review.map(r => r.ruleId)).toEqual(['dscl-authonly']);
   });
 });
 
@@ -164,6 +199,14 @@ describe('gapMarkdown', () => {
     expect(md).toContain('Strips \\| quarantine');
     // every table row has four cells: five separators once the escaped pipes are taken out
     for (const line of md.split('\n').filter(l => l.startsWith('| '))) expect(line.replace(/\\\|/g, '').split('|').length, line).toBe(6);
+  });
+});
+
+describe('gapMarkdown scope', () => {
+  test('says whether the findings were limited to the sample\'s process tree', () => {
+    const c = compare([], []);
+    expect(gapMarkdown('X', c)).toContain('All findings in the capture were compared');
+    expect(gapMarkdown('X', c, '/tmp/s/Helper')).toContain('process tree under `/tmp/s/Helper`');
   });
 });
 

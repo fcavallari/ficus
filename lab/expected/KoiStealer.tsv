@@ -1,0 +1,17 @@
+# KoiStealer: what Unit 42 says the macOS Koi Stealer does. Only what the article states; written before the capture was read.
+# Source: https://unit42.paloaltonetworks.com/macos-malware-targets-crypto-sector/ (2025-02-26), the Koi Stealer sections and Table 2.
+#
+# CAVEAT: the lab sample (objective-see/malware KoiStealer.zip, file KoiStealer/VisualStudioHelper, universal Mach-O, ad-hoc signed,
+# sha256 adde2970b40634e91b9ef8520f8e50eaa7901a65f9230e65d7995ac1a47700ef) is NOT one of the three Koi hashes the article lists
+# (fat 97abafff..., x64 c42b103b..., arm 8f0e2b8b...), and the article names "VisualStudioHelper" only for RustDoor. It is a different
+# build of the same family (or a different family), so a miss may mean the variant differs, not that a rule is wrong.
+# The article states no MITRE ATT&CK IDs and no persistence for Koi, so the mitre column says "not stated".
+behavior	mitre	rule	source
+Shows a fake password dialog through osascript (display dialog, hidden answer, titled "Visual Studio", "requires permission to install update")	not stated	fake-prompt	Unit 42, Table 2
+Runs ps aux, system_profiler SPHardwareDataType and sw_vers to fingerprint the Mac	not stated	recon	Unit 42, Table 2
+Copies browser, keychain, Notes, Safari cookie, wallet, Discord, Telegram, SSH and shell-history files to a temporary folder	not stated	credential-store-copy	Unit 42, Koi technical analysis
+Feeds AppleScript to osascript to copy files from Desktop and Documents by extension	not stated	osascript-script	Unit 42, Koi technical analysis
+Resets the AppleEvents permission with tccutil	not stated	-	Unit 42, Table 2
+Mutes the volume with AppleScript before exfiltrating and unmutes it after	not stated	-	Unit 42, Koi technical analysis
+Sends the stolen data to its server over HTTP, encrypted, from memory (eslogger cannot see network traffic)	not stated	-	Unit 42, Koi technical analysis
+Masquerades as a Visual Studio update that asks for administrator access	not stated	-	Unit 42, Koi technical analysis
