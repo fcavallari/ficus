@@ -1,8 +1,8 @@
 #!/bin/bash
 # lab-run.sh: runs one sample (or a baseline) in a fresh pair of VMs and records eslogger for it.
 #
-#   lab/lab-run.sh [--manual] [--window SECONDS] [--max-bytes N] [--keep-vm] FAMILY
-#   lab/lab-run.sh --baseline idle|benign
+#   lab/lab-run.sh [--manual] [--window SECONDS] [--max-bytes N] [--keep-vm] [--image NAME] FAMILY
+#   lab/lab-run.sh [--image NAME] --baseline idle|benign
 #
 # FAMILY is a row of lab/manifest.tsv (see fetch-sample.sh). The run: clone the golden guest and the gateway, start them on the
 # private cable (lab-net.py), prove the guest reaches only the gateway (check-isolation.sh), start eslogger through `tart exec`
@@ -17,7 +17,9 @@
 #   --window N      seconds to record after the launch (default: the manifest's, else 600)
 #   --max-bytes N   stop the run if the capture passes N bytes (default 2147483648)
 #   --keep-vm       leave the stopped clones in place after the run
-#   --baseline idle    record the guest alone for the window (default 600 s): the noise floor
+#   --image NAME    clone this guest image instead of the default (lab-gold, or $LAB_GUEST_IMAGE): for example lab-gold-lean,
+#                   the guest without the developer tools. A local VM name only. meta.json records the image used.
+#   --baseline idle   record the guest alone for the window (default 600 s): the noise floor
 #   --baseline benign  record the guest while guest-benign.sh does ordinary things, then the rest of the window (default 120 s)
 #
 # Exit 0 the run finished (a note in meta.json says if eslogger died early), 1 it failed or was aborted (the folder is still
@@ -40,7 +42,7 @@ DEFAULT_WINDOW=600
 DEFAULT_MAX_BYTES=2147483648
 SAMPLE_DIR='$HOME/Downloads/sample'   # inside the guest; single-quoted on purpose
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
 bad_usage() { [ -n "$1" ] && echo "error: $1" >&2; usage >&2; exit 2; }
 
 MANUAL=0; KEEP=0; WINDOW=""; MAX_BYTES=$DEFAULT_MAX_BYTES; BASELINE=""; FAMILY=""
@@ -50,6 +52,7 @@ while [ $# -gt 0 ]; do
     --keep-vm) KEEP=1 ;;
     --window) [ $# -ge 2 ] || bad_usage "--window needs a number of seconds"; WINDOW=$2; shift ;;
     --max-bytes) [ $# -ge 2 ] || bad_usage "--max-bytes needs a number"; MAX_BYTES=$2; shift ;;
+    --image) [ $# -ge 2 ] || bad_usage "--image needs the name of a Tart VM"; GUEST_IMAGE=$2; shift ;;
     --baseline) [ $# -ge 2 ] || bad_usage "--baseline needs idle"; BASELINE=$2; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) bad_usage "unknown option $1" ;;
@@ -59,6 +62,8 @@ while [ $# -gt 0 ]; do
 done
 case "$WINDOW" in *[!0-9]*) bad_usage "--window must be a whole number of seconds" ;; esac
 case "$MAX_BYTES" in ''|*[!0-9]*) bad_usage "--max-bytes must be a whole number" ;; esac
+# A local VM name only: a slash would make `tart clone` pull a remote image, and a leading dash would read as an option.
+case "$GUEST_IMAGE" in ''|-*|*/*|*[[:space:]]*) bad_usage "--image / LAB_GUEST_IMAGE must be the name of a local Tart VM, not '$GUEST_IMAGE'" ;; esac
 command -v jq >/dev/null 2>&1 || { echo "error: jq is required" >&2; exit 2; }
 
 # --- what to run ---------------------------------------------------------------------------------------------------------

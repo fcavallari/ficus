@@ -27,7 +27,7 @@ Written from the run folder's evidence. Statements that come from reading the bi
 
 ## How it was run
 
-- **Guest:** `lab-gold`, macOS 26.6.2 (25G83), `eslogger` schema 10. Fresh clone, deleted afterwards. Fake bait (browser profiles, keychain items, wallet folders) in place.
+- **Guest:** the lean image (recorded as `lab-gold`; since renamed `lab-gold-lean`, see `lab/README.md`), macOS 26.6.2 (25G83), `eslogger` schema 10. Fresh clone, deleted afterwards. Fake bait (browser profiles, keychain items, wallet folders) in place.
 - **Network:** a private cable to a gateway VM answering every name and address with INetSim. Isolation check passed before the sample was copied in. The host was never on that network.
 - **Recording:** `eslogger` through `tart exec`, 52,728,573 bytes, 23,572 events, 2,000 processes, 0 dropped events, 0 bad lines.
 - **Recipe:** `manual`. The sample was unzipped in the guest (macOS `unzip` opened it); I looked at it read-only with `file`, `codesign`, `shasum`, `otool -L` and `strings` inside the guest, then launched it myself.

@@ -26,7 +26,7 @@ Written from the run folder's evidence. Statements that come from reading the bi
 
 ## How it was run
 
-- **Guest:** `lab-gold`, macOS 26.6.2 (25G83), `eslogger` schema 10. Fresh clone, deleted afterwards.
+- **Guest:** the lean image (recorded as `lab-gold`; since renamed `lab-gold-lean`, see `lab/README.md`), macOS 26.6.2 (25G83), `eslogger` schema 10. It has no Rust, which is why the sample took its install path. Fresh clone, deleted afterwards.
 - **Network:** a private cable to a gateway VM answering every name and address with INetSim. The isolation check passed before the sample was copied in.
 - **Recording:** `eslogger` through `tart exec`, 24,932,698 bytes, 11,317 events, 387 processes, 0 dropped events, 0 bad lines.
 - **Recipe:** `manual`. The zip was unzipped in the guest (`~/Downloads/sample`); I read the sample's metadata and strings read-only; I put eleven harmless decoy files (text, JPEG-sized random data, empty Office files) in `~/Downloads/decoys` so there was something to encrypt; I launched `./heartbreaker` with no arguments; and a person closed the ransom window in the VM.
@@ -100,12 +100,13 @@ The article does not mention running from Downloads, so those rows come out as "
 - The window needed a person to close it; the run's timing around it depends on when that happened.
 - The sample ran from `~/Downloads/sample` and encrypted that folder too. A different location would change which files it touches and which findings appear.
 - The login-time launch of the agent was not tested.
+- The sample's metamorphic step depends on a git dependency (`mimicore`) whose repository is gone, so on a real internet it would fail at the build in any case; this run did not reach that point because the guest had no Rust.
 - The capture holds my own commands and the system's activity; `--under` separates them by ancestry.
 - The guest is a fresh macOS 26.6.2 image on Apple silicon; nothing here covers other versions.
 
 ## Next
 
-1. Add Rust to a copy of the golden image (or let the fake internet serve a working `cargo` stub) and re-run, to see the build, the new binary and the swap, and whether the new binary runs.
+1. Re-run on a guest image that has Rust (Homebrew rust 1.100.0 was added to the lab's dev image on 2026-11-19) to see the sample's `cargo build` attempt. **Expect the build to fail, and not only because of the lab's fake internet:** the generated `Cargo.toml` takes `mimicore` from `https://github.com/saaaarwar/mimicore`, and that repository no longer exists (GitHub answers 404 for it; the related `saaaarwar/metacore` exists, last pushed 2025-05-22). The build and the binary swap would fail the same way on a real Mac today. Getting them to run would mean patching a local library in with a cargo `[patch]` section, which changes the sample's behavior and is an experiment, not a baseline.
 2. Try the rule idea in item 1 against the benign baseline and this capture.
 3. Run the next sample.
 

@@ -4,7 +4,7 @@ What Ficus flags when nothing malicious happens, so a real sample's findings can
 a rule or to the golden image (`lab/lab-run.sh --baseline idle`, `--baseline benign`, then `lab-summarize.mjs`) and compare. A new
 **high** row here is a false positive to fix before the rule ships.
 
-Recorded 2026-11-19. Guest: `lab-gold`, macOS 26.6.2 (build 25G83), eslogger schema 10. Ficus at commit `3044d6a` (rules as of main
+Recorded 2026-11-19. Guest: the **lean** image (then called `lab-gold`, now `lab-gold-lean`; see `lab/README.md`, "The images"), macOS 26.6.2 (build 25G83), eslogger schema 10. These runs predate the developer image: re-run both baselines on `lab-gold` (Node.js, PHP, Go, Rust, 7-Zip, Chrome) and add a second section here. Ficus at commit `3044d6a` (rules as of main
 `9e74480`). Both runs: status ok, 0 dropped events, 0 bad lines, eslogger never exited early.
 
 ## Idle: the guest alone for 10 minutes

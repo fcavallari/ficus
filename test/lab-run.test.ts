@@ -277,6 +277,41 @@ describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
     expect(calls()).toEqual([]);
   });
 
+  test('--image clones that guest image instead of lab-gold, and meta.json records it', () => {
+    manifestRow('Banshee');
+    const r = run(['--image', 'lab-gold-lean', 'Banshee'], { LAB_RUN_ID: 'fixed' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls()).toContain('tart clone lab-gold-lean run-fixed');
+    expect(calls()).not.toContain('tart clone lab-gold run-fixed');
+    expect(meta('banshee', 'fixed').guest_image).toBe('lab-gold-lean');
+  });
+
+  test('the image is lab-gold by default, LAB_GUEST_IMAGE changes the default, and the flag beats the variable', () => {
+    manifestRow('Banshee');
+    expect(run(['Banshee'], { LAB_RUN_ID: 'a' }).status).toBe(0);
+    expect(calls()).toContain('tart clone lab-gold run-a');
+    expect(run(['Banshee'], { LAB_RUN_ID: 'b', LAB_GUEST_IMAGE: 'from-env' }).status).toBe(0);
+    expect(calls()).toContain('tart clone from-env run-b');
+    expect(run(['--image', 'from-flag', 'Banshee'], { LAB_RUN_ID: 'c', LAB_GUEST_IMAGE: 'from-env' }).status).toBe(0);
+    expect(calls()).toContain('tart clone from-flag run-c');
+    expect(calls()).not.toContain('tart clone from-env run-c');
+  });
+
+  test('--image works with a baseline too', () => {
+    expect(run(['--baseline', 'idle', '--window', '1', '--image', 'lab-gold-lean'], { LAB_RUN_ID: 'fixed' }).status).toBe(0);
+    expect(meta('baseline-idle', 'fixed').guest_image).toBe('lab-gold-lean');
+  });
+
+  test('--image with no value, an empty one, an option, a path or a name with a space is a usage error and starts nothing', () => {
+    manifestRow('Banshee');
+    expect(run(['Banshee', '--image']).status).toBe(2);
+    for (const bad of ['', '-x', 'ghcr.io/org/img:latest', 'a/b', 'a b']) {
+      expect(run(['--image', bad, 'Banshee']).status, JSON.stringify(bad)).toBe(2);
+    }
+    expect(run(['Banshee'], { LAB_GUEST_IMAGE: 'bad/name' }).status).toBe(2);
+    expect(calls()).toEqual([]);
+  });
+
   test('--keep-vm leaves both clones in place', () => {
     manifestRow('Banshee');
     expect(run(['--keep-vm', 'Banshee'], { LAB_RUN_ID: 'fixed' }).status).toBe(0);

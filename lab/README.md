@@ -21,9 +21,13 @@ Authorized use only: your own lab, your own Mac. Never extract or run samples on
 
 ## The images
 
-- `lab-gold`: the golden macOS guest (macOS 26, user `admin`). Configured, shut down, never booted again. `lab-gold-backup` is a spare copy.
+- `lab-gold`: the **main** golden macOS guest (macOS 26.6.2, user `admin`), the one `lab-run.sh` clones unless told otherwise. Since 2026-11-19 it is the **developer image**: the lean image plus Node.js and npm, PHP, Go, Rust (Homebrew `cargo` and `rustc`), 7-Zip (`7zz`) and Google Chrome. Configured, shut down, never booted again. `/etc/lab-golden-image` says `variant=dev` and lists the tools.
+- `lab-gold-lean`: the previous golden image, **without** those tools (the guest the first runs used). Kept for comparison: some samples branch on what is installed (HeartBreaker skips its `curl … | sh` Rust install when `cargo` is already there). Use it with `lab/lab-run.sh --image lab-gold-lean …`.
+- `lab-gold-backup`: a spare copy of the main image.
 - `lab-gw`: the gateway (Debian 13 from `ghcr.io/cirruslabs/debian:latest`, user `admin`). Same rule.
-- Every run clones both (`tart clone lab-gold run-X`, `tart clone lab-gw gw-X`) and deletes the clones afterwards. Tart has no snapshot command; a stopped VM is the snapshot.
+- Every run clones the guest and the gateway (`tart clone lab-gold run-X`, `tart clone lab-gw gw-X`) and deletes the clones afterwards. `--image NAME` (or `LAB_GUEST_IMAGE`) picks another guest image; `meta.json` records `guest_image`. Tart has no snapshot command; a stopped VM is the snapshot.
+- **Which image did a run use?** Every run recorded up to and including the HeartBreaker run (2026-11-19, 22:13Z) used the **lean** image, and their `meta.json` says `guest_image: lab-gold`, which then meant what is now called `lab-gold-lean`. Those runs are: the idle and benign baselines, the LabCheck stand-in run, KoiStealer and HeartBreaker. Runs after the switch say `lab-gold` (the developer image) or `lab-gold-lean` by name. To reproduce an early run, add `--image lab-gold-lean`.
+- The baselines in `baselines.md` were recorded on the lean image. Re-run both on the developer image and record them as a second section.
 - To change an image: clone it, boot and edit the clone, shut it down *gracefully* (see below), then swap names with `tart rename`.
 
 ## Things learned the hard way (2026-11-19)
