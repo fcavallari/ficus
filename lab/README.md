@@ -16,6 +16,7 @@ Authorized use only: your own lab, your own Mac. Never extract or run samples on
 | `fetch-sample.sh` | Downloads one sample zip from objective-see/malware into `$FICUS_LAB_DATA/samples/` and adds a row (family, zip, sha256, recipe, window) to `manifest.tsv`. Never extracts it. |
 | `lab-run.sh` | The one-command run: clone both VMs, cable, isolation check, eslogger streaming to the host, unzip in the guest, launch by recipe, wait, collect post-state and pcap, delete the clones. Writes `runs/<name>/<run-id>/`. |
 | `guest-collect.sh` | Runs in the guest after a run: BTM items, launch agent and daemon folders, crontabs, process list. |
+| `summarize-core.ts`, `summarize-cli.ts`, `expected/` | Runs Ficus's own model and rules over a capture, lists the findings, and compares them with the behaviors public reports describe (`expected/<Family>.tsv`) into a `gap.md`: hit, miss, gap, review. See `expected/README.md`. |
 
 ## The images
 
@@ -55,6 +56,15 @@ lab/lab-run.sh --window 600 AtomicStealer  # or the manifest's recipe, unattende
 
 Set the recipe in `lab/manifest.tsv` (`exec:<path>`, `app:<name.app>`, `pkg:<file>`, `dmg:<file>`, `manual`) once you know what works.
 
+```bash
+npm run build:lab                           # once: writes dist-lab/lab-summarize.mjs
+node dist-lab/lab-summarize.mjs "$FICUS_LAB_DATA/runs/atomicstealer/<run-id>" lab/expected/AtomicStealer.tsv
+```
+
+That prints the findings and writes `gap.md` in the run folder. The facts about the capture go to stderr, including **dropped events**
+(found from each event type's own sequence numbers; `close` is not counted, since the harness filters it on purpose) and which
+Ficus checks cannot fire on this schema version.
+
 ## Verified on real VMs (2026-11-19, with a harmless stand-in script, not a sample)
 
 A zip holding a script that writes a fake launch agent, fetches a file from the fake internet, sets a file date and strips a quarantine flag. One `lab-run.sh` run: status `ok`, about 70 seconds start to finish, no VM left behind. The capture holds the start and end markers, every action of the script, and none of the unmodified `close` events; `post-state/launchagents.txt` shows the plist; `gateway.pcap` shows the DNS lookup and the HTTP request. Ficus loads the capture (4,153 events, 0 bad lines) and flags: `persistence-item`, `odd-location-exec`, `download`, `timestomp` (low), `orphaned` (low), `quarantine-strip` (high).
@@ -66,6 +76,8 @@ A zip holding a script that writes a fake launch agent, fetches a file from the 
 - **The start marker goes in after the unzip**, so the harness's own `unzip` is not part of the sample's stretch of the capture. eslogger is stopped before the post-state is collected, for the same reason.
 - **A booting guest is noisy** (Siri, Shortcuts, XProtect and similar helpers start in the first minute). The idle baseline (plan, Task 8) measures it.
 - **eslogger's JSON keys are not in a fixed order**, so a text filter for `"modified":false` missed most close events; the harness filters with `jq`.
+- **Ficus's global sequence-gap count is useless on a lab capture**: the harness removes unmodified `close` events, which leaves tens of thousands of holes (30,514 in the stand-in run). The summarizer counts drops per event type instead, which are gapless in a complete capture (0 in that run).
+- **Ficus has no rule for `xp_malware_detected`, `tcc_modify` or `gatekeeper_user_override`**, although its guide lists them as events to record. XProtect detections are high-value evidence; a candidate rule for Task 10.
 - **Whether macOS `unzip` can open the real objective-see zips is untested** (it handles the old ZipCrypto encryption, not AES). Task 9 will show.
 
-Not built yet: the `--baseline benign` run and its script, the summarizer, the pilot runs. See the plan, Tasks 7 to 10.
+Not built yet: the `--baseline benign` run and its script, the pilot runs, the rule fixes. See the plan, Tasks 8 to 10.

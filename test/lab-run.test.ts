@@ -100,7 +100,8 @@ function run(args: string[], extra: Record<string, string> = {}, input = '') {
   return spawnSync('/bin/bash', [SCRIPT, ...args], { encoding: 'utf8', env: baseEnv(extra), input, timeout: 60_000 });
 }
 
-describe('lab/lab-run.sh', () => {
+// Each run takes a second or two (the recording window and the clean-up), and some tests make several: allow for a loaded machine.
+describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
   test('parses under bash', () => {
     expect(spawnSync('/bin/bash', ['-n', SCRIPT]).status).toBe(0);
   });

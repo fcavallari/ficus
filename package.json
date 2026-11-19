@@ -9,7 +9,8 @@
     "build:mcp": "vite build -c vite.mcp.config.ts",
     "pretest": "vite build && npm run build:mcp",
     "test": "vitest run",
-    "pack:mcp": "npm run build:mcp && node scripts/pack-mcp.mjs"
+    "pack:mcp": "npm run build:mcp && node scripts/pack-mcp.mjs",
+    "build:lab": "vite build -c vite.lab.config.ts"
   },
   "license": "MIT",
   "type": "module",
