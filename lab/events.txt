@@ -1,0 +1,43 @@
+# The eslogger events the lab records, one per line. `lab_events` (lab/lib.sh) joins them into one command line.
+#
+# `write` is left out on purpose, and so are open, lookup, stat, readdir, getattrlist, mmap and mprotect: too noisy. In a
+# 14-second spike capture of a booting guest, `write` plus unmodified `close` were 90% of 77,000 events. The harness keeps
+# only `close` events marked modified (see lab-run.sh).
+
+# Ficus set
+fork
+exec
+exit
+create
+rename
+unlink
+setextattr
+btm_launch_item_add
+btm_launch_item_remove
+
+# research set
+close
+link
+truncate
+utimes
+setattrlist
+setmode
+setowner
+signal
+kextload
+tcc_modify
+xp_malware_detected
+xp_malware_remediated
+gatekeeper_user_override
+authentication
+sudo
+su
+profile_add
+copyfile
+clone
+mount
+uipc_connect
+remote_thread_create
+trace
+cs_invalidated
+openssh_login
