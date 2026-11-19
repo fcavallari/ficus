@@ -1,0 +1,9 @@
+# The harmless stand-in script used to test the lab (not a real sample). Its behaviors are known because it was written for this.
+behavior	mitre	rule	source
+Registers a launch agent that runs a program	T1543.001	persistence-item	the stand-in script's own source
+Downloads a file with curl	T1105	download	the stand-in script's own source
+Runs from the Downloads folder	T1204.002	odd-location-exec	the stand-in script's own source
+Sets a file's dates by hand	T1070.006	timestomp	the stand-in script's own source
+Strips the quarantine flag from the file	T1553.001	quarantine-strip	the stand-in script's own source
+Runs the downloaded file (it does not; shows what a miss looks like)	T1105	dropped-then-executed	the stand-in script's own source
+Asks a made-up name for its address (eslogger cannot see network traffic; shows what a gap looks like)	T1071	-	the stand-in script's own source
