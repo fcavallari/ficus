@@ -48,12 +48,12 @@ describe('lab/guest-setup.sh', () => {
   test('refuses to change anything when this is not a VM', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-guest-'));
     try {
-      // No FICUS_LAB_ASSUME_VM: on a real Mac or a CI Linux box this must stop before any step.
-      const r = run(['--bait-only'], { HOME: home });
-      if (r.status !== 0) {
-        expect(r.stderr).toContain('not a virtual machine');
-        expect(fs.readdirSync(home)).toEqual([]);
-      } // Run inside an actual VM, it is allowed to proceed; the other tests cover that path.
+      // No FICUS_LAB_ASSUME_VM, and no `uname` on the PATH: the script cannot tell it is in a macOS VM, so it refuses on every machine
+      // (a macOS CI runner is itself a VM), before any step.
+      const r = run(['--bait-only'], { HOME: home, PATH: '/nonexistent' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('not a virtual machine');
+      expect(fs.readdirSync(home)).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

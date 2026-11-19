@@ -51,8 +51,10 @@ describe('lab/gateway-setup.sh', () => {
   });
 
   test('refuses to run for real anywhere but a Linux VM, as root', () => {
-    const r = run();
+    // With no `uname` on the PATH the script cannot tell it is on Linux, so it refuses on every machine, including a Linux CI box
+    // that is a VM and runs as root, where it would otherwise go on to install packages and rewrite the network settings.
+    const r = spawnSync('/bin/bash', [SCRIPT], { encoding: 'utf8', env: { PATH: '/nonexistent' } });
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/not Linux|run as root|not a virtual machine/);
+    expect(r.stderr).toContain('not Linux');
   });
 });

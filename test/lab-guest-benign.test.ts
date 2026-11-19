@@ -36,11 +36,12 @@ describe('lab/guest-benign.sh', () => {
   test('refuses to run for real outside a virtual machine', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lab-benign-'));
     try {
-      const r = run([], { HOME: home });
-      if (r.status !== 0) {
-        expect(r.stderr).toContain('not a virtual machine');
-        expect(fs.readdirSync(home)).toEqual([]);
-      } // inside an actual VM it is allowed to proceed
+      // With no `uname` on the PATH the script cannot tell it is on a macOS VM, so it refuses on every machine, including a macOS CI
+      // runner (which is a VM), where it would otherwise go on to install a package as root.
+      const r = run([], { HOME: home, PATH: '/nonexistent' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('not a virtual machine');
+      expect(fs.readdirSync(home)).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
