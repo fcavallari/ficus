@@ -47,9 +47,9 @@ function main(argv: string[]): number {
     catch (e) { process.stderr.write(`error: ${(e as Error).message}\n`); return 2; }
   }
   process.stdout.write(findingsTsv(rows));
-  process.stderr.write(`events ${s.events}, processes ${s.processes}, schema ${s.versions.join('/') || 'unknown'}, bad lines ${s.badLines}, dropped events ${drops.total}, findings ${s.rows.length}\n`);
+  process.stderr.write(`events ${s.events}, processes ${s.processes}, schema ${s.versions.join('/') || 'unknown'}, bad lines ${s.badLines}, dropped events ${drops.total}, findings ${s.rows.length} distinct (${s.instances} counting repeats), triage queue ${s.queueItems} items\n`);
   if (under !== undefined) process.stderr.write(`kept ${rows.length} of ${s.rows.length} findings: the process tree under "${under}"\n`);
-  for (const note of schemaNotes(s.versions)) process.stderr.write(`note: ${note}\n`);
+  for (const note of schemaNotes(s.versions, s.stdinVisible)) process.stderr.write(`note: ${note}\n`);
   if (drops.total > 0) {
     process.stderr.write(`note: Endpoint Security dropped events while recording (${Object.entries(drops.byType).map(([t, n]) => `${t} ${n}`).join(', ')}); the capture is incomplete, so a miss may be a missing event\n`);
   }

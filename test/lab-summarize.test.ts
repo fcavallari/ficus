@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { compare, countDrops, filterUnder, findingsTsv, gapMarkdown, linesOf, parseExpected, schemaNotes, summarize, type FindingRow } from '../lab/summarize-core';
+import { compare, countDrops, filterUnder, FindingCollector, findingsTsv, gapMarkdown, linesOf, parseExpected, schemaNotes, summarize, type FindingRow } from '../lab/summarize-core';
 import { RULES } from '../src/rules/rules';
 
 // lab/summarize-core.ts turns a lab capture into findings (through Ficus's own model and rules) and compares them with the
@@ -13,7 +13,7 @@ const SYNTHETIC = execFileSync('/bin/bash', [path.resolve(__dirname, '..', 'scri
 const UNMODELLED = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'lab-unmodelled-events.jsonl'), 'utf8').split('\n');
 
 const row = (ruleId: string, severity: FindingRow['severity'] = 'med', extra: Partial<FindingRow> = {}): FindingRow =>
-  ({ ruleId, severity, process: '/bin/x', evidence: 'e', mitre: [], queued: true, lineage: [], ...extra });
+  ({ ruleId, severity, process: '/bin/x', evidence: 'e', mitre: [], queued: true, lineage: [], count: 1, ...extra });
 const HEADER = 'behavior\tmitre\trule\tsource';
 
 describe('summarize', () => {
@@ -69,6 +69,51 @@ describe('summarize', () => {
     const withoutOne = [...lines.slice(0, 3), ...lines.slice(4)];
     expect(summarize(withoutOne).seqGaps).toBeGreaterThan(0);
     expect(s.seqGaps).toBe(0);
+  });
+});
+
+describe('FindingCollector', () => {
+  const f = (evidence = 'dscl . authonly admin') => ({ ruleId: 'dscl-authonly', severity: 'high' as const, evidence, mitre: ['T1'] });
+
+  test('the same finding for different processes is one row with a count, and every instance is counted', () => {
+    const c = new FindingCollector();
+    for (let pid = 1; pid <= 527; pid++) c.add(f(), '/usr/bin/dscl', true, `proc:${pid}`, ['/tmp/Helper']);
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]!.count).toBe(527);
+    expect(c.instances).toBe(527);
+  });
+
+  test('the same finding seen twice for one process (through the queue and per process) is counted once', () => {
+    const c = new FindingCollector();
+    c.add(f(), '/usr/bin/dscl', true, 'proc:1', []);
+    c.add(f(), '/usr/bin/dscl', false, 'proc:1', []);
+    expect(c.rows[0]!.count).toBe(1);
+    expect(c.instances).toBe(1);
+  });
+
+  test('different evidence, program or severity stay separate rows', () => {
+    const c = new FindingCollector();
+    c.add(f('a'), '/usr/bin/dscl', true, 'proc:1', []);
+    c.add(f('b'), '/usr/bin/dscl', true, 'proc:2', []);
+    c.add(f('a'), '/usr/bin/other', true, 'proc:3', []);
+    c.add({ ...f('a'), severity: 'low' }, '/usr/bin/dscl', true, 'proc:4', []);
+    expect(c.rows).toHaveLength(4);
+    expect(c.instances).toBe(4);
+  });
+
+  test('a repeat that is queued makes the row queued, and the first row keeps its lineage', () => {
+    const c = new FindingCollector();
+    c.add(f(), '/usr/bin/dscl', false, 'proc:1', ['/a']);
+    c.add(f(), '/usr/bin/dscl', true, 'proc:2', ['/b']);
+    expect(c.rows[0]).toMatchObject({ queued: true, count: 2, lineage: ['/a'] });
+  });
+
+  test('summarize reports the queue size and the instances', () => {
+    const s = summarize(SYNTHETIC);
+    expect(s.queueItems).toBeGreaterThan(0);
+    expect(s.instances).toBeGreaterThanOrEqual(s.rows.length);
+    expect(s.rows.every(r => r.count >= 1)).toBe(true);
+    expect(s.rows.reduce((n, r) => n + r.count, 0)).toBe(s.instances);
   });
 });
 
@@ -131,10 +176,22 @@ describe('countDrops', () => {
 });
 
 describe('schemaNotes', () => {
-  test('says which checks cannot fire below schema 11, and nothing at 11', () => {
-    expect(schemaNotes([10]).join(' ')).toMatch(/schema 10.*shell-from-pipe.*reverse-shell/);
-    expect(schemaNotes([11])).toEqual([]);
-    expect(schemaNotes([10, 11])).not.toEqual([]);
+  test('is about the file descriptors being there, not the version number', () => {
+    expect(schemaNotes([10], true)).toEqual([]); // the macOS 26.6.2 guest: version 10, exec events carry fds
+    expect(schemaNotes([11], true)).toEqual([]);
+    expect(schemaNotes([10], false).join(' ')).toMatch(/no exec event carries file descriptors \(schema 10\).*shell-from-pipe.*reverse-shell/);
+    expect(schemaNotes([11], false)).not.toEqual([]); // fds absent despite the version
+    expect(schemaNotes([], false)).not.toEqual([]);
+  });
+
+  test('summarize reports whether the capture\'s exec events carry fds', () => {
+    expect(summarize(SYNTHETIC).stdinVisible).toBe(true);
+    const stripped = SYNTHETIC.filter(l => l !== '').map(l => {
+      const rec = JSON.parse(l) as { event?: { exec?: Record<string, unknown> } };
+      if (rec.event?.exec) delete rec.event.exec.fds;
+      return JSON.stringify(rec);
+    });
+    expect(summarize(stripped).stdinVisible).toBe(false);
   });
 });
 
@@ -202,6 +259,14 @@ describe('gapMarkdown', () => {
   });
 });
 
+describe('gapMarkdown repeats', () => {
+  test('a review finding that repeated says how many times', () => {
+    const md = gapMarkdown('X', compare([row('dscl-authonly', 'high', { evidence: 'dscl . authonly admin', count: 527 })], []));
+    expect(md).toContain('dscl . authonly admin (527 times)');
+    expect(gapMarkdown('X', compare([row('dscl-authonly', 'high', { evidence: 'once' })], []))).not.toContain('times)');
+  });
+});
+
 describe('gapMarkdown scope', () => {
   test('says whether the findings were limited to the sample\'s process tree', () => {
     const c = compare([], []);
@@ -211,12 +276,13 @@ describe('gapMarkdown scope', () => {
 });
 
 describe('findingsTsv', () => {
-  test('is one line per finding with five columns, whatever the evidence holds', () => {
-    const tsv = findingsTsv([row('download', 'med', { evidence: 'a\tb\nc' })]);
+  test('is one line per finding with six columns, the count among them, whatever the evidence holds', () => {
+    const tsv = findingsTsv([row('download', 'med', { evidence: 'a\tb\nc', count: 527 })]);
     const lines = tsv.trimEnd().split('\n');
-    expect(lines[0]).toBe('queued\trule\tseverity\tprocess\tevidence');
+    expect(lines[0]).toBe('queued\trule\tseverity\tcount\tprocess\tevidence');
     expect(lines).toHaveLength(2);
-    expect(lines[1]!.split('\t')).toHaveLength(5);
+    expect(lines[1]!.split('\t')).toHaveLength(6);
+    expect(lines[1]!.split('\t')[3]).toBe('527');
   });
 });
 

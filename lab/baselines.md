@@ -38,8 +38,9 @@ launch, `launchctl list` and the Python one-liner raised nothing.
 
 ## What these baselines do not cover
 
-- **Schema 10 only.** Ficus's stdin checks (`shell-from-pipe`, the socket part of `reverse-shell`) cannot fire on this guest, so
-  they are untested here. A macOS 27 golden image would exercise them; run both baselines on it too.
+- **One macOS version.** The guest is macOS 26.6.2 (eslogger reports schema 10, but its `exec` events carry `fds`, so the stdin
+  checks such as `shell-from-pipe` work; the benign baseline simply has no piped shell). Run both baselines again on any other
+  macOS version the lab adopts.
 - **No network noise** beyond a curl to the fake internet. eslogger sees no network events.
 - **A fresh guest.** No user session history, no logged-in apps, no developer toolchain beyond Cirrus Labs's base image. A real Mac is
   noisier; this is a floor, not a forecast.

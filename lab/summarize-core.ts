@@ -13,7 +13,39 @@ import { RULES, type Severity } from '../src/rules/rules';
  * `lineage` is the programs of the process's ancestors, nearest first (empty for a launch-item finding), so a run can be
  * narrowed to the sample's own process tree with `filterUnder`.
  */
-export interface FindingRow { ruleId: string; severity: Severity; process: string; evidence: string; mitre: string[]; queued: boolean; lineage: string[] }
+export interface FindingRow { ruleId: string; severity: Severity; process: string; evidence: string; mitre: string[]; queued: boolean; lineage: string[];
+  /** How many times Ficus produced this same finding (same rule, program and evidence) for different processes; 1 for a single one. */
+  count: number }
+
+/**
+ * Collects findings into rows. The same finding seen twice for one process (Ficus lists a flagged process's findings both in its
+ * queue and per process) is one; the same finding for different processes (a loop that starts the same program hundreds of times)
+ * is one row with a `count`, so the report stays readable and the repetition is still visible.
+ */
+export class FindingCollector {
+  readonly rows: FindingRow[] = [];
+  /** Findings Ficus produced, repeats included. */
+  instances = 0;
+  private readonly seenInstance = new Set<string>();
+  private readonly byKey = new Map<string, FindingRow>();
+
+  add(f: Pick<Finding, 'ruleId' | 'severity' | 'evidence' | 'mitre'>, process: string, queued: boolean, itemKey: string, lineage: string[]): void {
+    const instance = [itemKey, f.ruleId, f.severity, f.evidence].join('\u0000');
+    if (this.seenInstance.has(instance)) return;
+    this.seenInstance.add(instance);
+    this.instances++;
+    const key = [f.ruleId, f.severity, process, f.evidence].join('\u0000');
+    const existing = this.byKey.get(key);
+    if (existing) {
+      existing.count++;
+      if (queued) existing.queued = true;
+      return;
+    }
+    const row: FindingRow = { ruleId: f.ruleId, severity: f.severity, process, evidence: f.evidence, mitre: [...f.mitre], queued, lineage, count: 1 };
+    this.byKey.set(key, row);
+    this.rows.push(row);
+  }
+}
 
 export interface Summary {
   badLines: number; events: number; processes: number; versions: number[];
@@ -21,6 +53,12 @@ export interface Summary {
   otherEvents: Record<string, number>;
   /** Numbers missing from the capture's sequence: events the recorder dropped. */
   seqGaps: number;
+  /** Items in Ficus's triage queue for this capture: what a person would have to go through. */
+  queueItems: number;
+  /** True when at least one exec event carried `fds`, which the stdin checks (shell-from-pipe, the reverse-shell socket check) read. */
+  stdinVisible: boolean;
+  /** Findings Ficus produced, counting repeats; `rows` has one row per distinct finding, each with a `count`. */
+  instances: number;
   rows: FindingRow[];
 }
 
@@ -50,26 +88,20 @@ function persistenceLabel(m: CaptureModel, id: string | null): string {
 export function summarize(lines: Iterable<string>): Summary {
   const m = buildModel(lines);
   const a = analyze(m);
-  const rows: FindingRow[] = [];
-  const seen = new Set<string>();
+  const c = new FindingCollector();
   const lineageOf = (id: ProcId | null): string[] => (id === null ? [] : ancestry(m, id).map(p => processLabel(m, p)));
-  const add = (f: Finding, process: string, queued: boolean, id: ProcId | null) => {
-    const key = [f.ruleId, f.severity, process, f.evidence].join('\u0000');
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push({ ruleId: f.ruleId, severity: f.severity, process, evidence: f.evidence, mitre: [...f.mitre], queued, lineage: lineageOf(id) });
-  };
   for (const q of a.queue) {
     for (const f of q.findings) {
-      if (q.kind === 'persistence') add(f, persistenceLabel(m, q.persistenceId), true, null);
-      else add(f, processLabel(m, q.procId, f.imgIndex), true, q.procId);
+      if (q.kind === 'persistence') c.add(f, persistenceLabel(m, q.persistenceId), true, `item:${q.persistenceId}`, []);
+      else c.add(f, processLabel(m, q.procId, f.imgIndex), true, `proc:${q.procId}`, lineageOf(q.procId));
     }
   }
-  for (const [id, list] of a.findings) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false, id);
-  for (const [id, list] of a.contextOnly) for (const f of list) add(f, processLabel(m, id, f.imgIndex), false, id);
+  for (const [id, list] of a.findings) for (const f of list) c.add(f, processLabel(m, id, f.imgIndex), false, `proc:${id}`, lineageOf(id));
+  for (const [id, list] of a.contextOnly) for (const f of list) c.add(f, processLabel(m, id, f.imgIndex), false, `proc:${id}`, lineageOf(id));
   return {
     badLines: m.stats.badLines, events: m.stats.events, processes: m.processes.size, versions: m.stats.versions,
-    otherEvents: m.stats.otherEvents, seqGaps: m.stats.seqGaps ?? 0, rows,
+    otherEvents: m.stats.otherEvents, seqGaps: m.stats.seqGaps ?? 0, queueItems: a.queue.length, instances: c.instances,
+    stdinVisible: [...m.processes.values()].some(p => p.images.some(i => i.stdinIsPipe !== null)), rows: c.rows,
   };
 }
 
@@ -110,10 +142,15 @@ export function filterUnder(rows: FindingRow[], needle: string): FindingRow[] {
   return rows.filter(r => r.process.includes(needle) || r.lineage.some(p => p.includes(needle)));
 }
 
-/** Which checks cannot fire on captures of an older schema (Ficus's stdin checks need 11). */
-export function schemaNotes(versions: number[]): string[] {
-  return versions.filter(v => v < 11).map(v =>
-    `schema ${v}: shell-from-pipe and the socket check in reverse-shell cannot fire (they need eslogger schema 11)`);
+/**
+ * Which checks cannot fire on this capture. Ficus reads where a process's input comes from out of the `fds` list of an `exec` event
+ * (`stdinIsPipe`, `stdinIsSocket`), not out of the version number: the macOS 26.6.2 guest reports version 10 and its exec events do
+ * carry `fds`, and `shell-from-pipe` fires on its captures. So the note is about the `fds` being there, not about the version.
+ */
+export function schemaNotes(versions: number[], stdinVisible: boolean): string[] {
+  if (stdinVisible) return [];
+  const v = versions.length > 0 ? ` (schema ${versions.join('/')})` : '';
+  return [`no exec event carries file descriptors${v}, so shell-from-pipe and the socket check in reverse-shell cannot fire; Ficus documents eslogger schema 11 for them`];
 }
 
 /** Reads an expected-behaviors file: tab-separated, header `behavior mitre rule source`, `#` comment lines allowed. */
@@ -176,15 +213,15 @@ export function gapMarkdown(family: string, c: Comparison, under?: string): stri
     '## Miss', '', 'A rule exists for the behavior and did not fire. Check the capture: a rule to fix, or the sample did not do it here.', '', expected(c.miss),
     '## Gap', '', 'No rule exists for the behavior yet. Candidates for a new rule.', '', expected(c.gap),
     '## Review', '', 'High findings no expected row names. A false positive, or a behavior nobody wrote down.', '',
-    table(['rule', 'severity', 'process', 'evidence'], c.review.map(r => [r.ruleId, r.severity, r.process, r.evidence])),
+    table(['rule', 'severity', 'process', 'evidence'], c.review.map(r => [r.ruleId, r.severity, r.process, r.count > 1 ? `${r.evidence} (${r.count} times)` : r.evidence])),
   ].join('\n');
 }
 
-/** One line per finding, five tab-separated columns, whatever the evidence holds. */
+/** One line per distinct finding, six tab-separated columns (the last is how many times it repeated), whatever the evidence holds. */
 export function findingsTsv(rows: FindingRow[]): string {
   const flat = (s: string) => s.replace(/\r?\n|\t/g, ' ');
-  return ['queued\trule\tseverity\tprocess\tevidence',
-    ...rows.map(r => [r.queued ? 'queued' : 'context', r.ruleId, r.severity, flat(r.process), flat(r.evidence)].join('\t'))].join('\n') + '\n';
+  return ['queued\trule\tseverity\tcount\tprocess\tevidence',
+    ...rows.map(r => [r.queued ? 'queued' : 'context', r.ruleId, r.severity, String(r.count), flat(r.process), flat(r.evidence)].join('\t'))].join('\n') + '\n';
 }
 
 /** The lines of a (possibly very large) file, read in chunks; multi-byte characters may straddle chunks. */

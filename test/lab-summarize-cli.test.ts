@@ -30,9 +30,9 @@ describe('lab-summarize.mjs', () => {
   test('prints the findings as a table on stdout and the facts on stderr', () => {
     const r = run(runDir);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout.split('\n')[0]).toBe('queued\trule\tseverity\tprocess\tevidence');
+    expect(r.stdout.split('\n')[0]).toBe('queued\trule\tseverity\tcount\tprocess\tevidence');
     expect(r.stdout).toContain('\tquarantine-strip\thigh\t');
-    expect(r.stderr).toMatch(/events \d+, processes \d+, schema 11, bad lines 0, dropped events \d+, findings \d+/);
+    expect(r.stderr).toMatch(/events \d+, processes \d+, schema 11, bad lines 0, dropped events \d+, findings \d+ distinct \(\d+ counting repeats\), triage queue \d+ items/);
   });
 
   test('with an expected file it writes gap.md, headed with the family from meta.json', () => {
@@ -78,11 +78,25 @@ describe('lab-summarize.mjs', () => {
     expect(run('--under', '', runDir).status).toBe(2);
   });
 
-  test('says when the capture is of an older schema', () => {
+  test('says so when no exec event carries file descriptors, and says nothing about the version alone', () => {
+    const lines = fs.readFileSync(path.join(runDir, 'capture.jsonl'), 'utf8').split('\n').filter(Boolean);
+    const bare = path.join(tmp, 'bare');
+    fs.mkdirSync(bare);
+    const noFds = lines.map(l => {
+      const rec = JSON.parse(l) as { version?: number; event?: { exec?: Record<string, unknown> } };
+      rec.version = 10;
+      if (rec.event?.exec) delete rec.event.exec.fds;
+      return JSON.stringify(rec);
+    });
+    fs.writeFileSync(path.join(bare, 'capture.jsonl'), noFds.join('\n') + '\n');
+    expect(run(bare).stderr).toMatch(/no exec event carries file descriptors \(schema 10\).*shell-from-pipe/);
+
+    // Version 10 with the fds still there (what the macOS 26.6.2 guest writes): no note.
     const old = path.join(tmp, 'old');
     fs.mkdirSync(old);
-    const lines = fs.readFileSync(path.join(runDir, 'capture.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => l.replace('"version":11', '"version":10'));
-    fs.writeFileSync(path.join(old, 'capture.jsonl'), lines.join('\n') + '\n');
-    expect(run(old).stderr).toMatch(/schema 10.*shell-from-pipe/);
+    fs.writeFileSync(path.join(old, 'capture.jsonl'), lines.map(l => l.replace('"version":11', '"version":10')).join('\n') + '\n');
+    const r = run(old);
+    expect(r.stderr).toMatch(/schema 10/);
+    expect(r.stderr).not.toMatch(/cannot fire/);
   });
 });
