@@ -2,7 +2,7 @@
 # lab-run.sh: runs one sample (or a baseline) in a fresh pair of VMs and records eslogger for it.
 #
 #   lab/lab-run.sh [--manual] [--window SECONDS] [--max-bytes N] [--keep-vm] FAMILY
-#   lab/lab-run.sh --baseline idle
+#   lab/lab-run.sh --baseline idle|benign
 #
 # FAMILY is a row of lab/manifest.tsv (see fetch-sample.sh). The run: clone the golden guest and the gateway, start them on the
 # private cable (lab-net.py), prove the guest reaches only the gateway (check-isolation.sh), start eslogger through `tart exec`
@@ -17,7 +17,8 @@
 #   --window N      seconds to record after the launch (default: the manifest's, else 600)
 #   --max-bytes N   stop the run if the capture passes N bytes (default 2147483648)
 #   --keep-vm       leave the stopped clones in place after the run
-#   --baseline idle record the guest alone for the window
+#   --baseline idle    record the guest alone for the window (default 600 s): the noise floor
+#   --baseline benign  record the guest while guest-benign.sh does ordinary things, then the rest of the window (default 120 s)
 #
 # Exit 0 the run finished (a note in meta.json says if eslogger died early), 1 it failed or was aborted (the folder is still
 # written), 2 usage. Environment: FICUS_LAB_DATA, LAB_MANIFEST, LAB_TART, LAB_NET, LAB_ISOLATION, LAB_GUEST_IMAGE (lab-gold),
@@ -65,11 +66,11 @@ SAMPLE_SHA=""; RECIPE=""; ZIP=""
 if [ -n "$BASELINE" ]; then
   [ -z "$FAMILY" ] || bad_usage "a baseline takes no family"
   case "$BASELINE" in
-    idle) NAME=baseline-idle; RECIPE=none ;;
-    benign) echo "error: the benign baseline is not built yet" >&2; exit 2 ;;
-    *) bad_usage "unknown baseline '$BASELINE' (idle)" ;;
+    idle) NAME=baseline-idle; RECIPE=none; baseline_window=$DEFAULT_WINDOW ;;
+    benign) NAME=baseline-benign; RECIPE=script:guest-benign.sh; baseline_window=120 ;;
+    *) bad_usage "unknown baseline '$BASELINE' (idle or benign)" ;;
   esac
-  [ -n "$WINDOW" ] || WINDOW=$DEFAULT_WINDOW
+  [ -n "$WINDOW" ] || WINDOW=$baseline_window
 else
   [ -n "$FAMILY" ] || bad_usage ""
   ( lab_check_name "$FAMILY" ) 2>&1 || exit 2
@@ -241,6 +242,11 @@ if [ -n "$ZIP" ]; then
   fi
 else
   "$TART" exec "$GUEST" /usr/bin/true FICUS_LAB_START "$RUN_ID" >/dev/null 2>&1
+  if [ "$BASELINE" = benign ]; then
+    log "running the benign activity script"
+    "$TART" exec -i "$GUEST" /bin/sh -c 'cat > /tmp/guest-benign.sh' < "$HERE/guest-benign.sh" || fail "copying the benign script into the guest failed"
+    "$TART" exec "$GUEST" /bin/sh -c 'bash /tmp/guest-benign.sh' > "$RUN_DIR/benign.log" 2>&1 || fail "the benign script could not run (see benign.log)"
+  fi
 fi
 
 if [ "$MANUAL" = 1 ]; then

@@ -235,6 +235,48 @@ describe('lab/lab-run.sh', { timeout: 60_000 }, () => {
     expect(fs.readFileSync(path.join(data, 'runs', 'banshee', 'same', 'meta.json'), 'utf8')).toBe(before);
   });
 
+  test('--baseline idle records the guest alone: no manifest, no zip, family baseline-idle', () => {
+    const r = run(['--baseline', 'idle', '--window', '1'], { LAB_RUN_ID: 'fixed', LAB_MANIFEST: path.join(dir, 'does-not-exist.tsv') });
+    expect(r.status, r.stderr).toBe(0);
+    expect(index('cat > /tmp/sample.zip')).toBe(-1);
+    expect(index('guest-benign.sh')).toBe(-1);
+    expect(index('FICUS_LAB_START fixed')).toBeGreaterThan(-1);
+    expect(meta('baseline-idle', 'fixed')).toMatchObject({ family: 'baseline-idle', sample_sha256: '', recipe: 'none', status: 'ok', window_s: 1 });
+  });
+
+  test('--baseline benign copies the activity script into the guest and runs it after the start marker', () => {
+    const r = run(['--baseline', 'benign', '--window', '1'], { LAB_RUN_ID: 'fixed' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(index('cat > /tmp/guest-benign.sh')).toBeGreaterThan(index('FICUS_LAB_START fixed'));
+    expect(index('bash /tmp/guest-benign.sh')).toBeGreaterThan(index('cat > /tmp/guest-benign.sh'));
+    expect(index('bash /tmp/guest-benign.sh')).toBeLessThan(index('FICUS_LAB_END fixed'));
+    expect(index('cat > /tmp/sample.zip')).toBe(-1);
+    expect(meta('baseline-benign', 'fixed')).toMatchObject({ family: 'baseline-benign', recipe: 'script:guest-benign.sh', status: 'ok' });
+    expect(fs.existsSync(path.join(data, 'runs', 'baseline-benign', 'fixed', 'benign.log'))).toBe(true);
+  });
+
+  test('the baseline windows default to 600 s (idle) and 120 s (benign)', () => {
+    expect(run(['--baseline', 'idle'], { LAB_RUN_ID: 'a', STUB_NET_FAIL: '1' }).status).toBe(1); // stops early; only the recorded window matters
+    expect(meta('baseline-idle', 'a').window_s).toBe(600);
+    expect(run(['--baseline', 'benign'], { LAB_RUN_ID: 'b', STUB_NET_FAIL: '1' }).status).toBe(1);
+    expect(meta('baseline-benign', 'b').window_s).toBe(120);
+  });
+
+  test('a benign script that cannot run fails the run', () => {
+    const r = run(['--baseline', 'benign', '--window', '1'], { LAB_RUN_ID: 'fixed', STUB_FAIL_ON: 'bash /tmp/guest-benign.sh' });
+    expect(r.status).toBe(1);
+    expect(String(meta('baseline-benign', 'fixed').reason)).toMatch(/benign script/);
+    expect(index('tart delete run-fixed')).toBeGreaterThan(-1);
+  });
+
+  test('a baseline takes no family, and an unknown baseline or a missing value is a usage error', () => {
+    manifestRow('Banshee');
+    expect(run(['--baseline', 'idle', 'Banshee']).status).toBe(2);
+    expect(run(['--baseline', 'nope']).status).toBe(2);
+    expect(run(['--baseline']).status).toBe(2);
+    expect(calls()).toEqual([]);
+  });
+
   test('--keep-vm leaves both clones in place', () => {
     manifestRow('Banshee');
     expect(run(['--keep-vm', 'Banshee'], { LAB_RUN_ID: 'fixed' }).status).toBe(0);

@@ -16,6 +16,7 @@ Authorized use only: your own lab, your own Mac. Never extract or run samples on
 | `fetch-sample.sh` | Downloads one sample zip from objective-see/malware into `$FICUS_LAB_DATA/samples/` and adds a row (family, zip, sha256, recipe, window) to `manifest.tsv`. Never extracts it. |
 | `lab-run.sh` | The one-command run: clone both VMs, cable, isolation check, eslogger streaming to the host, unzip in the guest, launch by recipe, wait, collect post-state and pcap, delete the clones. Writes `runs/<name>/<run-id>/`. |
 | `guest-collect.sh` | Runs in the guest after a run: BTM items, launch agent and daemon folders, crontabs, process list. |
+| `guest-benign.sh` | Runs in the guest for `lab-run.sh --baseline benign`: ordinary activity (recon, developer tools, files, zip and tar, a curl download, a preference, an SSH key, an empty package install, an app, launchctl, Python). Nothing in it is an attack. |
 | `summarize-core.ts`, `summarize-cli.ts`, `expected/` | Runs Ficus's own model and rules over a capture, lists the findings, and compares them with the behaviors public reports describe (`expected/<Family>.tsv`) into a `gap.md`: hit, miss, gap, review. See `expected/README.md`. |
 
 ## The images
@@ -52,7 +53,11 @@ kill %1; tart delete g1; tart delete w1
 lab/fetch-sample.sh AtomicStealer          # a live sample: only the ones you mean to run
 lab/lab-run.sh --manual AtomicStealer      # window open, you launch it by hand, Enter to finish
 lab/lab-run.sh --window 600 AtomicStealer  # or the manifest's recipe, unattended
+lab/lab-run.sh --baseline idle             # the guest alone for 10 minutes: the noise floor
+lab/lab-run.sh --baseline benign           # ordinary activity for 2 minutes: what is noise on clean behavior
 ```
+
+Run both baselines after every change to a rule (or to the golden image) and compare their findings with the last ones.
 
 Set the recipe in `lab/manifest.tsv` (`exec:<path>`, `app:<name.app>`, `pkg:<file>`, `dmg:<file>`, `manual`) once you know what works.
 
@@ -80,4 +85,10 @@ A zip holding a script that writes a fake launch agent, fetches a file from the 
 - **Ficus has no rule for `xp_malware_detected`, `tcc_modify` or `gatekeeper_user_override`**, although its guide lists them as events to record. XProtect detections are high-value evidence; a candidate rule for Task 10.
 - **Whether macOS `unzip` can open the real objective-see zips is untested** (it handles the old ZipCrypto encryption, not AES). Task 9 will show.
 
-Not built yet: the `--baseline benign` run and its script, the pilot runs, the rule fixes. See the plan, Tasks 8 to 10.
+## Baselines (2026-11-19)
+
+`baselines.md` records what Ficus flags on an idle guest (2 low context findings, nothing queued, nothing high) and on ordinary
+activity (20 findings, none high: recon, `download`, `archive-staging` and similar). The 10-minute idle run was also the first long
+`tart exec` stream: it held, 22,904 events and 49 MB, no dropped events. Re-run both baselines after any rule change.
+
+Not built yet: the pilot runs and the rule fixes. See the plan, Tasks 9 and 10.
