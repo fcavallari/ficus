@@ -68,6 +68,13 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
+    name: 'Sending it out',
+    what: <>The last step of a stealer: the archive it staged is posted to the attacker’s server with <C>curl</C>, often one
+      with no name at all, just an IP address. Developers upload files with the same tool, so the rule looks at the file and
+      the server.</>,
+    rules: ['file-upload'],
+  },
+  {
     name: 'Persistence',
     what: <>Optional, but more common in newer families: a launch agent or login item so a backdoor survives reboot.</>,
     rules: ['persistence-item', 'persistence-plist', 'launchctl-load'],
@@ -703,7 +710,8 @@ node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder>
                   Notes files into a temporary folder, zipped them, posted them to a bare IP address, fetched a second
                   stage.</td>
                   <td><RuleChip id="keychain-access" />, <RuleChip id="credential-store-copy" />,{' '}
-                    <RuleChip id="archive-staging" /> and <RuleChip id="download" />, and nothing for the upload.</td></tr>
+                    <RuleChip id="archive-staging" />, <RuleChip id="download" /> and, with a rule written after this run
+                    showed the gap, <RuleChip id="file-upload" /> for the upload.</td></tr>
               </tbody>
             </table>
             <p>The gaps are the point of the lab: each one is a candidate for a new rule, to be tried against the lab’s idle and

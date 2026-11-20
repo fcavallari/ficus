@@ -15,6 +15,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1059.007': 'JavaScript',
   'T1070.004': 'File Deletion',
   'T1070.006': 'Timestomp',
+  'T1041': 'Exfiltration Over C2 Channel',
   'T1074.001': 'Local Data Staging',
   'T1082': 'System Information Discovery',
   'T1095': 'Non-Application Layer Protocol',
