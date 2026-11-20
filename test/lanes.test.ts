@@ -171,7 +171,7 @@ describe('flaggedIds', () => {
       persistenceItem({ id: 'btm:8', emitter: '3:1' }),
     );
     const q = (o: { procId: string | null; persistenceId: string | null }): QueueItem =>
-      ({ key: String(o.procId ?? o.persistenceId), kind: o.procId ? 'process' : 'persistence', severity: 'high', findings: [], inFlaggedChain: false, reconBurst: false, sortSeq: 0, ...o });
+      ({ key: String(o.procId ?? o.persistenceId), kind: o.procId ? 'process' : 'persistence', severity: 'high', findings: [], inFlaggedChain: false, reconBurst: false, members: o.procId ? [o.procId] : [], sortSeq: 0, ...o });
     expect(flaggedIds(cap, [q({ procId: '1:1', persistenceId: null }), q({ procId: null, persistenceId: 'btm:7' }), q({ procId: null, persistenceId: 'btm:8' })]))
       .toEqual(['1:1', '2:1', '3:1']);
   });
