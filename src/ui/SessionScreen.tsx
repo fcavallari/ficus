@@ -8,7 +8,7 @@ import { StoreErrorBanner } from './StoreErrorBanner';
 import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
-import { captureInfo, checkTitles, coverage } from './triage-model';
+import { captureInfo, checkTitles, coverage, foldByRow } from './triage-model';
 import { ReportButton, ReportStatus, useReportExport } from './ReportButton';
 
 // The command the capture screen tells the user to run: the events the rules and the tree need.
@@ -205,7 +205,7 @@ function DropZone({ over }: { over: boolean }) {
 function Counts() {
   const c = useSession();
   if (!c.capture || !c.triage) return null;
-  const confirmed = [...c.verdicts.values()].filter(v => v.status === 'confirmed').length;
+  const confirmed = foldByRow([...c.verdicts.values()].filter(v => v.status === 'confirmed'), c.captures).length;
   return (
     <div className="counts" role="group" aria-label="Capture counts">
       <span className="lead">{fmt(c.triage.queue.length)} flagged</span>

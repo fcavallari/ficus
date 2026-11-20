@@ -227,6 +227,38 @@ function Timeline({ cap, p, anchor, onAnchor, onSelect }: {
   );
 }
 
+/**
+ * For a row that stands for several identical processes (a loop): says so and lists them, so any one can be opened. The
+ * findings and the verdict above and below are the same for all of them.
+ */
+function Repeats({ cap, item, current, onSelect }: { cap: LoadedCapture; item: QueueItem; current: ProcId; onSelect(id: ProcId): void }) {
+  const [all, setAll] = useState(false);
+  if (item.members.length < 2) return null;
+  const shown = all ? item.members : item.members.slice(0, SHOW_FIRST);
+  return (
+    <Section id="d-repeats" title={`Repeated ${item.members.length} times`}>
+      <p className="muted small">
+        {item.members.length} identical processes (same program, arguments, parent and findings) are listed as one row. A verdict you
+        set on the row applies to all of them; open one to see what it did.
+      </p>
+      <ul className="kids">
+        {shown.map(id => {
+          const proc = cap.model.processes.get(id);
+          const at = proc ? latestImage(proc)?.time ?? proc.startTime : null;
+          return (
+            <li key={id}>
+              <button className="link" aria-current={id === current ? 'true' : undefined} onClick={() => { onSelect(id); }}>
+                pid {proc?.pid ?? id}{at ? ` · ${fmtClock(at)}` : ''}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {item.members.length > SHOW_FIRST && !all && <button onClick={() => { setAll(true); }}>Show all {item.members.length}</button>}
+    </Section>
+  );
+}
+
 function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
   const [allKids, setAllKids] = useState(false);
   // The event the nearby panel is built around: one the person picked on the Timeline, else the most telling own event.
@@ -578,6 +610,7 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
         <Jumps />
       </header>
       <Why findings={findings} item={item} />
+      {item && <Repeats key={item.key} cap={cap} item={item} current={p.id} onSelect={onSelectProc} />}
       <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
       <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
       <Details cap={cap} p={p} own={own} onSelect={onSelectProc} />

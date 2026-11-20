@@ -5,6 +5,7 @@ import type { CaptureModel } from '../src/model/types';
 import { buildReport } from '../src/report/report';
 import { reportMarkdown } from '../src/report/markdown';
 import { flaggedIds } from '../src/ui/lanes';
+import { foldByRow } from '../src/ui/triage-model';
 import { GEN, input, verdict } from './report-fixture';
 import { children, HELPER, world } from './group-fixture';
 import { capture, img, persistenceItem, proc } from './synth';
@@ -101,4 +102,14 @@ describe('everything that finds a process\'s queue row goes through its members'
     expect(alone.captures[0]!.rows!.find(x => x.process?.procId === '200:1')!.repeats).toBe(1);
     expect(reportMarkdown(alone)).not.toContain('×');
   });
+});
+
+test('foldByRow folds the verdicts of one group, and leaves the rest alone', () => {
+  const m = world([...children(3), ...children(1, ['--other'], 300)]);
+  const cap = { fingerprint: 'fp', fileName: 'x.jsonl', size: 1, model: m, analysis: analyze(m) };
+  const vs = ['200:1', '201:1', '202:1', '300:1', '999:1'].map(id => verdict('fp', id, 'confirmed'));
+  const folded = foldByRow(vs, new Map([['fp', cap]]));
+  expect(folded.map(f => [f.verdict.procKey, f.repeats])).toEqual([['200:1', 3], ['300:1', 1], ['999:1', 1]]);
+  // A capture that is not loaded cannot be grouped: every verdict stands alone.
+  expect(foldByRow(vs, new Map()).map(f => f.repeats)).toEqual([1, 1, 1, 1, 1]);
 });
