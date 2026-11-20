@@ -178,7 +178,7 @@ export interface CoverageNote { id: string; level: 'warn' | 'info'; title: strin
  * signature, so they are known without exec events; command lines, working directories and script paths are not.
  */
 const ARG_CHECKS = ['fake-prompt', 'osascript-script', 'keychain-access', 'security-setting-change', 'dscl-authonly', 'launchctl-load',
-  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'reverse-shell', 'timestomp', 'download', 'archive-staging', 'recon', 'known-indicator'];
+  'quarantine-strip', 'payload-decode', 'shell-from-pipe', 'reverse-shell', 'timestomp', 'download', 'file-upload', 'archive-staging', 'recon', 'known-indicator'];
 const EXPECTED: { type: string; gives: string; checks: string[]; level?: 'warn' | 'info' }[] = [
   { type: 'exec', gives: 'command lines, working directories or script paths (programs and signatures still come from every event\'s process, so the location and signature checks can fire)',
     checks: [...ARG_CHECKS, 'odd-location-exec'] },

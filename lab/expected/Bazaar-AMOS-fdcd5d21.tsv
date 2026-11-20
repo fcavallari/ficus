@@ -16,7 +16,7 @@ Copies browser data (Login Data, Cookies, Web Data, Local Extension Settings of 
 Copies the Apple Notes database and its media with cp -r to /tmp/exfil	not stated	credential-store-copy	Objective-See blog 0x88, stage 2
 Reads the Safari keychain item with security find-generic-password -ga 'Safari' -w, as administrator	not stated	keychain-access	Objective-See blog 0x88, stage 2
 Archives what it collected with tar -czf /tmp/archive.tar.gz	not stated	archive-staging	Objective-See blog 0x88, stage 2
-Uploads the archive with curl -X POST -F file=@/tmp/archive.tar.gz to an /upload endpoint (eslogger cannot see the network)	not stated	-	Objective-See blog 0x88, exfiltration
+Uploads the archive with curl -X POST -F file=@/tmp/archive.tar.gz to an /upload endpoint (eslogger cannot see the network)	not stated	file-upload	Objective-See blog 0x88, exfiltration
 Writes a LaunchAgent named com.apple.mdworker.plist (label com.apple.systemupdate, RunAtLoad, KeepAlive) that runs the stealer	not stated	apple-masquerade	Objective-See blog 0x88, persistence
 Loads that LaunchAgent with launchctl load	not stated	launchctl-load	Objective-See blog 0x88, persistence
 Keeps the typed password in a hidden file, ~/.pwd	not stated	-	Objective-See blog 0x88, indicators
