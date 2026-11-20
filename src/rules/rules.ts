@@ -112,6 +112,12 @@ function hasAppleIdentity(img: Image): boolean {
   return img.isPlatform || (claimsApple(img) && !isAdhoc(img) && !!img.teamId && APPLE_TEAM_IDS.has(img.teamId));
 }
 
+/** At least this many renames to one new extension, inside the window, make a mass rename. First guess from one sample (HeartBreaker: 15 files in 1.3 s). */
+export const MASS_RENAME_MIN_FILES = 10;
+export const MASS_RENAME_WINDOW_MS = 10_000;
+/** Extensions of files that are written under a temporary name and renamed into place (downloads, editors, compilers): never a sign of encryption. */
+export const TEMP_EXTENSIONS: ReadonlySet<string> = new Set(['tmp', 'part', 'download', 'crdownload', 'swp', 'bak', 'partial']);
+const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Files renamed to or from a temporary name (\`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how downloads, editors and compilers save.`;
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
@@ -838,6 +844,13 @@ function dropCandidate(path: string): boolean {
   return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
 }
 
+/** The lower-cased extension of a file name (text after its last dot), or '' for none or a hidden file such as `.zshrc`. */
+function extensionOf(path: string): string {
+  const name = basename(path);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
@@ -1290,6 +1303,42 @@ export const RULES: Rule[] = [
         evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
         mitre: [...mitre].sort(),
       };
+    },
+  },
+  {
+    id: 'mass-rename', title: 'Many files renamed to one new extension', severity: 'high',
+    explanation: MASS_RENAME_EXPLANATION,
+    mitre: ['T1486'], scope: 'process',
+    matchProcess: (p) => {
+      // New extension (lower-cased) -> the renames to it, in time order.
+      const byExt = new Map<string, { ms: number; to: string }[]>();
+      for (const f of p.fileOps) {
+        if (f.kind !== 'rename' || f.toPath === undefined) continue;
+        const ms = timeMs(f.time);
+        const from = extensionOf(f.path);
+        const ext = extensionOf(f.toPath);
+        // Same extension kept, no extension, or a file written under a temporary name and renamed into place.
+        if (ms === null || ext === '' || ext === from || TEMP_EXTENSIONS.has(ext) || TEMP_EXTENSIONS.has(from)) continue;
+        const list = byExt.get(ext);
+        if (list) list.push({ ms, to: f.toPath });
+        else byExt.set(ext, [{ ms, to: f.toPath }]);
+      }
+      let best: { ext: string; count: number; spanMs: number; names: string[] } | null = null;
+      for (const [ext, list] of byExt) {
+        list.sort((a, b) => a.ms - b.ms);
+        // Sliding window: the most renames that fall within MASS_RENAME_WINDOW_MS of the one that opens it.
+        let lo = 0;
+        for (let hi = 0; hi < list.length; hi++) {
+          while (list[hi]!.ms - list[lo]!.ms > MASS_RENAME_WINDOW_MS) lo++;
+          const count = hi - lo + 1;
+          if (count >= MASS_RENAME_MIN_FILES && (best === null || count > best.count)) {
+            best = { ext, count, spanMs: list[hi]!.ms - list[lo]!.ms, names: list.slice(lo, lo + 3).map(x => basename(x.to)) };
+          }
+        }
+      }
+      if (best === null) return null;
+      const seconds = (best.spanMs / 1000).toFixed(1);
+      return { evidence: `${best.count} files renamed to .${best.ext} in ${seconds} s: ${best.names.join(', ')}` };
     },
   },
   {
