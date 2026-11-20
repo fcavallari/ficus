@@ -1,4 +1,4 @@
-import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
+import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
   CURL_SPEC, curlUploads, hasOpt, hasShortFlag, isBareIp, isLoopbackHost, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
@@ -850,6 +850,11 @@ function dropCandidate(path: string): boolean {
   return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
 }
 
+/** Where a file operation put a file: a create's path, or the destination of a rename or a copy (clone, copyfile). */
+const landedAt = (op: FileOp): string | undefined => (op.kind === 'create' ? op.path : op.kind === 'rename' || op.kind === 'copy' ? op.toPath : undefined);
+/** How evidence words what the operation did. */
+const landedVerb = (op: FileOp): string => (op.kind === 'create' ? 'created' : op.kind === 'copy' ? 'copied to' : 'renamed to');
+
 /** The lower-cased folder part of a path. */
 const dirOf = (path: string): string => normPath(path).slice(0, normPath(path).lastIndexOf('/')).toLowerCase();
 
@@ -966,7 +971,7 @@ export const RULES: Rule[] = [
       for (const op of p.fileOps) {
         // A temp file renamed over the plist counts through the rename's destination; a write (a `write` event, or a
         // `close` marked modified) is a plist that already existed, overwritten in place.
-        const target = op.kind === 'create' || op.kind === 'write' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = op.kind === 'write' ? op.path : landedAt(op);
         if (target === undefined) continue;
         const n = normPath(target);
         const key = n.toLowerCase();
@@ -1317,7 +1322,7 @@ export const RULES: Rule[] = [
       const seen = new Set<string>();
       // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder, by something other than a browser.
       for (const op of p.fileOps) {
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = landedAt(op);
         if (target === undefined) continue;
         const label = credentialStore(target);
         const where = oddLocation(target);
@@ -1327,14 +1332,14 @@ export const RULES: Rule[] = [
         const key = normPath(target).toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
+        evidence.push(`${landedVerb(op)} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
         labels.add(label);
         staged = true;
       }
       // (a2) A developer credential (an SSH key, cloud credentials) created or renamed into place away from where its own tool keeps it:
       // in a staging place, or by an unsigned, ad-hoc or oddly placed program (RustDoor cloned a home folder into ~/.docks).
       for (const op of p.fileOps) {
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = landedAt(op);
         const dev = target === undefined ? null : developerCredential(target);
         if (target === undefined || dev === null || dev.home) continue;
         const where = oddLocation(`${dev.base}/x`);   // the folder holding the tool's own folder: its own hidden folder is no hiding place
@@ -1343,8 +1348,28 @@ export const RULES: Rule[] = [
         const key = normPath(target).toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${dev.label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ', a copy away from its own folder'})`);
+        evidence.push(`${landedVerb(op)} ${target} (${dev.label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ', a copy away from its own folder'})`);
         labels.add(dev.label);
+        staged = true;
+      }
+      // (a3) A clone or copyfile whose source is a credential store or a developer credential, whatever the copy is called:
+      // into a staging place, or by an unsigned, ad-hoc or oddly placed program. The copy is the theft; its name proves nothing.
+      for (const op of p.fileOps) {
+        if (op.kind !== 'copy' || op.toPath === undefined) continue;
+        const store = credentialStore(op.path);
+        const dev = store === null ? developerCredential(op.path) : null;
+        const label = store ?? dev?.label ?? null;
+        if (label === null) continue;
+        if (isBrowserEngine(imageAt(p, op.seq)?.path ?? null)) continue;
+        const where = oddLocation(op.toPath);
+        const inStaging = where !== null && where.strength === 'strong' && STAGING_KINDS.has(where.kind);
+        if (!inStaging && !writerIsOdd(p)) continue;
+        // Its destination may already be listed above (named like a store, or a create beside the copy).
+        const key = normPath(op.toPath).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`copied ${op.path} to ${op.toPath} (${label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ''})`);
+        labels.add(label);
         staged = true;
       }
       // (b) A copy tool with a credential store among its arguments.
@@ -1445,7 +1470,7 @@ export const RULES: Rule[] = [
       if (p.images.findIndex(i => !i.inherited) === imgIndex) {
         const seen = new Set<string>();
         for (const f of p.fileOps) {
-          const target = f.kind === 'create' ? f.path : f.kind === 'rename' ? f.toPath : undefined;
+          const target = landedAt(f);
           if (!target) continue;
           const n = normPath(target);
           if (!APPLE_LABEL_PLIST.test(n) || seen.has(n.toLowerCase())) continue;
@@ -1454,7 +1479,7 @@ export const RULES: Rule[] = [
           // interpreter or curl is only copying someone's plist into place, however Apple-signed the tool is.
           if (writer === undefined || (isAppleSigned(writer) && !(USER_AGENT_DIR.test(n) && writer.isPlatform && GENERAL_TOOL.test(basename(writer.path))))) continue;
           seen.add(n.toLowerCase());
-          evidence.push(`${writer.path ?? 'a program'} ${f.kind === 'create' ? 'created' : 'renamed to'} ${target}`);
+          evidence.push(`${writer.path ?? 'a program'} ${landedVerb(f)} ${target}`);
           mitre.add('T1036.005');
           for (const t of launchMitre(launchKind(null, n))) mitre.add(t);
           if (USER_AGENT_DIR.test(n) || isUnsigned(writer) || isAdhoc(writer)) severity = 'high';
@@ -1578,9 +1603,9 @@ export const RULES: Rule[] = [
         for (const { indicator, arg } of matchArgs(img.args)) hits.push({ i: indicator, what: `names ${arg.length > 80 ? `${arg.slice(0, 80)}…` : arg} in its command line` });
       }
       for (const op of p.fileOps) {
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = landedAt(op);
         if (target === undefined) continue;
-        const verb = op.kind === 'create' ? 'created' : 'moved into place';
+        const verb = op.kind === 'create' ? 'created' : op.kind === 'copy' ? 'copied to' : 'moved into place';
         for (const i of matchPath(target)) hits.push({ i, what: `${verb} ${target}` });
         for (const { hit, mitre } of matchPlist(target)) hits.push({ i: hit, what: `${verb} the launch plist ${target}`, mitre });
       }

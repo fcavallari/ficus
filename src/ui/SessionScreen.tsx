@@ -13,7 +13,7 @@ import { ReportButton, ReportStatus, useReportExport } from './ReportButton';
 
 // The command the capture screen tells the user to run: the events the rules and the tree need.
 const CAPTURE_CMD =
-  'sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > capture.jsonl';
+  'sudo eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove > capture.jsonl';
 
 const TABS: { id: View; label: string }[] = [
   { id: 'triage', label: 'Triage' },
@@ -55,7 +55,7 @@ export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then dro
       <CommandBlock />
       <ul>
         <li><code>fork</code>, <code>exec</code> and <code>exit</code> build the tree and its lifetimes.</li>
-        <li><code>create</code>, <code>rename</code>, <code>unlink</code> and <code>setextattr</code> show what each process wrote.</li>
+        <li><code>create</code>, <code>rename</code>, <code>unlink</code>, <code>clone</code>, <code>copyfile</code> and <code>setextattr</code> show what each process wrote and copied.</li>
         <li><code>btm_*</code> records login items, launch agents and daemons.</li>
       </ul>
       <p className="small guide-pointer">First time? The <a href={guideHref('capture')}>guide</a> covers Full Disk Access,

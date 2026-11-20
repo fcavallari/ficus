@@ -75,7 +75,7 @@ function folderBrowser(dir: DirHandle | null): ReturnType<typeof vi.fn> {
   return pick;
 }
 
-const CMD = /sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove/;
+const CMD = /sudo eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove/;
 
 /**
  * `synthetic-lab-2.jsonl`, `-3`...: the synthetic lab with n trailing spaces on its first line. Each is its own capture

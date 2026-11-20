@@ -401,6 +401,10 @@ export function GuideScreen({ section }: { section: string }) {
                   were handed to launchd.</td></tr>
                 <tr><td><C>create</C>, <C>rename</C></td><td>A file was created, or moved into place.</td><td>Dropped payloads,
                   launch agent plists, archives staged for upload.</td></tr>
+                <tr><td><C>clone</C>, <C>copyfile</C></td><td>A file was copied: an APFS clone (what <C>cp</C> and Finder
+                  use) or a copy through the copyfile call. The source stays.</td><td>A stealer that copies your folders instead of
+                  reading them leaves no <C>cp</C> command to read: RustDoor cloned a whole home folder, SSH keys included, into a
+                  hidden folder.</td></tr>
                 <tr><td><C>unlink</C></td><td>A file was deleted.</td><td>Clean-up: the staging folder removed after the
                   upload.</td></tr>
                 <tr><td><C>setextattr</C></td><td>An extended attribute was written on a file.</td><td>The quarantine flag

@@ -11,7 +11,7 @@ export interface ProcInfo {               // normalized es process object
   startTime: string | null;
   ids: Ids | null;                          // null when the audit_token lacks any of the four
 }
-export type EventKind = 'fork' | 'exec' | 'exit' | 'create' | 'rename' | 'unlink'
+export type EventKind = 'fork' | 'exec' | 'exit' | 'create' | 'rename' | 'unlink' | 'copy'
   | 'write' | 'setextattr' | 'btm_add' | 'btm_remove' | 'other';
 export interface BtmInfo { plistPath: string | null; executablePath: string | null; appPath: string | null;
   itemType: number | null;                                  // es_btm_item_type_t: 0 user item, 1 app, 2 login item, 3 agent, 4 daemon
@@ -44,10 +44,14 @@ export interface Image {
   time: string | null; seq: number;   // for an inherited image: the fork event's time and seq
   inherited: boolean;   // true for the copy a fork child starts with; rules skip these
 }
-export interface FileOp { kind: 'create' | 'rename' | 'unlink' | 'write' | 'setextattr';
+/**
+ * `copy`: a `clone` (APFS clonefile) or `copyfile` event: `path` is the source and `toPath` the destination, as for a rename,
+ * but the source stays. This is how `cp`, Finder and a stealer's own code copy files on a modern Mac.
+ */
+export interface FileOp { kind: 'create' | 'rename' | 'unlink' | 'write' | 'setextattr' | 'copy';
   path: string; toPath?: string; xattr?: string; time: string; seq: number;
-  /** A write seen only as a `close` event marked modified. */
-  via?: 'close' }
+  /** A write seen only as a `close` event marked modified; a copy made by `clone` or by `copyfile`. */
+  via?: 'close' | 'clone' | 'copyfile' }
 export interface Process {
   id: ProcId; pid: number; ghost: boolean; images: Image[];
   forkParent: ProcId | null;
