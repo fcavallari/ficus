@@ -45,7 +45,7 @@ function lastExec(images: ReportImage[]): ReportImage | undefined {
 
 function row(r: ReportRow, fileName: string): string[] {
   const p = r.process;
-  const head = [`### ${r.n}. ${text(r.name)}`, p ? ` (pid ${p.pid})` : '', r.findings[0] ? `: ${text(r.findings[0].title)}` : ''].join('');
+  const head = [`### ${r.n}. ${text(r.name)}${r.repeats > 1 ? ` ×${r.repeats}` : ''}`, p ? ` (pid ${p.pid})` : '', r.findings[0] ? `: ${text(r.findings[0].title)}` : ''].join('');
   const out = [head, ''];
   const v = r.verdict;
   out.push(`- **User's verdict:** ${v ? VERDICT_WORD[v.status] : 'Not reviewed'}${v?.note ? `, note: “${text(v.note)}”` : ''}`);

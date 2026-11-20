@@ -553,7 +553,8 @@ export function GuideScreen({ section }: { section: string }) {
               <li><strong>Drop the capture</strong> into the session. More captures of the same Mac can join it.</li>
               <li><strong>Triage.</strong> The queue lists what the rules flagged, high first. Pick a row and read <em>Why
                 flagged</em>, then <em>Launched by</em>, which draws each root of the process side by side, then <em>What it
-                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.</li>
+                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.
+                A row marked <C>×528</C> stands for 528 identical processes, such as a loop; a verdict on it covers all of them.</li>
               <li><strong>Tree.</strong> Every process, hung from the root you choose. Unflagged processes fold into grey rows;
                 search keeps the matches and their ancestors. <em>Back to Triage</em> returns to the row you came from.</li>
               <li><strong>Suspicious.</strong> The processes you marked suspicious across every capture, and the export: the session as
@@ -700,8 +701,9 @@ node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder>
               <tbody>
                 <tr><td>KoiStealer, a stealer</td><td>Looped 528 times on a fake-password helper that kept crashing, each time
                   running <C>dscl . authonly</C> with an empty answer.</td>
-                  <td><RuleChip id="dscl-authonly" /> and <RuleChip id="odd-location-exec" />, but 1,056 items in the triage
-                    queue for one program: nothing groups the repeats.</td></tr>
+                  <td><RuleChip id="dscl-authonly" /> and <RuleChip id="odd-location-exec" />, and one program
+                    that once filled the triage queue with 1,056 items. Identical repeats are now one row with a count, so
+                    it is three rows.</td></tr>
                 <tr><td>HeartBreaker, ransomware</td><td>Encrypted 15 files in 1.3 seconds, wrote a ransom note and a launch
                   agent, then ran <C>curl … | sh</C> to install Rust.</td>
                   <td><RuleChip id="persistence-item" /> and <RuleChip id="shell-from-pipe" />, and nothing for the encryption

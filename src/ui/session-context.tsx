@@ -6,6 +6,7 @@ import type { Image, ProcId } from '../model/types';
 import { basename, latestImage, persistenceItem } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
+import { queueItemFor } from '../rules/group';
 import { importSession, parseExport, reimportSession, type SessionExport } from '../session/export';
 import { forgetCaptureFiles, handlesSupported, rememberCaptureFile, rememberedCaptureFiles, reopenCaptureFile, type CaptureFileHandle } from '../session/capture-files';
 import { folderSupported, pickFolder, rememberedFolder, rememberFolder, type DirHandle } from '../session/folder';
@@ -18,7 +19,11 @@ import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from './triage-mode
 export type View = 'triage' | 'tree' | 'timeline' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
 /** The last verdict pressed (button or key), so it can be taken back: on which capture, from what, to what. */
-export interface LastVerdict { procKey: string; fingerprint: string; from: Status; to: Status; name: string }
+export interface LastVerdict {
+  procKey: string; fingerprint: string; from: Status; to: Status; name: string;
+  /** Every process the verdict was written to, with the status each had before; more than one for a grouped row. */
+  restore: { procKey: string; status: Status }[];
+}
 
 export interface SessionCtx {
   store: Store;
@@ -500,19 +505,25 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
       save(procId, fingerprint, prev => ({ status, note: note ?? prev?.note ?? '' })),
     [save]);
   const toggleVerdict = useCallback((procId: ProcId, pressed: 'confirmed' | 'benign', fingerprint?: string) => {
-    let change = null as { from: Status; to: Status } | null;
-    // save() runs `change` synchronously, before its first await: the step is known by the time it returns.
-    const done = save(procId, fingerprint, prev => {
-      const from = prev?.status ?? 'unreviewed';
-      const to = toggleStatus(from, pressed);
-      change = { from, to };
-      return { status: to, note: prev?.note ?? '' };
-    });
     const fp = fingerprint ?? latest.current.active;
-    if (change !== null && fp !== null) {
-      const { from, to } = change;
-      const name = verdictRef.current.find(x => x.fingerprint === fp && x.procKey === procId)?.snapshot.name ?? procId;
-      setLastVerdict({ procKey: procId, fingerprint: fp, from, to, name });
+    // A grouped row stands for several identical processes: the verdict goes to all of them, and the row's own status
+    // (the one toggled) is its first member's. A process that is not in a group covers just itself.
+    const cap = fp ? latest.current.captures.get(fp) : undefined;
+    const row = cap ? queueItemFor(cap.analysis, procId) : undefined;
+    const covered = row && row.members.length > 1 ? row.members : [procId];
+    const statusOf = (id: ProcId): Status => verdictRef.current.find(x => x.fingerprint === fp && x.procKey === id)?.status ?? 'unreviewed';
+    const restore = covered.map(id => ({ procKey: id, status: statusOf(id) }));
+    const from = statusOf(covered[0]!);
+    const to = toggleStatus(from, pressed);
+    // save() runs this synchronously, before its first await, and only when it goes on to write: that is when the press counts.
+    let wrote = false;
+    const done = Promise.all(covered.map(id => save(id, fingerprint, prev => {
+      wrote = true;
+      return { status: to, note: prev?.note ?? '' };
+    }))).then(() => undefined);
+    if (wrote && fp !== null) {
+      const name = verdictRef.current.find(x => x.fingerprint === fp && x.procKey === covered[0])?.snapshot.name ?? covered[0]!;
+      setLastVerdict({ procKey: covered[0]!, fingerprint: fp, from, to, name, restore });
     }
     return done;
   }, [save]);
@@ -523,7 +534,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     if (!lv) return;
     setLastVerdict(null);
     if (lv.fingerprint === latest.current.active) selectKey(lv.procKey);
-    await save(lv.procKey, lv.fingerprint, prev => ({ status: lv.from, note: prev?.note ?? '' }));
+    await Promise.all(lv.restore.map(r => save(r.procKey, lv.fingerprint, prev => ({ status: r.status, note: prev?.note ?? '' }))));
   }, [save, selectKey]);
   const setNote = useCallback(
     (procId: ProcId, note: string, fingerprint: string) =>

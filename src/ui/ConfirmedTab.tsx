@@ -3,6 +3,7 @@ import { exportSession, saveFileName } from '../session/export';
 import { folderSupported, permitted, writeFile } from '../session/folder';
 import { downloadText } from './download';
 import { useSession } from './session-context';
+import { foldByRow } from './triage-model';
 
 /** File input that imports a session export as a new session. */
 export function ImportSession() {
@@ -96,9 +97,11 @@ export function ConfirmedTab() {
   const { save: doExport, error } = saver;
   const { includeEnv, redactArgs } = c.exportOpts;
   const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
-  const confirmed = c.allVerdicts
-    .filter(v => v.status === 'confirmed')
-    .sort((a, b) => fileName(a.fingerprint).localeCompare(fileName(b.fingerprint)) || a.snapshot.name.localeCompare(b.snapshot.name));
+  // A grouped row's processes are listed once, with how many there are.
+  const folded = foldByRow(c.allVerdicts.filter(v => v.status === 'confirmed'), c.captures)
+    .sort((a, b) => fileName(a.verdict.fingerprint).localeCompare(fileName(b.verdict.fingerprint)) || a.verdict.snapshot.name.localeCompare(b.verdict.snapshot.name));
+  const confirmed = folded.map(f => f.verdict);
+  const repeatsOf = new Map(folded.map(f => [f.verdict, f.repeats]));
 
   /** exportSession adds process details only for loaded captures; a launch item (key `i:…`) has no process, so none to add. */
   const isLaunchItem = (key: string): boolean => key.startsWith('i:');
@@ -118,6 +121,7 @@ export function ConfirmedTab() {
                 <div className="row">
                   {v.snapshot.severity && <span className={`badge sev-${v.snapshot.severity}`} title="Severity when the verdict was saved">{v.snapshot.severity}</span>}
                   <strong>{v.snapshot.name}</strong>
+                  {(repeatsOf.get(v) ?? 1) > 1 && <span className="reps" title="Identical processes, one row in the queue: the verdict is on all of them">×{repeatsOf.get(v)}</span>}
                   <span className="chip">{fileName(v.fingerprint)}</span>
                 </div>
                 {v.snapshot.path && <code className="small">{[v.snapshot.path, ...(v.snapshot.args?.slice(1) ?? [])].join(' ')}</code>}
