@@ -32,6 +32,8 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1553': 'Subvert Trust Controls',
   'T1553.001': 'Gatekeeper Bypass',
   'T1553.004': 'Install Root Certificate',
+  'T1552.001': 'Credentials In Files',
+  'T1552.004': 'Private Keys',
   'T1555.001': 'Keychain',
   'T1555.003': 'Credentials from Web Browsers',
   'T1557': 'Adversary-in-the-Middle',

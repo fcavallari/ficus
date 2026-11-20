@@ -5,7 +5,7 @@ import {
   SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, urlHost, WGET_SPEC, wgetUploads, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
-import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
+import { COPY_TOOLS, credentialStore, developerCredential, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
 import { INDICATOR_FAMILIES, matchArgs, matchPath, matchPlist, matchSigning, matchTeam, type Indicator } from './indicators';
 import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
@@ -67,8 +67,10 @@ const STAGING_KINDS: ReadonlySet<LocationKind> = new Set<LocationKind>(['temp', 
 const CREDENTIAL_MITRE: Record<string, string> = {
   'login keychain': 'T1555.001', 'saved Wi-Fi/keychain data': 'T1555.001',
   'browser logins or cookies': 'T1555.003', 'Firefox logins': 'T1555.003',
+  'SSH private key': 'T1552.004', 'AWS credentials': 'T1552.001', 'Kubernetes credentials': 'T1552.001', 'Docker credentials': 'T1552.001',
+  'Google Cloud credentials': 'T1552.001', 'saved passwords (netrc or git)': 'T1552.001',
 };
-const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
+const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, the Notes database, or the files a developer\'s tools keep (SSH private keys, AWS, Kubernetes, Docker and Google Cloud credentials, netrc and git passwords). Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored, and so is a developer\'s tool writing its own file where it belongs (ssh-keygen and `aws configure` make `~/.ssh/id_ed25519` and `~/.aws/credentials`): only a copy somewhere else, by an unsigned, ad-hoc or oddly placed program or into a staging place, counts. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
 
 /** The path an argument names: `--file=/x` is `/x`, an option alone names nothing. */
 function pathArgument(a: string): string | null {
@@ -84,7 +86,8 @@ function inStrongPlace(path: string): boolean {
 
 /** The writer's judgment: unsigned, ad-hoc signed, or run from a strong odd place. */
 function writerIsOdd(p: Process): boolean {
-  const last = [...p.images].reverse().find(i => !i.inherited);
+  // A process that forked and never exec'd runs its parent's program (the copy it started with), so that is its program.
+  const last = [...p.images].reverse().find(i => !i.inherited) ?? p.images[p.images.length - 1];
   if (!last) return false;
   return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
 }
@@ -1289,7 +1292,7 @@ export const RULES: Rule[] = [
   {
     id: 'credential-store-copy', title: 'Credential store copied', severity: 'med', levels: ['high', 'med'],
     explanation: CREDENTIAL_COPY_EXPLANATION,
-    mitre: ['T1555.001', 'T1555.003', 'T1005', 'T1074.001'], scope: 'process',
+    mitre: ['T1555.001', 'T1555.003', 'T1552.001', 'T1552.004', 'T1005', 'T1074.001'], scope: 'process',
     matchProcess: (p) => {
       const evidence: string[] = [];
       const labels = new Set<string>();
@@ -1312,6 +1315,22 @@ export const RULES: Rule[] = [
         labels.add(label);
         staged = true;
       }
+      // (a2) A developer credential (an SSH key, cloud credentials) created or renamed into place away from where its own tool keeps it:
+      // in a staging place, or by an unsigned, ad-hoc or oddly placed program (RustDoor cloned a home folder into ~/.docks).
+      for (const op of p.fileOps) {
+        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const dev = target === undefined ? null : developerCredential(target);
+        if (target === undefined || dev === null || dev.home) continue;
+        const where = oddLocation(`${dev.base}/x`);   // the folder holding the tool's own folder: its own hidden folder is no hiding place
+        const inStaging = where !== null && where.strength === 'strong' && STAGING_KINDS.has(where.kind);
+        if (!inStaging && !writerIsOdd(p)) continue;
+        const key = normPath(target).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${dev.label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ', a copy away from its own folder'})`);
+        labels.add(dev.label);
+        staged = true;
+      }
       // (b) A copy tool with a credential store among its arguments.
       for (const img of p.images) {
         if (img.inherited || !COPY_TOOLS.has(basename(img.path)) || !img.args) continue;
@@ -1322,6 +1341,17 @@ export const RULES: Rule[] = [
         evidence.push(`${cmdline(img)} (${found[0]!.l})`);
         // Another argument in a strong place: the copy goes to, or comes from, a staging place.
         if (found.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) { staged = true; copyToPlace = true; }
+      }
+      // (b2) The same tools naming a developer credential and, apart from it, a staging place: `cp ~/.ssh/id_rsa /tmp/loot/`.
+      // Reading one alone (`cat ~/.aws/credentials`) is what developers do, so it is not enough.
+      for (const img of p.images) {
+        if (img.inherited || !COPY_TOOLS.has(basename(img.path)) || !img.args) continue;
+        const named = img.args.slice(1).flatMap(a => { const x = pathArgument(a); return x === null ? [] : [resolvePath(x, img.cwd)]; });
+        const dev = named.flatMap((x, i) => { const d = developerCredential(x); return d === null ? [] : [{ i, d }]; });
+        if (dev.length === 0 || !dev.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) continue;
+        for (const { d } of dev) labels.add(d.label);
+        evidence.push(`${cmdline(img)} (${dev[0]!.d.label})`);
+        staged = true; copyToPlace = true;
       }
       if (evidence.length === 0) return null;
       const mitre = new Set(['T1005']);
