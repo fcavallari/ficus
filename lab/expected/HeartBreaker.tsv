@@ -6,9 +6,10 @@
 # own sample: the sha256 is the VirusTotal ID the article links. The article states no MITRE ATT&CK IDs, so the mitre column says
 # "not stated". It states no network activity, so none is expected. The persistence row names persistence-item (a launch item
 # registered with the background task manager); persistence-plist is the rule for a plist written with no registration event.
+# The encryption row first had `-` (no rule): the run showed that gap, and mass-rename was written for it. The rule is now named here.
 behavior	mitre	rule	source
 Writes a LaunchAgent plist (~/Library/LaunchAgents/com.network.startup.plist, RunAtLoad) that runs its own binary at login	not stated	persistence-item	Objective-See blog 0x8A, persistence section
-Encrypts every file under ~/Downloads with AES-256-GCM (truncates the original, writes nonce, ciphertext and tag) and renames it to add .heartbreaker	not stated	-	Objective-See blog 0x8A, encryption section
+Encrypts every file under ~/Downloads with AES-256-GCM (truncates the original, writes nonce, ciphertext and tag) and renames it to add .heartbreaker	not stated	mass-rename	Objective-See blog 0x8A, encryption section
 Writes a ransom note named README.txt on the Desktop	not stated	-	Objective-See blog 0x8A, ransom note
 Installs Rust (cargo) when it is missing; the article does not say how	not stated	-	Objective-See blog 0x8A, main routine
 Builds a modified copy of itself with cargo build --release in a temporary project, then renames its running executable and copies the new build into place (metamorphism)	not stated	-	Objective-See blog 0x8A, metamorphism section

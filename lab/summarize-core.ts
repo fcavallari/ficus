@@ -53,7 +53,7 @@ export interface Summary {
   otherEvents: Record<string, number>;
   /** Numbers missing from the capture's sequence: events the recorder dropped. */
   seqGaps: number;
-  /** Items in Ficus's triage queue for this capture: what a person would have to go through. */
+  /** Rows in Ficus's triage queue for this capture: what a person would have to go through (identical repeats are one row). */
   queueItems: number;
   /** True when at least one exec event carried `fds`, which the stdin checks (shell-from-pipe, the reverse-shell socket check) read. */
   stdinVisible: boolean;

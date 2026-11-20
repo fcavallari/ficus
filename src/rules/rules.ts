@@ -115,6 +115,12 @@ function hasAppleIdentity(img: Image): boolean {
   return img.isPlatform || (claimsApple(img) && !isAdhoc(img) && !!img.teamId && APPLE_TEAM_IDS.has(img.teamId));
 }
 
+/** At least this many renames to one new extension, inside the window, make a mass rename. First guess from one sample (HeartBreaker: 15 files in 1.3 s). */
+export const MASS_RENAME_MIN_FILES = 10;
+export const MASS_RENAME_WINDOW_MS = 10_000;
+/** Extensions of files that are written under a temporary name and renamed into place (downloads, editors, compilers): never a sign of encryption. */
+export const TEMP_EXTENSIONS: ReadonlySet<string> = new Set(['tmp', 'part', 'download', 'crdownload', 'swp', 'bak', 'partial']);
+const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Only files that already existed and are renamed where they stand count. Files the program created itself and moved into place (a temporary file renamed to its real name, or moved to another folder, or named \`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how macOS itself, downloads, editors and compilers save.`;
 const FILE_UPLOAD_EXPLANATION = 'curl or wget sent a local file to a server: `-T`, `-F name=@file`, `--data-binary @file` and the like. Stealers do this last, posting the archive they staged to their own server. Developers and build tools upload files all the time, so look at the file and the server: a file from a temporary, Downloads or hidden folder, an archive, or a server that is a bare IP address (no name) makes it high; anything else is medium. A server on this Mac (localhost, 127.0.0.1) is ignored.';
 /** Archives and disk images: what a stealer packs its loot into. */
 const ARCHIVE_NAME = /\.(?:zip|tar|tgz|gz|bz2|xz|7z|rar|zst|dmg)$/i;
@@ -844,6 +850,16 @@ function dropCandidate(path: string): boolean {
   return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
 }
 
+/** The lower-cased folder part of a path. */
+const dirOf = (path: string): string => normPath(path).slice(0, normPath(path).lastIndexOf('/')).toLowerCase();
+
+/** The lower-cased extension of a file name (text after its last dot), or '' for none or a hidden file such as `.zshrc`. */
+function extensionOf(path: string): string {
+  const name = basename(path);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
@@ -1361,6 +1377,48 @@ export const RULES: Rule[] = [
         evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
         mitre: [...mitre].sort(),
       };
+    },
+  },
+  {
+    id: 'mass-rename', title: 'Many files renamed to one new extension', severity: 'high',
+    explanation: MASS_RENAME_EXPLANATION,
+    mitre: ['T1486'], scope: 'process',
+    matchProcess: (p) => {
+      // New extension (lower-cased) -> the renames to it, in time order.
+      const byExt = new Map<string, { ms: number; to: string }[]>();
+      const created = new Set<string>();   // files this process made itself, so far
+      for (const f of p.fileOps) {
+        if (f.kind === 'create') { created.add(normPath(f.path).toLowerCase()); continue; }
+        if (f.kind !== 'rename' || f.toPath === undefined) continue;
+        const ms = timeMs(f.time);
+        const from = extensionOf(f.path);
+        const ext = extensionOf(f.toPath);
+        // Same extension kept, no extension, or a file written under a temporary name and renamed into place.
+        if (ms === null || ext === '' || ext === from || TEMP_EXTENSIONS.has(ext) || TEMP_EXTENSIONS.has(from)) continue;
+        // Encrypting in place renames files that already existed, where they stand. Daemons save differently: they create
+        // a temporary file (`tmp.PHod7U`, `name.plist.a1B2c3`) and move it into place, often into another folder. The rule
+        // reads no relation between the two names, because a cleaned capture gives every name its own placeholder.
+        if (dirOf(f.path) !== dirOf(f.toPath) || created.has(normPath(f.path).toLowerCase())) continue;
+        const list = byExt.get(ext);
+        if (list) list.push({ ms, to: f.toPath });
+        else byExt.set(ext, [{ ms, to: f.toPath }]);
+      }
+      let best: { ext: string; count: number; spanMs: number; names: string[] } | null = null;
+      for (const [ext, list] of byExt) {
+        list.sort((a, b) => a.ms - b.ms);
+        // Sliding window: the most renames that fall within MASS_RENAME_WINDOW_MS of the one that opens it.
+        let lo = 0;
+        for (let hi = 0; hi < list.length; hi++) {
+          while (list[hi]!.ms - list[lo]!.ms > MASS_RENAME_WINDOW_MS) lo++;
+          const count = hi - lo + 1;
+          if (count >= MASS_RENAME_MIN_FILES && (best === null || count > best.count)) {
+            best = { ext, count, spanMs: list[hi]!.ms - list[lo]!.ms, names: list.slice(lo, lo + 3).map(x => basename(x.to)) };
+          }
+        }
+      }
+      if (best === null) return null;
+      const seconds = (best.spanMs / 1000).toFixed(1);
+      return { evidence: `${best.count} files renamed to .${best.ext} in ${seconds} s: ${best.names.join(', ')}` };
     },
   },
   {

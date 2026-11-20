@@ -3,6 +3,7 @@ import { displayName } from '../model/relations';
 import type { CaptureModel, CaptureStats, Process } from '../model/types';
 import { basename, persistenceItem } from '../model/util';
 import type { QueueItem } from '../rules/engine';
+import { queueItemFor } from '../rules/group';
 import { RULES, SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { Status, Verdict } from '../session/store';
 
@@ -18,6 +19,28 @@ export const DEFAULT_FILTERS: TriageFilters = { status: 'all', sev: new Set<Seve
 
 /** Verdicts are keyed by the process id; a persistence-only item has none, so it uses its queue key (`i:<id>`). */
 export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;
+
+/**
+ * Verdicts as the screen counts them. Verdicts are stored per process, but the processes of one grouped row are one
+ * thing to look at: they fold into one entry (the first one met), with how many verdicts it stands for. A verdict whose
+ * capture is not loaded, or whose process is on a row of its own, stays as it is.
+ */
+export function foldByRow(verdicts: Verdict[], captures: ReadonlyMap<string, LoadedCapture>): { verdict: Verdict; repeats: number }[] {
+  const out: { verdict: Verdict; repeats: number }[] = [];
+  const seen = new Map<string, { verdict: Verdict; repeats: number }>();
+  for (const verdict of verdicts) {
+    const cap = captures.get(verdict.fingerprint);
+    const row = cap ? queueItemFor(cap.analysis, verdict.procKey) : undefined;
+    if (!row || row.members.length < 2) { out.push({ verdict, repeats: 1 }); continue; }
+    const key = `${verdict.fingerprint}|${row.key}`;
+    const entry = seen.get(key);
+    if (entry) { entry.repeats++; continue; }
+    const first = { verdict, repeats: 1 };
+    seen.set(key, first);
+    out.push(first);
+  }
+  return out;
+}
 
 /** Pressing the verdict a queue item already has takes it back to unreviewed (the note is kept). */
 export const toggleStatus = (current: Status, pressed: 'confirmed' | 'benign'): Status => (current === pressed ? 'unreviewed' : pressed);
@@ -185,8 +208,8 @@ const EXPECTED: { type: string; gives: string; checks: string[]; level?: 'warn' 
   { type: 'fork', gives: 'which process instance forked each child, or when. Each process is still tied to its parent through its own parent pid and token, which can point at the wrong process when a pid was reused, and a child that ran nothing of its own may be missing',
     checks: [], level: 'warn' },
   { type: 'exit', gives: 'when processes ended', checks: [] },
-  { type: 'create', gives: 'files written', checks: ['persistence-plist', 'download', 'known-indicator'] },
-  { type: 'rename', gives: 'files moved into place', checks: ['persistence-plist', 'known-indicator'] },
+  { type: 'create', gives: 'files written', checks: ['persistence-plist', 'download', 'known-indicator', 'mass-rename'] },
+  { type: 'rename', gives: 'files moved into place', checks: ['persistence-plist', 'known-indicator', 'mass-rename'] },
   { type: 'unlink', gives: 'files deleted', checks: [] },
   { type: 'setextattr', gives: 'extended attributes set on files', checks: [] },
   { type: 'btm_launch_item_add', gives: 'launch items, login items, agents and daemons registered', checks: ['persistence-item', 'persistence-plist'] },
