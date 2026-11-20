@@ -43,7 +43,7 @@ export interface TimelineEvent {
 /** The eslogger event type each kind came from, as the capture names it. */
 export const RAW_TYPE: Record<TimelineKind, string> = {
   fork: 'fork', exec: 'exec', image: 'exec not captured', spawn: 'fork', exit: 'exit',
-  create: 'create', rename: 'rename', unlink: 'unlink', write: 'write', setextattr: 'setextattr',
+  create: 'create', rename: 'rename', unlink: 'unlink', copy: 'clone / copyfile', write: 'write', setextattr: 'setextattr',
   btm_add: 'btm_launch_item_add', btm_remove: 'btm_launch_item_remove',
 };
 

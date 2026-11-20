@@ -1,7 +1,7 @@
 import type { CaptureModel, ProcId } from '../model/types';
 import { normPath, timeMs } from '../model/util';
 
-/** A file that appeared at `path`: created there, or renamed into place. */
+/** A file that appeared at `path`: created there, renamed into place, or copied there (clone or copyfile). */
 export interface DropRecord { path: string; writer: ProcId; seq: number; ms: number | null }
 export interface UnlinkRecord { seq: number; ms: number | null }
 /** What the capture saw happen to files, by `normPath(path).toLowerCase()`; each list is in capture order. */
@@ -25,7 +25,7 @@ export function fileLedger(m: CaptureModel): FileLedger {
       const ms = timeMs(op.time);
       if (op.kind === 'unlink') push(ledger.unlinks, op.path, { seq: op.seq, ms });
       else if (op.kind === 'create') push(ledger.drops, op.path, { path: op.path, writer: p.id, seq: op.seq, ms });
-      else if (op.kind === 'rename' && op.toPath !== undefined) push(ledger.drops, op.toPath, { path: op.toPath, writer: p.id, seq: op.seq, ms });
+      else if ((op.kind === 'rename' || op.kind === 'copy') && op.toPath !== undefined) push(ledger.drops, op.toPath, { path: op.toPath, writer: p.id, seq: op.seq, ms });
     }
   }
   ledgers.set(m, ledger);

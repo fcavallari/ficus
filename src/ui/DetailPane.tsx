@@ -137,7 +137,7 @@ function Dl({ rows }: { rows: [string, ReactNode][] }) {
 
 const COUNT_WORDS: [TimelineKind[], string][] = [
   [['exec'], 'exec'], [['image'], 'program change without exec'], [['spawn'], 'fork'],
-  [['create', 'rename', 'unlink', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
+  [['create', 'rename', 'unlink', 'copy', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
 ];
 
 function Details({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
