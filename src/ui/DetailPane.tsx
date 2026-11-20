@@ -4,6 +4,7 @@ import { ancestry, childrenIndex, displayName, type ParentMode } from '../model/
 import type { ProcId, Process } from '../model/types';
 import { basename, latestImage, persistenceItem } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
+import { queueItemFor } from '../rules/group';
 import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
@@ -237,7 +238,7 @@ function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
   const kids = useMemo(() => childrenIndex(cap.model, 'original').get(p.id) ?? [], [cap, p.id]);
   const severity = useMemo(() => {
     const m = new Map<ProcId, Severity>();
-    for (const q of cap.analysis.queue) if (q.procId !== null) m.set(q.procId, q.severity);
+    for (const q of cap.analysis.queue) if (q.procId !== null) for (const id of q.members) m.set(id, q.severity);
     return m;
   }, [cap]);
   const kidsShown = allKids ? kids : kids.slice(0, SHOW_FIRST);
@@ -544,7 +545,7 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
   const { verdicts } = useSession();
   const img = latestImage(p);
   const findings = cap.analysis.findings.get(p.id) ?? [];
-  const item = cap.analysis.queue.find(x => x.procId === p.id);
+  const item = queueItemFor(cap.analysis, p.id);
   const own = useMemo(() => processTimeline(cap, p.id, false).events, [cap, p.id]);
   const execArgs = [...p.images].reverse().find(i => i.args !== null)?.args ?? null;
   const commandLine = execArgs && execArgs.length > 0 ? fmtArgs(execArgs) : null;

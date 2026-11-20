@@ -127,7 +127,7 @@ function TimelineInner({ cap, queue }: { cap: LoadedCapture; queue: QueueItem[] 
   const L = useMemo(() => buildLanes(cap, { mode, scope, flagged, selected: focusRoot }), [cap, mode, scope, flagged, focusRoot]);
   const badge = useMemo(() => {
     const m = new Map<ProcId, Severity>();
-    for (const q of cap.analysis.queue) if (q.procId !== null) m.set(q.procId, q.severity);
+    for (const q of cap.analysis.queue) if (q.procId !== null) for (const id of q.members) m.set(id, q.severity);
     return m;
   }, [cap]);
   const laneOf = useMemo(() => new Map(L.lanes.map((l, i) => [l.id, i])), [L]);

@@ -2,6 +2,10 @@ import { describe, expect, test } from 'vitest';
 import { analyze } from '../src/rules/engine';
 import { queueItemFor } from '../src/rules/group';
 import type { CaptureModel, Image, PersistenceItem, Process } from '../src/model/types';
+import { buildReport } from '../src/report/report';
+import { reportMarkdown } from '../src/report/markdown';
+import { flaggedIds } from '../src/ui/lanes';
+import { GEN, input, verdict } from './report-fixture';
 import { capture, img, persistenceItem, proc } from './synth';
 
 // Runs of identical queued processes (a crash loop: the same helper started 500 times) are one queue row with all the
@@ -75,5 +79,34 @@ describe('queue grouping', () => {
     const a = analyze(m);
     expect(Date.now() - t).toBeLessThan(5000);
     expect(a.queue.find(q => q.procId === '200:1')!.members).toHaveLength(5000);
+  });
+});
+
+describe('everything that finds a process\'s queue row goes through its members', () => {
+  const lab = (m: CaptureModel) => ({ fingerprint: 'fp', fileName: 'x.jsonl', size: 1, model: m, analysis: analyze(m) });
+
+  test('the timeline lanes keep every member of a group', () => {
+    const m = world(children(3));
+    const ids = flaggedIds(lab(m), analyze(m).queue);
+    expect(ids).toEqual(expect.arrayContaining(['200:1', '201:1', '202:1']));
+  });
+
+  test('a verdict on a member is a verdict on a queued process, not a user-marked extra', () => {
+    const m = world(children(3));
+    const report = buildReport(input({
+      loaded: new Map([['fp', lab(m)]]), verdicts: [verdict('fp', '201:1', 'benign')],
+    }), { redactArgs: false, generated: GEN });
+    expect(report.captures[0]!.userMarked).toEqual([]);
+  });
+
+  test('the report names the repeat count on the row, and only on a grouped row', () => {
+    const m = world(children(3));
+    const r = buildReport(input({ loaded: new Map([['fp', lab(m)]]) }), { redactArgs: false, generated: GEN });
+    const grouped = r.captures[0]!.rows!.find(x => x.process?.procId === '200:1')!;
+    expect(grouped.repeats).toBe(3);
+    expect(reportMarkdown(r)).toContain('×3');
+    const alone = buildReport(input({ loaded: new Map([['fp', lab(world(children(1)))]]) }), { redactArgs: false, generated: GEN });
+    expect(alone.captures[0]!.rows!.find(x => x.process?.procId === '200:1')!.repeats).toBe(1);
+    expect(reportMarkdown(alone)).not.toContain('×');
   });
 });

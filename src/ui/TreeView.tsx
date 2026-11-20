@@ -3,6 +3,7 @@ import type { LoadedCapture } from '../ingest/load';
 import { displayName, type ParentMode } from '../model/relations';
 import type { ProcId } from '../model/types';
 import type { QueueItem } from '../rules/engine';
+import { queueItemFor } from '../rules/group';
 import type { Status } from '../session/store';
 import { DetailPane } from './DetailPane';
 import { STATUS_ICON } from './QueueList';
@@ -107,7 +108,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
 
   const forest = useMemo(() => forestOf(cap.model, mode), [cap, mode]);
   /** Flagged processes the triage queue still shows; routine-marked ones are left out, so they fold. */
-  const flagged = useMemo(() => triageQueue.filter(q => q.procId !== null).map(q => q.procId!), [triageQueue]);
+  const flagged = useMemo(() => triageQueue.flatMap(q => (q.procId !== null ? q.members : [])), [triageQueue]);
   const flaggedSet = useMemo(() => new Set(flagged), [flagged]);
   const keep = useMemo(() => keepSet(forest, flagged), [forest, flagged]);
   const foldInfo = useMemo(() => makeFoldInfo(cap.model, forest, keep, c.routineKeys), [cap, forest, keep, c.routineKeys]);
@@ -116,7 +117,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
   /** Badges come from the whole analysis, so a routine-marked flagged process still shows its severity. */
   const badge = useMemo(() => {
     const m = new Map<ProcId, QueueItem>();
-    for (const q of cap.analysis.queue) if (q.procId !== null) m.set(q.procId, q);
+    for (const q of cap.analysis.queue) if (q.procId !== null) for (const id of q.members) m.set(id, q);
     return m;
   }, [cap]);
 
@@ -260,7 +261,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
   const origin = c.triageOrigin ?? null;
   const originName = (() => {
     if (origin === null) return null;
-    const q = cap.analysis.queue.find(x => x.procId === origin || x.key === origin);
+    const q = queueItemFor(cap.analysis, origin) ?? cap.analysis.queue.find(x => x.key === origin);
     return q ? itemName(cap, q) : displayName(cap.model, origin);
   })();
   const rowStyle = (start: number): CSSProperties =>
