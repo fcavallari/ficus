@@ -1,24 +1,16 @@
 import { describe, expect, test } from 'vitest';
 import { analyze } from '../src/rules/engine';
 import { queueItemFor } from '../src/rules/group';
-import type { CaptureModel, Image, PersistenceItem, Process } from '../src/model/types';
+import type { CaptureModel } from '../src/model/types';
 import { buildReport } from '../src/report/report';
 import { reportMarkdown } from '../src/report/markdown';
 import { flaggedIds } from '../src/ui/lanes';
 import { GEN, input, verdict } from './report-fixture';
+import { children, HELPER, world } from './group-fixture';
 import { capture, img, persistenceItem, proc } from './synth';
 
 // Runs of identical queued processes (a crash loop: the same helper started 500 times) are one queue row with all the
 // processes as its members. The analysis still keeps every process's own findings.
-const HELPER = '/Users/u/Downloads/sample/helper';
-
-/** An unsigned program run from Downloads: `odd-location-exec` fires high for it. */
-const helper = (args: string[], seq: number): Image => img({ path: HELPER, signingId: null, args: [HELPER, ...args], seq });
-const parent = (): Process => proc('100:1', [img({ path: '/Users/u/Downloads/sample/main', signingId: null, args: ['main'], seq: 1 })]);
-/** `n` children of the parent, each running `args`; ids `200:1`, `201:1`, … */
-const children = (n: number, args: string[] = ['--dialog'], first = 200): Process[] =>
-  Array.from({ length: n }, (_, i) => proc(`${first + i}:1`, [helper(args, 10 + i)], { originalParent: '100:1', ppid: 100, originalPpid: 100 }));
-const world = (procs: Process[], persistence: PersistenceItem[] = []): CaptureModel => capture([parent(), ...procs], persistence);
 const rowsOf = (m: CaptureModel, ...ids: string[]) =>
   analyze(m).queue.filter(q => q.procId !== null && ids.includes(q.procId));
 
