@@ -401,6 +401,10 @@ export function GuideScreen({ section }: { section: string }) {
                   were handed to launchd.</td></tr>
                 <tr><td><C>create</C>, <C>rename</C></td><td>A file was created, or moved into place.</td><td>Dropped payloads,
                   launch agent plists, archives staged for upload.</td></tr>
+                <tr><td><C>clone</C>, <C>copyfile</C></td><td>A file was copied: an APFS clone (what <C>cp</C> and Finder
+                  use) or a copy through the copyfile call. The source stays.</td><td>A stealer that copies your folders instead of
+                  reading them leaves no <C>cp</C> command to read: RustDoor cloned a whole home folder, SSH keys included, into a
+                  hidden folder.</td></tr>
                 <tr><td><C>unlink</C></td><td>A file was deleted.</td><td>Clean-up: the staging folder removed after the
                   upload.</td></tr>
                 <tr><td><C>setextattr</C></td><td>An extended attribute was written on a file.</td><td>The quarantine flag
@@ -429,10 +433,6 @@ export function GuideScreen({ section }: { section: string }) {
                 <tr><td><C>od_create_user</C>, <C>od_modify_password</C></td><td>Local accounts created or changed.</td></tr>
                 <tr><td><C>remote_thread_create</C>, <C>get_task</C></td><td>One process reaching into another: injection and
                   memory reading.</td></tr>
-                <tr><td><C>clone</C>, <C>copyfile</C></td><td>A file was copied: an APFS clone (what <C>cp</C> and Finder
-                  use) or a copy through the copyfile call. Ficus reads both when they are there: they appear as copies in <em>What
-                  it did</em>, and the credential-store and launch-plist checks count them. Few events, and the only trace of a
-                  stealer that copies your folders instead of reading them.</td></tr>
                 <tr><td><C>write</C>, <C>open</C>, <C>close</C></td><td>Every file access. Very noisy; Ficus reads{' '}
                   <C>write</C> if it is there, but leave these out unless you need them.</td></tr>
               </tbody>

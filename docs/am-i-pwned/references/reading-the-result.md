@@ -47,7 +47,7 @@ When escalating, send Security Ops the report file, the transcript, and the exac
 Some intrusions leave little on disk (a run-once dropper, a self-deleting binary). If Security Ops asks, or the verdict is "needs a look" and the question is what ran and what started it, a short Apple `eslogger` recording answers it. It needs `sudo`, so the person runs it, never the agent:
 
 ```bash
-sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > capture.jsonl
+sudo eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove > capture.jsonl
 ```
 
 Stop with Ctrl-C after a few minutes of normal use, or a repro of the odd behaviour. The capture holds names, paths, command lines and environment variables, so open it in Ficus rather than pasting it into a chat. Ficus is a single page that cannot send data anywhere; use the address Security Ops gives you for it, or run it locally (`npm run serve` from a Ficus checkout) so that no capture touches a copy you have not been told to trust. A copy hosted on someone's personal account is only as trustworthy as that account. If the Mac is someone else's, clean it first with `scripts/ficus-clean.sh record -o capture.cleaned.jsonl -t 600 -D <company domain>` (run as the user, not under sudo). Ficus rebuilds the process tree, flags processes with plain-language, MITRE-tagged reasons, and gives a queue to mark suspicious or benign; its "Report for security" button writes a Markdown and JSON report for Security Ops.

@@ -777,7 +777,7 @@ EOF
   ES_ERR=$(mktemp /tmp/ficus-lab-eslogger.XXXXXX) || die "cannot create a temporary file"
   PLIST=$HOME/Library/LaunchAgents/$LIVE_LABEL.plist
   : > "$out"
-  sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
+  sudo -n eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
   ES_PID=$!
   local i=0
   while [ ! -s "$out" ]; do
