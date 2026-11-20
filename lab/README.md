@@ -136,4 +136,12 @@ First sample from MalwareBazaar and the first run on the developer image. Full w
 - **Ficus:** 15 findings under the sample, 6 high (`credential-store-copy`, `keychain-access`, `archive-staging`, `odd-location-exec`), a triage queue of 15 items. Against an article about a related, script-based AMOS: hit 5, miss 4 (the fake dialog, the password check and the persistence this build did not show), gap 3. **No rule for the upload with `curl`**, which the run showed as a gap; the `file-upload` rule was written for it. With the rule the upload is a hit (high: a file staged in `/tmp`, sent to a bare IP address) and it stays quiet on the idle and benign baselines and on the Koi and HeartBreaker runs.
 - **Lab caveats:** the Chrome keychain item was readable without a prompt because my bait item was made with `security`; the lab's C2 returns a 404 page, so the second stage was an HTML file.
 
+### RustDoor and Banshee from MalwareBazaar (2026-11-20, `exec:` recipes, main guest image, 300 s windows)
+
+The first runs that started without a person at the VM (the manifest recipe is `exec:<file>`). Full write-up: `lab/reports/2026-11-20-rustdoor-and-banshee.md`.
+
+- **RustDoor** (x86_64 APT backdoor, `baa676b6…`): cloned the whole home folder, SSH key and AWS credentials included, into a hidden `~/.docks/` about 130 ms after launch, then stayed resident, looking up `juchesoviet48.com` every ~15 s. Ficus flagged only where it ran from and that it was unsigned: **no rule sees a bulk copy made with `clonefile`, and `credential-store-copy` does not know SSH keys or cloud credentials.** Against the family reports: hit 0, miss 3, gap 2, review 2.
+- **Banshee** (arm64 Rust stealer, `dea72cdd…`): ran `killall Terminal` and the `system_profiler … Model Identifier` VM check and **exited in 0.35 s**, so it never stole anything here. Ficus saw its recon commands (hit 1, miss 3, gap 1, review 2). A sample that quits at a VM check looks like one that did nothing; the summary should say so.
+- **The new rules stayed quiet:** on a merge of grouping, `mass-rename` and `file-upload`, none produced a false finding on either run or on the baselines.
+
 Not built yet: more pilot runs and the rule fixes. See the plan, Tasks 9 and 10.

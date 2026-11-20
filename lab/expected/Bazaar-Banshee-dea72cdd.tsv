@@ -1,0 +1,13 @@
+# Bazaar-Banshee-dea72cdd: what public reports say the Banshee stealer does. Only what the reports state; written before the capture was read.
+# Sample: MalwareBazaar, signature AmosStealer, tags Banshee and Rust, arm64 Mach-O, 576,192 bytes, file name crypto-win, first seen
+# 2025-12-15, sha256 dea72cdd7c9dfc49f0a19581086c8e6e99b000dc33f461ece8b9f37c1bd7068d. Ad-hoc signed (identifier mac_os_stealer-0063b5638896729d).
+#
+# CAVEAT: the rows come from Elastic Security Labs' analysis of Banshee (August 2024), Check Point's 2025 write-up of a later version, and
+# The Hacker News and Hivepro summaries. This build is a Rust Mach-O from December 2025, so it may differ from the ones those describe.
+# The reports state no MITRE ATT&CK IDs for these rows.
+behavior	mitre	rule	source
+Checks for a virtual machine with system_profiler SPHardwareDataType | grep 'Model Identifier', looking for "Virtual" in the model	not stated	recon	Elastic Security Labs, Beyond the wail (2024)
+Avoids systems whose primary language is Russian (an API call: no process or file shows it)	not stated	-	Hivepro advisory TA2024316 (2024)
+Shows a fake password prompt through osascript to get the user's password	not stated	fake-prompt	The Hacker News (2024-08)
+Stages browser, wallet and other data and packs it into a ZIP archive	not stated	archive-staging	Elastic Security Labs, Beyond the wail (2024)
+Posts the archive (XOR-encrypted) to a hard-coded server by HTTP POST	not stated	file-upload	Elastic Security Labs, Beyond the wail (2024)
