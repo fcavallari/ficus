@@ -71,7 +71,7 @@ export interface LaneOptions { mode: ParentMode; scope: LaneScope; flagged: Proc
 export function flaggedIds(cap: LoadedCapture, queue: QueueItem[]): ProcId[] {
   const ids = new Set<ProcId>();
   for (const q of queue) {
-    if (q.procId !== null) { ids.add(q.procId); continue; }
+    if (q.procId !== null) { for (const id of q.members) ids.add(id); continue; }
     const item = persistenceItem(cap.model, q.persistenceId);
     if (!item) continue;
     const who = [item.app, item.instigator, item.emitter].find(id => id !== null && cap.model.processes.get(id)?.ghost === false);

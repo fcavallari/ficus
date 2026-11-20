@@ -1,8 +1,8 @@
 import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
-  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
-  SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
+  CURL_SPEC, curlUploads, hasOpt, hasShortFlag, isBareIp, isLoopbackHost, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
+  SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, urlHost, WGET_SPEC, wgetUploads, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
 import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
@@ -118,6 +118,9 @@ export const MASS_RENAME_WINDOW_MS = 10_000;
 /** Extensions of files that are written under a temporary name and renamed into place (downloads, editors, compilers): never a sign of encryption. */
 export const TEMP_EXTENSIONS: ReadonlySet<string> = new Set(['tmp', 'part', 'download', 'crdownload', 'swp', 'bak', 'partial']);
 const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Only files that already existed and are renamed where they stand count. Files the program created itself and moved into place (a temporary file renamed to its real name, or moved to another folder, or named \`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how macOS itself, downloads, editors and compilers save.`;
+const FILE_UPLOAD_EXPLANATION = 'curl or wget sent a local file to a server: `-T`, `-F name=@file`, `--data-binary @file` and the like. Stealers do this last, posting the archive they staged to their own server. Developers and build tools upload files all the time, so look at the file and the server: a file from a temporary, Downloads or hidden folder, an archive, or a server that is a bare IP address (no name) makes it high; anything else is medium. A server on this Mac (localhost, 127.0.0.1) is ignored.';
+/** Archives and disk images: what a stealer packs its loot into. */
+const ARCHIVE_NAME = /\.(?:zip|tar|tgz|gz|bz2|xz|7z|rar|zst|dmg)$/i;
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
@@ -1131,6 +1134,44 @@ export const RULES: Rule[] = [
       }
       const created = p.fileOps.find(op => op.kind === 'create');
       return created ? { evidence: `${cmdline(img)}; created ${created.path}` } : null;
+    },
+  },
+  {
+    id: 'file-upload', title: 'Local file sent to a server', severity: 'med', levels: ['high', 'med'],
+    explanation: FILE_UPLOAD_EXPLANATION,
+    mitre: ['T1041'], scope: 'image',
+    match: ({ img }) => {
+      const n = basename(img.path);
+      if (n !== 'curl' && n !== 'wget') return null;
+      const a = rest(img);
+      let files: string[];
+      let urls: string[];
+      if (n === 'wget') {
+        const o = parseOpts(a, WGET_SPEC);
+        files = wgetUploads(o);
+        urls = o.positionals.filter(looksLikeUrl);
+      } else {
+        const o = parseOpts(a, CURL_SPEC);
+        files = curlUploads(o);
+        urls = [...o.positionals.filter(looksLikeUrl), ...optValues(o, null, ['--url']).filter((u): u is string => u !== undefined)];
+      }
+      const hosts = urls.map(urlHost).filter((h): h is string => h !== null);
+      if (files.length === 0 || hosts.length === 0 || hosts.every(isLoopbackHost)) return null;
+      // Where the file is: a relative name counts through the working directory, when that is itself a strong place.
+      const cwdStrong = img.cwd !== null && strongPlace(normPath(`${img.cwd}/`)) !== null && !inBuildDir(img.cwd);
+      const reasons: string[] = [];
+      for (const f of files) {
+        const full = f.startsWith('/') ? f : cwdStrong ? resolvePath(f, img.cwd) : null;
+        const where = full !== null ? oddLocation(full) : null;
+        if (where !== null && where.strength === 'strong') reasons.push(`${f} staged in ${LOCATION_WORDS[where.kind].short}`);
+        else if (ARCHIVE_NAME.test(f)) reasons.push(`${f} is an archive`);
+      }
+      const bare = hosts.find(isBareIp);
+      if (bare !== undefined) reasons.push(`the server is a bare IP address (${bare})`);
+      const sends = `sends ${files.join(', ')} to ${[...new Set(hosts)].join(', ')}`;
+      return reasons.length > 0
+        ? { evidence: `${cmdline(img)}; ${sends} (${reasons.join('; ')})`, severity: 'high' }
+        : { evidence: `${cmdline(img)}; ${sends}`, severity: 'med' };
     },
   },
   {

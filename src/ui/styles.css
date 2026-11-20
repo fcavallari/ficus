@@ -127,6 +127,7 @@ progress { height: 6px; accent-color: var(--accent); }
 .chip { display: inline-block; font-size: 12px; color: var(--muted); background: var(--raised); border-radius: var(--radius-chip); padding: 1px 8px; }
 .chip.trait { font-style: italic; }
 .chain-mark { flex: none; font: 500 11px/18px var(--font); color: var(--warn); background: var(--med-bg); border-radius: var(--radius-chip); padding: 0 6px; }
+.reps { flex: none; font: 600 11px/18px var(--font); color: var(--muted); background: var(--raised); border-radius: var(--radius-chip); padding: 0 6px; font-variant-numeric: tabular-nums; }
 .note { margin: 4px 0 0; white-space: pre-wrap; }
 
 /* Home: the gameleira runs through the page. Grid lines: the text column, then the root field on the right. */

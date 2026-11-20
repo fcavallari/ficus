@@ -96,7 +96,7 @@ None of this was observed running. It is what I read in the strings, and shows w
 
 ## Candidate changes to Ficus
 
-1. **Group repeats in the triage queue.** This run gives 1,056 queue items, among them 527 identical `dscl-authonly` and 529 identical `odd-location-exec` (same rule, same program, same command line). One grouped item with a count and a time span ("527 times in 135 s") would make the loop one thing to triage and say it is a loop. This is the most useful change the run points to.
+1. **Group repeats in the triage queue.** This run gives 1,056 queue items, among them 527 identical `dscl-authonly` and 529 identical `odd-location-exec` (same rule, same program, same command line). One grouped item with a count and a time span ("527 times in 135 s") would make the loop one thing to triage and say it is a loop. This is the most useful change the run points to. **Done since:** Ficus now folds processes with the same program, arguments, parent and findings into one queue row with a count; this capture's queue is three rows (the sample's own launch, the 528 helper runs, the 527 `dscl` runs).
 2. **Use `authentication` events.** `eslogger` recorded 528 failed `od` authentications. Ficus's recommended capture does not include `authentication`, and no rule reads it. A rule for repeated failed authentications from a non-Apple process within a short span is a candidate, and `docs/capturing.md` would gain the event.
 3. **`tccutil reset`** and **`osascript` volume muting** (both from the article; untested here).
 4. **Persistence the binary's strings point to** (`com.apple.update_agent` launch agent, a cron line, a `.zshrc` write). Ficus has `apple-masquerade` and `persistence-plist`; whether they fire is untested because the run did not get that far.

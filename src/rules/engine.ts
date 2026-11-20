@@ -1,6 +1,7 @@
 import { ancestry } from '../model/relations';
 import type { CaptureModel, Image, ProcId, Process } from '../model/types';
 import { basename, timeMs } from '../model/util';
+import { groupQueue } from './group';
 import { persistenceOwner, resetImageIndex, RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
@@ -11,6 +12,11 @@ export interface QueueItem { key: string; kind: 'process' | 'persistence'; procI
   persistenceId: string | null; severity: Severity; findings: Finding[]; inFlaggedChain: boolean;
   /** One of 3 or more different recon tools run under the same parent within 60 s. */
   reconBurst: boolean;
+  /**
+   * The processes this row stands for, earliest first; the first is `procId`. A row for one process lists just that
+   * process; identical repeats (a crash loop) are grouped into one row. Empty for a launch item no process owns.
+   */
+  members: ProcId[];
   sortSeq: number }
 export interface Analysis { queue: QueueItem[]; findings: Map<ProcId, Finding[]>;
   contextOnly: Map<ProcId, Finding[]> }
@@ -96,7 +102,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     } else {
       queue.push({
         key: `i:${item.id}`, kind: 'persistence', procId: null, persistenceId: item.id,
-        severity: maxSeverity(own), findings: ordered(own), inFlaggedChain: false, reconBurst: false, sortSeq: item.seq,
+        severity: maxSeverity(own), findings: ordered(own), inFlaggedChain: false, reconBurst: false, members: [], sortSeq: item.seq,
       });
     }
   }
@@ -162,10 +168,10 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     findings.set(id, fs);
     queue.push({
       key: `p:${id}`, kind: 'process', procId: id, persistenceId: null,
-      severity: maxSeverity(list), findings: fs, inFlaggedChain: chain, reconBurst: burst.has(id),
+      severity: maxSeverity(list), findings: fs, inFlaggedChain: chain, reconBurst: burst.has(id), members: [id],
       sortSeq: Math.min(...list.map(h => h.seq)),
     });
   }
   queue.sort((a, b) => RANK[b.severity] - RANK[a.severity] || a.sortSeq - b.sortSeq);
-  return { queue, findings, contextOnly };
+  return { queue: groupQueue(m, queue), findings, contextOnly };
 }

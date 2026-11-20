@@ -68,6 +68,13 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
+    name: 'Sending it out',
+    what: <>The last step of a stealer: the archive it staged is posted to the attacker’s server with <C>curl</C>, often one
+      with no name at all, just an IP address. Developers upload files with the same tool, so the rule looks at the file and
+      the server.</>,
+    rules: ['file-upload'],
+  },
+  {
     name: 'Persistence',
     what: <>Optional, but more common in newer families: a launch agent or login item so a backdoor survives reboot.</>,
     rules: ['persistence-item', 'persistence-plist', 'launchctl-load'],
@@ -553,7 +560,8 @@ export function GuideScreen({ section }: { section: string }) {
               <li><strong>Drop the capture</strong> into the session. More captures of the same Mac can join it.</li>
               <li><strong>Triage.</strong> The queue lists what the rules flagged, high first. Pick a row and read <em>Why
                 flagged</em>, then <em>Launched by</em>, which draws each root of the process side by side, then <em>What it
-                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.</li>
+                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.
+                A row marked <C>×528</C> stands for 528 identical processes, such as a loop; a verdict on it covers all of them.</li>
               <li><strong>Tree.</strong> Every process, hung from the root you choose. Unflagged processes fold into grey rows;
                 search keeps the matches and their ancestors. <em>Back to Triage</em> returns to the row you came from.</li>
               <li><strong>Suspicious.</strong> The processes you marked suspicious across every capture, and the export: the session as
@@ -700,8 +708,9 @@ node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder>
               <tbody>
                 <tr><td>KoiStealer, a stealer</td><td>Looped 528 times on a fake-password helper that kept crashing, each time
                   running <C>dscl . authonly</C> with an empty answer.</td>
-                  <td><RuleChip id="dscl-authonly" /> and <RuleChip id="odd-location-exec" />, but 1,056 items in the triage
-                    queue for one program: nothing groups the repeats.</td></tr>
+                  <td><RuleChip id="dscl-authonly" /> and <RuleChip id="odd-location-exec" />, and one program
+                    that once filled the triage queue with 1,056 items. Identical repeats are now one row with a count, so
+                    it is three rows.</td></tr>
                 <tr><td>HeartBreaker, ransomware</td><td>Encrypted 15 files in 1.3 seconds, wrote a ransom note and a launch
                   agent, then ran <C>curl … | sh</C> to install Rust.</td>
                   <td><RuleChip id="persistence-item" />, <RuleChip id="shell-from-pipe" /> and, with a rule written after
@@ -710,7 +719,8 @@ node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder>
                   Notes files into a temporary folder, zipped them, posted them to a bare IP address, fetched a second
                   stage.</td>
                   <td><RuleChip id="keychain-access" />, <RuleChip id="credential-store-copy" />,{' '}
-                    <RuleChip id="archive-staging" /> and <RuleChip id="download" />, and nothing for the upload.</td></tr>
+                    <RuleChip id="archive-staging" />, <RuleChip id="download" /> and, with a rule written after this run
+                    showed the gap, <RuleChip id="file-upload" /> for the upload.</td></tr>
               </tbody>
             </table>
             <p>The gaps are the point of the lab: each one is a candidate for a new rule, to be tried against the lab’s idle and
