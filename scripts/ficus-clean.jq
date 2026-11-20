@@ -106,7 +106,21 @@ def KEEP: {
   "system": true, "usr": true, "bin": true, "sbin": true, "lib": true, "libexec": true, "include": true,
   "share": true, "local": true, "etc": true, "var": true, "tmp": true, "opt": true, "private": true, "dev": true,
   "cores": true, "db": true, "users": true, "volumes": true, "shared": true, "shims": true,
-  "temporaryitems": true, ".localized": true, ".ds_store": true
+  "temporaryitems": true, ".localized": true, ".ds_store": true,
+  # The files and folders the credential-store-copy rule reads (src/rules/credentials.ts): standard names of browsers,
+  # keychains, Notes, a wallet, SSH keys and the cloud tools, not names of a person's own. Kept so a cleaned capture
+  # still shows a credential store being copied. Only the exact default SSH key names stay: `id_rsa_acme` is cleaned.
+  "keychains": true, "login.keychain-db": true, "keychain-2.db": true, "seed.seco": true,
+  "login data": true, "login data-journal": true, "web data": true, "web data-journal": true, "local state": true,
+  "local extension settings": true,
+  "cookies-wal": true, "cookies-shm": true, "cookies-journal": true, "cookies.binarycookies": true,
+  "cookies.sqlite": true, "cookies.sqlite-wal": true, "cookies.sqlite-shm": true,
+  "key4.db": true, "key4.db-wal": true, "key4.db-shm": true, "logins.json": true,
+  "notestore.sqlite": true, "notestore.sqlite-wal": true, "notestore.sqlite-shm": true,
+  ".ssh": true, "id_rsa": true, "id_dsa": true, "id_ecdsa": true, "id_ed25519": true, "id_ecdsa_sk": true, "id_ed25519_sk": true,
+  ".aws": true, "credentials": true, ".kube": true, "config": true, ".docker": true, "config.json": true,
+  ".config": true, "gcloud": true, "credentials.db": true, "application_default_credentials.json": true,
+  "access_tokens.db": true, ".netrc": true, ".git-credentials": true
 };
 
 # ---- words the rules look for -------------------------------------------------------------------------------

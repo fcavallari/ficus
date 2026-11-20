@@ -581,6 +581,68 @@ describe.skipIf(!fs.existsSync(JQ))('paths', () => {
     expect(exec.cwd.path).toBe(`/Users/user1/Desktop/${names.get('Merger')}`);
   });
 
+  test('the names the credential checks read survive: browser, keychain, Notes, wallet, SSH keys and cloud credentials', () => {
+    // credential-store-copy reads these file and folder names. A cleaned capture that turned `.ssh/id_rsa` into `.name1/name2`
+    // could never raise it, so they are kept as the standard names they are; the account and any other name are still cleaned.
+    const stores = [
+      '/Users/jdoe/Library/Keychains/login.keychain-db',
+      '/Users/jdoe/Library/Keychains/keychain-2.db',
+      '/Users/jdoe/Library/Application Support/Google/Chrome/Default/Login Data',
+      '/Users/jdoe/Library/Application Support/Google/Chrome/Default/Login Data-journal',
+      '/Users/jdoe/Library/Application Support/Google/Chrome/Default/Cookies-wal',
+      '/Users/jdoe/Library/Application Support/Google/Chrome/Default/Web Data',
+      '/Users/jdoe/Library/Application Support/Google/Chrome/Local State',
+      '/Users/jdoe/Library/Cookies/Cookies.binarycookies',
+      '/Users/jdoe/Library/Application Support/Firefox/Profiles/x.default/key4.db',
+      '/Users/jdoe/Library/Application Support/Firefox/Profiles/x.default/logins.json',
+      '/Users/jdoe/Library/Application Support/Firefox/Profiles/x.default/cookies.sqlite-wal',
+      '/Users/jdoe/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite',
+      '/Users/jdoe/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite-shm',
+      '/Users/jdoe/Library/Application Support/Exodus/exodus.wallet/seed.seco',
+      '/Users/jdoe/.ssh/id_rsa', '/Users/jdoe/.ssh/id_ed25519', '/Users/jdoe/.ssh/id_ecdsa', '/Users/jdoe/.ssh/id_dsa',
+      '/Users/jdoe/.aws/credentials', '/Users/jdoe/.kube/config', '/Users/jdoe/.docker/config.json',
+      '/Users/jdoe/.config/gcloud/credentials.db', '/Users/jdoe/.config/gcloud/application_default_credentials.json',
+      '/Users/jdoe/.config/gcloud/access_tokens.db', '/Users/jdoe/.netrc', '/Users/jdoe/.git-credentials',
+      '/Users/jdoe/.docks/.ssh/id_rsa', '/tmp/loot/.aws/credentials',
+    ];
+    const input = [
+      ...stores.map((p, i) => esCreate(zsh, { path: p }, i + 1)),
+      esClone(zsh, '/Users/jdoe/.ssh/id_rsa', '/Users/jdoe/.docks/.ssh', 'id_rsa', stores.length + 1),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    const ev = events(r.out);
+    // The account name is cleaned and the credential names are not; the folder `.docks` is a name of the person's own and is cleaned.
+    const kept = (p: string) => p.replace('/Users/jdoe/', '/Users/user1/');
+    stores.forEach((p, i) => {
+      const got = ev[i]!.event.create.destination.existing_file.path as string;
+      if (p.includes('.docks')) expect(got).toMatch(/^\/Users\/user1\/\.name\d+\/\.ssh\/id_rsa$/);
+      else if (p.startsWith('/tmp/loot')) expect(got).toMatch(/^\/tmp\/name\d+\/\.aws\/credentials$/);
+      // Below `Application Support/<vendor>/` the app's own folders (Chrome, Default, Profiles) are cleaned; the rules read the file name.
+      else if (p.includes('/Application Support/')) { expect(got.startsWith('/Users/user1/Library/Application Support/'), p).toBe(true); expect(got.split('/').pop(), p).toBe(p.split('/').pop()); }
+      else expect(got, p).toBe(kept(p));
+    });
+    const clone = ev[stores.length]!.event.clone;
+    expect(clone.source.path).toBe('/Users/user1/.ssh/id_rsa');
+    expect(clone.target_dir.path).toMatch(/^\/Users\/user1\/\.name\d+\/\.ssh$/);
+    expect(clone.target_name).toBe('id_rsa');
+    expect(r.out).not.toContain('jdoe');
+  });
+
+  test('other names near the credential ones are still cleaned', () => {
+    const input = [
+      esCreate(zsh, { path: '/Users/jdoe/Clients/Acme Corp/.ssh/id_rsa_acme' }, 1),
+      esCreate(zsh, { path: '/Users/jdoe/Clients/Acme Corp/credentials/passwords.txt' }, 2),
+      esCreate(zsh, { path: '/Users/jdoe/Documents/Acme notes.pdf' }, 3),
+    ].join('\n') + '\n';
+    const r = runClean(['clean', '-o', '-'], { input });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).not.toMatch(/Acme|acme|passwords/);
+    const ev = events(r.out);
+    expect(ev[0]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/name\d+\/name\d+\/\.ssh\/name\d+$/);
+    expect(ev[1]!.event.create.destination.existing_file.path).toMatch(/^\/Users\/user1\/name\d+\/name\d+\/credentials\/name\d+\.txt$/);
+  });
+
   test('the same name gets the same placeholder in every field', () => {
     const backup = userProc(320, '/usr/local/bin/backup');
     const btmd = sysProc(330, '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd');
