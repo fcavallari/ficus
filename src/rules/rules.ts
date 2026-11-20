@@ -117,7 +117,7 @@ export const MASS_RENAME_MIN_FILES = 10;
 export const MASS_RENAME_WINDOW_MS = 10_000;
 /** Extensions of files that are written under a temporary name and renamed into place (downloads, editors, compilers): never a sign of encryption. */
 export const TEMP_EXTENSIONS: ReadonlySet<string> = new Set(['tmp', 'part', 'download', 'crdownload', 'swp', 'bak', 'partial']);
-const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Files renamed to or from a temporary name (\`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how downloads, editors and compilers save.`;
+const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Only files that already existed and are renamed where they stand count. Files the program created itself and moved into place (a temporary file renamed to its real name, or moved to another folder, or named \`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how macOS itself, downloads, editors and compilers save.`;
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
@@ -844,6 +844,9 @@ function dropCandidate(path: string): boolean {
   return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
 }
 
+/** The lower-cased folder part of a path. */
+const dirOf = (path: string): string => normPath(path).slice(0, normPath(path).lastIndexOf('/')).toLowerCase();
+
 /** The lower-cased extension of a file name (text after its last dot), or '' for none or a hidden file such as `.zshrc`. */
 function extensionOf(path: string): string {
   const name = basename(path);
@@ -1312,13 +1315,19 @@ export const RULES: Rule[] = [
     matchProcess: (p) => {
       // New extension (lower-cased) -> the renames to it, in time order.
       const byExt = new Map<string, { ms: number; to: string }[]>();
+      const created = new Set<string>();   // files this process made itself, so far
       for (const f of p.fileOps) {
+        if (f.kind === 'create') { created.add(normPath(f.path).toLowerCase()); continue; }
         if (f.kind !== 'rename' || f.toPath === undefined) continue;
         const ms = timeMs(f.time);
         const from = extensionOf(f.path);
         const ext = extensionOf(f.toPath);
         // Same extension kept, no extension, or a file written under a temporary name and renamed into place.
         if (ms === null || ext === '' || ext === from || TEMP_EXTENSIONS.has(ext) || TEMP_EXTENSIONS.has(from)) continue;
+        // Encrypting in place renames files that already existed, where they stand. Daemons save differently: they create
+        // a temporary file (`tmp.PHod7U`, `name.plist.a1B2c3`) and move it into place, often into another folder. The rule
+        // reads no relation between the two names, because a cleaned capture gives every name its own placeholder.
+        if (dirOf(f.path) !== dirOf(f.toPath) || created.has(normPath(f.path).toLowerCase())) continue;
         const list = byExt.get(ext);
         if (list) list.push({ ms, to: f.toPath });
         else byExt.set(ext, [{ ms, to: f.toPath }]);

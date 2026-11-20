@@ -15,6 +15,9 @@ const rename = (from: string, to: string, ms: number, seq = 2): FileOp =>
 const burst = (n: number, gap: number, to: (i: number) => string, from: (i: number) => string = i => `/Users/u/Documents/file${i}.txt`): FileOp[] =>
   Array.from({ length: n }, (_, i) => rename(from(i), to(i), i * gap, 2 + i));
 
+/** The same renames, each preceded by the process creating its source file: how a daemon saves (write a temporary file, move it into place). */
+const createdFirst = (ops: FileOp[]): FileOp[] => ops.flatMap(o => [{ kind: 'create' as const, path: o.path, time: new Date(Date.parse(o.time) - 5).toISOString(), seq: o.seq - 1 }, o]);
+
 const story = (fileOps: FileOp[]): CaptureModel =>
   capture([proc('100:1', [img({ path: '/Users/u/Downloads/h/locker', signingId: null, args: ['locker'], seq: 1 })], { fileOps })]);
 const hits = (m: CaptureModel) =>
@@ -68,6 +71,28 @@ describe('mass-rename', () => {
   test('renaming away from a temporary name (write, then rename into place) does not count', () => {
     const f = hits(story(burst(12, 100, i => `/Users/u/Library/Caches/out${i}.o`, i => `/Users/u/Library/Caches/out${i}.o.tmp`)));
     expect(f).toHaveLength(0);
+  });
+
+  test('a file moved to another folder is not encrypted in place', () => {
+    // How an Apple daemon saves: write under a temporary name in a temporary folder, then move the file into place.
+    const f = hits(story(burst(12, 100,
+      i => `/Users/u/Library/Caches/com.apple.chrono/${i}.relevancecache`,
+      i => `/private/var/folders/p7/T/NSIRD_chronod_x/${i}-UUID`)));
+    expect(f).toHaveLength(0);
+  });
+
+  test('files the process created itself and then moved into place do not count', () => {
+    // How cfprefsd saves: create `name.plist.a1B2c3`, then rename it to `name.plist`; and iconservicesagent: create `tmp.PHod7U`, rename it to a `.car`.
+    const suffix = burst(12, 100, i => `/Users/u/Library/Preferences/com.example.app${i}.plist`, i => `/Users/u/Library/Preferences/com.example.app${i}.plist.a1B2c${i}`);
+    expect(hits(story(createdFirst(suffix)))).toHaveLength(0);
+    const unrelated = burst(12, 100, i => `/Users/u/Library/Caches/coreui-${i}.car`, i => `/Users/u/Library/Caches/tmp.PHod7${i}`);
+    expect(hits(story(createdFirst(unrelated)))).toHaveLength(0);
+  });
+
+  test('the same renames of files that already existed do count: names unrelated to each other do not matter', () => {
+    // A cleaned capture gives every name its own placeholder, so the rule cannot lean on how two names relate.
+    const f = hits(story(burst(12, 100, i => `/Users/u/Documents/name${i + 100}.locked`, i => `/Users/u/Documents/name${i}.docx`)));
+    expect(f).toHaveLength(1);
   });
 
   test('a rename that keeps the extension does not count', () => {

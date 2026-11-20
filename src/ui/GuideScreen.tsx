@@ -73,6 +73,13 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     rules: ['persistence-item', 'persistence-plist', 'launchctl-load'],
   },
   {
+    name: 'Impact',
+    what: <>Ransomware: it encrypts the user’s files where they stand and marks each one by renaming it with a new ending
+      (<C>report.docx</C> becomes <C>report.docx.locked</C>), then leaves a ransom note. Rare in a capture, but when it
+      happens it happens in seconds.</>,
+    rules: ['mass-rename'],
+  },
+  {
     name: 'Known families',
     what: <>Not a behaviour but a name: a signing team, a file path or a command-line string that a security vendor published for
       a named malware family (ChillyHell, KANDYKORN, FlexibleFerret, an Evasive Panda downloader and others). A match is strong,
@@ -697,8 +704,8 @@ node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder>
                     queue for one program: nothing groups the repeats.</td></tr>
                 <tr><td>HeartBreaker, ransomware</td><td>Encrypted 15 files in 1.3 seconds, wrote a ransom note and a launch
                   agent, then ran <C>curl … | sh</C> to install Rust.</td>
-                  <td><RuleChip id="persistence-item" /> and <RuleChip id="shell-from-pipe" />, and nothing for the encryption
-                    itself.</td></tr>
+                  <td><RuleChip id="persistence-item" />, <RuleChip id="shell-from-pipe" /> and, with a rule written after
+                    this run showed the gap, <RuleChip id="mass-rename" /> for the encryption.</td></tr>
                 <tr><td>AMOS, from MalwareBazaar</td><td>In 0.8 seconds: read the Chrome keychain key, copied browser, wallet and
                   Notes files into a temporary folder, zipped them, posted them to a bare IP address, fetched a second
                   stage.</td>
