@@ -5,7 +5,8 @@ import type { Severity } from './rules';
 /**
  * Indicators vendors published for named macOS malware families, in the forms a process capture can show. The data is in
  * indicators.json (its `about` and `pathSyntax` fields say what is in it and what is left out); the same file feeds the
- * am-i-pwned skill's reference page and triage script (scripts/gen-indicators.mjs), so there is one list to keep.
+ * am-i-pwned plugin's reference page and indicators check (claude-code-plugins, plugins/am-i-pwned), which hold generated copies
+ * (scripts/gen-indicators.mjs, kept in step by .githooks/pre-commit and test/plugin-sync.test.ts), so there is one list to keep.
  */
 export type IndicatorKind = 'team-id' | 'signing-id' | 'path' | 'plist' | 'argv';
 export type Confidence = 'high' | 'medium';

@@ -33,7 +33,8 @@ const STRONG_LOCATIONS: [RegExp, LocationKind][] = [
 /** Go's per-build folder in the per-user temporary area: /var/folders/xx/yyyy/T/go-build1234/. */
 const GO_BUILD_TEMP = /^\/var\/folders\/[^/]+\/[^/]+\/T\/go-build[^/]*\//i;
 export const HOME = /^\/Users\/[^/]+\//i;
-/** Project tooling and build folders (hooks, virtualenvs, package installs, build output), compared lower-case. */
+/** Project tooling and build folders (hooks, virtualenvs, package installs, build output), compared lower-case.
+ * The am-i-pwned plugin's lib/signatures.sh keeps a generated copy of this list (scripts/gen-indicators.mjs): run it after a change. */
 const TOOLING_DIRS = new Set([
   '.git', '.venv', 'venv', '.tox', '.direnv', '.husky', 'node_modules', '.pnpm-store',
   '.build', '.terraform', '.next', '.cargo', '.gradle', '.m2', '.cache', '.npm', '.yarn', 'target', 'deriveddata',

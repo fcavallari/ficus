@@ -15,6 +15,23 @@ FIXTURES_DIR=/path/to/captures npm test
 
 `npm run dev` also accepts `?load=<file>` to open a development session named `dev` with a capture from the directory above the repo already loaded. That code is compiled out of the production build, and `test/build.test.ts` checks that it stays out.
 
+## The am-i-pwned plugin copy
+
+The am-i-pwned skill lives in the `am-i-pwned` plugin of Automattic's `claude-code-plugins` repo (`plugins/am-i-pwned`). Ficus owns two things the skill uses: the indicator list [`src/rules/indicators.json`](../src/rules/indicators.json) and the developer tooling folders in `src/rules/locations.ts`. The plugin holds generated copies of them (its `references/known-indicators.md`, the generated block of `lib/indicators.sh` and the tooling-folder list in `lib/signatures.sh`), each stamped with a hash of its source. Nothing in the plugin is edited by hand for these.
+
+After changing either source:
+
+```bash
+node scripts/gen-indicators.mjs     # writes the copies into the plugin checkout
+```
+
+then commit the result in the `claude-code-plugins` repo, bump the plugin's version and changelog there, and commit here. The generator looks for the checkout at `~/WORK/claude-code-plugins` (or `$AM_I_PWNED_DIR`, or `--to DIR` for the skill folder); `--check` changes nothing and exits 1 when a copy is behind, 2 when there is no checkout, and 3 when a target file or marker is missing (a skill folder of the old layout, say).
+
+Two things keep the copy from being forgotten:
+
+- `.githooks/pre-commit` runs when a commit touches one of the sources. It writes the copy and stops the commit, so the plugin repo gets its commit first. Turn it on once per clone with `git config core.hooksPath .githooks`.
+- `test/plugin-sync.test.ts` fails when the plugin checkout's copy is behind, or when its latest commit there is. It is skipped where no checkout exists (the Pages build).
+
 ## Roadmap
 
 XPC connection edges are planned.
