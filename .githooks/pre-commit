@@ -1,0 +1,30 @@
+#!/bin/sh
+# Keeps the am-i-pwned plugin's copy of Ficus's indicator list in step (see scripts/gen-indicators.mjs).
+# Turn it on once per clone: git config core.hooksPath .githooks
+#
+# When a commit touches either source, the copy in the claude-code-plugins checkout is written, and the commit stops so
+# that the plugin repo gets its commit too. Commit there, then commit here again: the second time the copy is current.
+# With no plugin checkout the hook says so and lets the commit through; test/plugin-sync.test.ts then runs wherever one exists.
+
+staged=$(git diff --cached --name-only)
+case "$staged" in
+  *src/rules/indicators.json*|*src/rules/locations.ts*|*scripts/gen-indicators.mjs*) ;;
+  *) exit 0 ;;
+esac
+
+root=$(git rev-parse --show-toplevel)
+node "$root/scripts/gen-indicators.mjs" --check 2>/dev/null
+case $? in
+  0) exit 0 ;;
+  2) echo "pre-commit: no am-i-pwned plugin checkout found, so its copy of the indicators was not updated." >&2
+     echo "  Clone Automattic/claude-code-plugins to ~/WORK/claude-code-plugins (or set AM_I_PWNED_DIR), then run: node scripts/gen-indicators.mjs" >&2
+     exit 0 ;;
+  3) node "$root/scripts/gen-indicators.mjs" --check >&2
+     echo "pre-commit: the plugin checkout lacks a file or marker the generator writes to (see above). Update the checkout (git pull) or fix the generator." >&2
+     exit 1 ;;
+esac
+
+node "$root/scripts/gen-indicators.mjs" >&2
+echo "pre-commit: the am-i-pwned plugin copy was behind and has been updated (see above)." >&2
+echo "  Commit it in the claude-code-plugins repo (with a version bump and a changelog line), then run this commit again." >&2
+exit 1
