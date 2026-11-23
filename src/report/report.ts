@@ -45,6 +45,8 @@ export interface ReportRow {
   /** The user's view; null when they never touched the row. */
   verdict: { status: Status; note: string; updated: string } | null;
   inFlaggedChain: boolean; reconBurst: boolean;
+  /** How many identical processes this row stands for; 1 for a row of one process, a launch item or a user-marked process. */
+  repeats: number;
   hiddenAsRoutine: boolean; keptReason: string | null;
   findings: ReportFinding[];
   process?: { procId: string; pid: number; startTime: string | null; exitTime: string | null; images: ReportImage[];
@@ -199,7 +201,7 @@ class CaptureRows {
     const proc = this.process(v.procKey);
     return {
       n: 0, key: v.procKey, kind: 'user-marked', name: proc ? displayName(this.m, v.procKey) : v.snapshot.name,
-      severity: null, verdict: userView(v), inFlaggedChain: false, reconBurst: false, hiddenAsRoutine: false, keptReason: null,
+      severity: null, verdict: userView(v), inFlaggedChain: false, reconBurst: false, repeats: 1, hiddenAsRoutine: false, keptReason: null,
       findings: (this.cap.analysis.contextOnly.get(v.procKey) ?? []).map(f => this.finding(f, this.m.processes.get(v.procKey))),
       ...(proc ? { process: proc } : {}),
       launchItems: [],
@@ -209,7 +211,7 @@ class CaptureRows {
   queueRow(q: QueueItem, verdict: Verdict | undefined, hidden: boolean, kept: string | null): ReportRow {
     return {
       n: 0, key: q.key, kind: q.kind, name: itemName(this.cap, q), severity: q.severity, verdict: userView(verdict),
-      inFlaggedChain: q.inFlaggedChain, reconBurst: q.reconBurst, hiddenAsRoutine: hidden, keptReason: kept,
+      inFlaggedChain: q.inFlaggedChain, reconBurst: q.reconBurst, repeats: Math.max(1, q.members.length), hiddenAsRoutine: hidden, keptReason: kept,
       findings: q.findings.map(f => this.finding(f, q.procId !== null ? this.m.processes.get(q.procId) : undefined)),
       ...(q.procId !== null ? { process: this.process(q.procId) } : {}),
       launchItems: this.launchItems(q.kind === 'persistence' ? [q.persistenceId] : q.findings.map(f => f.persistenceId)),
@@ -239,7 +241,7 @@ export function buildReport(input: ReportInput, opts: ReportOpts): Report {
     const verdicts = new Map((byCapture.get(rec.fingerprint) ?? []).map(v => [v.procKey, v]));
     const routine = applyRoutine(cap.analysis, m, input.routineKeys);
     const shown = new Set(routine.queue.map(q => q.key));
-    const queued = new Set(cap.analysis.queue.map(verdictKey));
+    const queued = new Set(cap.analysis.queue.flatMap(q => (q.members.length > 0 ? q.members : [verdictKey(q)])));
     const build = new CaptureRows(cap, opts.redactArgs);
     const contextOnly: Record<string, number> = {};
     for (const f of [...cap.analysis.contextOnly.values()].flat()) contextOnly[f.ruleId] = (contextOnly[f.ruleId] ?? 0) + 1;

@@ -180,12 +180,14 @@ export class ModelBuilder {
         p.exitTime = ev.time;
         p.exitSeq = ev.seq;
         break;
-      case 'create': case 'rename': case 'unlink': case 'write': case 'setextattr': {
+      case 'create': case 'rename': case 'unlink': case 'write': case 'setextattr': case 'copy': {
         if (ev.path === undefined) break;
+        if (ev.kind === 'copy' && ev.toPath === undefined) break;   // a copy with no destination says nothing
         const op: FileOp = { kind: ev.kind, path: ev.path, time: ev.time, seq: ev.seq };
         if (ev.toPath !== undefined) op.toPath = ev.toPath;
         if (ev.xattr !== undefined) op.xattr = ev.xattr;
         if (ev.viaClose) op.via = 'close';
+        if (ev.kind === 'copy') op.via = ev.rawType === 'copyfile' ? 'copyfile' : 'clone';
         p.fileOps.push(op);
         break;
       }

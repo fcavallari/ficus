@@ -24,6 +24,7 @@ export const GUIDE_SECTIONS = [
   { id: 'look-for', title: 'What to look for' },
   { id: 'ficus', title: 'Working a capture here' },
   { id: 'practice', title: 'Practice on your own Mac' },
+  { id: 'lab', title: 'Run real malware safely: the lab' },
   { id: 'jq', title: 'Beyond the app: jq' },
   { id: 'words', title: 'Words you will meet' },
   { id: 'resources', title: 'Where to learn more' },
@@ -67,9 +68,23 @@ export const STAGES: { name: string; what: ReactNode; rules: string[] }[] = [
     rules: ['recon', 'credential-store-copy', 'archive-staging'],
   },
   {
+    name: 'Sending it out',
+    what: <>The last step of a stealer: the archive it staged is posted to the attacker’s server with <C>curl</C>, often one
+      with no name at all, just an IP address. Developers upload files with the same tool, so the rule looks at the file and
+      the server.</>,
+    rules: ['file-upload'],
+  },
+  {
     name: 'Persistence',
     what: <>Optional, but more common in newer families: a launch agent or login item so a backdoor survives reboot.</>,
     rules: ['persistence-item', 'persistence-plist', 'launchctl-load'],
+  },
+  {
+    name: 'Impact',
+    what: <>Ransomware: it encrypts the user’s files where they stand and marks each one by renaming it with a new ending
+      (<C>report.docx</C> becomes <C>report.docx.locked</C>), then leaves a ransom note. Rare in a capture, but when it
+      happens it happens in seconds.</>,
+    rules: ['mass-rename'],
   },
   {
     name: 'Known families',
@@ -386,6 +401,10 @@ export function GuideScreen({ section }: { section: string }) {
                   were handed to launchd.</td></tr>
                 <tr><td><C>create</C>, <C>rename</C></td><td>A file was created, or moved into place.</td><td>Dropped payloads,
                   launch agent plists, archives staged for upload.</td></tr>
+                <tr><td><C>clone</C>, <C>copyfile</C></td><td>A file was copied: an APFS clone (what <C>cp</C> and Finder
+                  use) or a copy through the copyfile call. The source stays.</td><td>A stealer that copies your folders instead of
+                  reading them leaves no <C>cp</C> command to read: RustDoor cloned a whole home folder, SSH keys included, into a
+                  hidden folder.</td></tr>
                 <tr><td><C>unlink</C></td><td>A file was deleted.</td><td>Clean-up: the staging folder removed after the
                   upload.</td></tr>
                 <tr><td><C>setextattr</C></td><td>An extended attribute was written on a file.</td><td>The quarantine flag
@@ -545,7 +564,8 @@ export function GuideScreen({ section }: { section: string }) {
               <li><strong>Drop the capture</strong> into the session. More captures of the same Mac can join it.</li>
               <li><strong>Triage.</strong> The queue lists what the rules flagged, high first. Pick a row and read <em>Why
                 flagged</em>, then <em>Launched by</em>, which draws each root of the process side by side, then <em>What it
-                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.</li>
+                did</em>, its timeline. Mark it suspicious or benign (<kbd>u</kbd> takes the last verdict back), or leave a note.
+                A row marked <C>×528</C> stands for 528 identical processes, such as a loop; a verdict on it covers all of them.</li>
               <li><strong>Tree.</strong> Every process, hung from the root you choose. Unflagged processes fold into grey rows;
                 search keeps the matches and their ancestors. <em>Back to Triage</em> returns to the row you came from.</li>
               <li><strong>Suspicious.</strong> The processes you marked suspicious across every capture, and the export: the session as
@@ -586,7 +606,8 @@ export function GuideScreen({ section }: { section: string }) {
               <C>bash</C>, shows a harmless dialog, zips a copy of <C>/etc/hosts</C>, detaches a <C>sleep</C>, opens Calculator
               and installs a launch agent that writes the date to a file.</p>
             <Note kind="careful">Only ever practise with harmless commands like these. Never run real malware samples on a Mac
-              you use for anything else.</Note>
+              you use for anything else; <a href="#guide/lab" onClick={e => { e.preventDefault(); goTo('lab'); }}>the lab</a> in
+              section 9 runs them inside a virtual machine instead.</Note>
             <p><strong>In one Terminal window</strong>, start recording:</p>
             <CommandBlock />
             <p><strong>In a second window</strong>, play the attacker:</p>
@@ -623,7 +644,8 @@ export function GuideScreen({ section }: { section: string }) {
             <p>macOS will probably also show a “Background Items Added” notification: that is the background task manager noticing
               your launch agent, the same thing <C>btm_launch_item_add</C> recorded. When you are done, clean up:</p>
             <Snippet title="Terminal: remove what the practice left behind">{LAB_CLEANUP}</Snippet>
-            <p>Keep the capture: it is a good file to try the next section’s commands on.</p>
+            <p>Keep the capture: it is a good file to try the{' '}
+              <a href="#guide/jq" onClick={e => { e.preventDefault(); goTo('jq'); }}>jq commands</a> on.</p>
 
             <h3>The rules you cannot safely trigger by hand</h3>
             <p>Some rules need a step no one should run on a Mac they use: <RuleChip id="credential-store-copy" /> needs a copy
@@ -636,7 +658,92 @@ export function GuideScreen({ section }: { section: string }) {
               the safe steps for real and says in its key which rules it leaves out, and why.</p>
           </Section>
 
-          <Section id="jq" n={9} title="Beyond the app: jq">
+          <Section id="lab" n={9} title="Run real malware safely: the lab">
+            <p>The practice capture acts out an intrusion with harmless commands. Real samples show what actually happens, and
+              what your rules miss. <Ext href={`${REPO_URL}/tree/main/lab`}>The malware lab</Ext> in the Ficus repository runs
+              a sample in a throwaway virtual machine, records <C>eslogger</C> for it, and reads the capture back through
+              Ficus’s own rules.</p>
+            <Note kind="careful">The samples are live malware. Use the lab only on a Mac you own and may use for this (a work
+              laptop needs your security team’s agreement), and never unzip a sample on the Mac that runs the lab: it is opened
+              inside the virtual machine only.</Note>
+
+            <h3>What you need</h3>
+            <ul>
+              <li>A Mac with Apple silicon and about 150 GB free. The virtual machines are arm64 macOS guests, made and cloned
+                with <Ext href="https://github.com/cirruslabs/tart">Tart</Ext>; Intel-only samples run through Rosetta in the
+                guest.</li>
+              <li>A prepared guest image and a gateway image. The lab’s README builds both once, which takes about an hour,
+                mostly downloads.</li>
+              <li>Samples: the <Ext href="https://github.com/objective-see/malware">objective-see malware repository</Ext>{' '}
+                needs nothing; <Ext href="https://bazaar.abuse.ch/">MalwareBazaar</Ext> needs your own free abuse.ch Auth-Key,
+                kept in the <C>ABUSE_CH_KEY</C> environment variable and never in a file of the repository.</li>
+            </ul>
+
+            <h3>How a run keeps the sample contained</h3>
+            <p>Every run clones a clean macOS guest and a small Linux gateway, and deletes both afterwards. They are joined by a
+              private virtual cable that exists only inside one process; your Mac is not on it. The gateway answers every name
+              and address with fake servers, so a sample that calls home reaches the lab instead of the internet, and its
+              packets are recorded. A check that the guest can reach nothing but the gateway must pass before the sample is
+              copied in.</p>
+
+            <h3>A run</h3>
+            <Snippet title="Terminal, in a clone of the Ficus repository">{`lab/fetch-sample.sh KoiStealer          # one sample from objective-see/malware, saved encrypted
+lab/lab-run.sh --manual KoiStealer      # opens the guest; you start the sample; press Enter to finish
+lab/lab-run.sh --baseline idle          # the guest alone for ten minutes: what a clean one looks like`}</Snippet>
+            <p>A run leaves a folder with <C>capture.jsonl</C> (drop it into a session here like any capture),{' '}
+              <C>meta.json</C>, the guest’s state afterwards (launch items, crontabs, processes) and <C>gateway.pcap</C>, the
+              network traffic the sample tried.</p>
+
+            <h3>Reading the result</h3>
+            <p>To compare with what a public report says the sample does, write its behaviors in an expected file (a row each:
+              the behavior, the Ficus rule that should catch it, the source) and run the summarizer on the run folder:</p>
+            <Snippet title="Terminal">{`npm run build:lab
+node dist-lab/lab-summarize.mjs --under <part of the sample's path> <run folder> lab/expected/KoiStealer.tsv`}</Snippet>
+            <p>It prints the findings and writes <C>gap.md</C> with four lists. <strong>Hit</strong>: a rule fired for a
+              behavior the report describes. <strong>Miss</strong>: the rule exists and did not fire, so either the rule needs
+              fixing or the sample did not do it in this run. <strong>Gap</strong>: no rule exists for the behavior yet.{' '}
+              <strong>Review</strong>: a high finding no row of the file names, which may be a false positive.{' '}
+              <C>--under</C> keeps only findings about the sample’s own processes, so your own commands and macOS’s background
+              activity do not count as its behavior.</p>
+
+            <h3>What three real samples showed</h3>
+            <table className="gtable">
+              <thead><tr><th>Sample</th><th>What it did in the lab</th><th>What Ficus saw</th></tr></thead>
+              <tbody>
+                <tr><td>KoiStealer, a stealer</td><td>Looped 528 times on a fake-password helper that kept crashing, each time
+                  running <C>dscl . authonly</C> with an empty answer.</td>
+                  <td><RuleChip id="dscl-authonly" /> and <RuleChip id="odd-location-exec" />, and one program
+                    that once filled the triage queue with 1,056 items. Identical repeats are now one row with a count, so
+                    it is three rows.</td></tr>
+                <tr><td>HeartBreaker, ransomware</td><td>Encrypted 15 files in 1.3 seconds, wrote a ransom note and a launch
+                  agent, then ran <C>curl … | sh</C> to install Rust.</td>
+                  <td><RuleChip id="persistence-item" />, <RuleChip id="shell-from-pipe" /> and, with a rule written after
+                    this run showed the gap, <RuleChip id="mass-rename" /> for the encryption.</td></tr>
+                <tr><td>AMOS, from MalwareBazaar</td><td>In 0.8 seconds: read the Chrome keychain key, copied browser, wallet and
+                  Notes files into a temporary folder, zipped them, posted them to a bare IP address, fetched a second
+                  stage.</td>
+                  <td><RuleChip id="keychain-access" />, <RuleChip id="credential-store-copy" />,{' '}
+                    <RuleChip id="archive-staging" />, <RuleChip id="download" /> and, with a rule written after this run
+                    showed the gap, <RuleChip id="file-upload" /> for the upload.</td></tr>
+              </tbody>
+            </table>
+            <p>The gaps are the point of the lab: each one is a candidate for a new rule, to be tried against the lab’s idle and
+              benign baselines before it ships, so that it catches the sample and stays quiet on a clean Mac.</p>
+
+            <h3>Things to keep in mind</h3>
+            <ul>
+              <li>A sample may refuse to run in a virtual machine, or wait for a server that the lab answers with an empty page.
+                A run that shows little is still a result.</li>
+              <li>The guest is a fresh Mac with fake bait files, not a lived-in one: a real Mac is noisier, and a sample may
+                behave differently on it.</li>
+              <li>Samples that need a person (a fake dialog, a window to close) are run with <C>--manual</C>, and you do that
+                part in the virtual machine’s window.</li>
+              <li>Setup, every option, the pilot reports and the lessons learned are in the lab’s README, in the repository’s
+                {' '}<C>lab/</C> folder.</li>
+            </ul>
+          </Section>
+
+          <Section id="jq" n={10} title="Beyond the app: jq">
             <p>Ficus draws the tree; for everything else, a capture is a text file, and <C>jq</C> reads it. These work on
               captures from macOS 13 onwards; if a field comes back <C>null</C>, look at one event with <C>head -1 … | jq .</C>
               and adjust the path. That adjustment is most of the skill.</p>
@@ -651,13 +758,13 @@ export function GuideScreen({ section }: { section: string }) {
               <C>grep -o '"path":"[^"]*"' capture.jsonl | sort | uniq -c | sort -rn | head</C> lists the busiest paths.</p>
           </Section>
 
-          <Section id="words" n={10} title="Words you will meet">
+          <Section id="words" n={11} title="Words you will meet">
             <dl className="gwords">
               {WORDS.map(([w, d]) => <div key={w}><dt>{w}</dt><dd>{d}</dd></div>)}
             </dl>
           </Section>
 
-          <Section id="resources" n={11} title="Where to learn more">
+          <Section id="resources" n={12} title="Where to learn more">
             <div className="gres">
               <section>
                 <h3>The Mitten Mac</h3>

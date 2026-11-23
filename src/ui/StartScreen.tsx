@@ -205,8 +205,8 @@ export function StartScreen() {
             </ol>
             <CommandBlock />
             <p className="small muted events"><span className="mono">fork</span>, <span className="mono">exec</span> and <span className="mono">exit</span> build
-              the tree; <span className="mono">create</span>, <span className="mono">rename</span>, <span className="mono">unlink</span> and <span className="mono">setextattr</span> show
-              what each process wrote; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
+              the tree; <span className="mono">create</span>, <span className="mono">rename</span>, <span className="mono">unlink</span>, <span className="mono">clone</span>, <span className="mono">copyfile</span> and <span className="mono">setextattr</span> show
+              what each process wrote and copied; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
             <p className="small guide-pointer">New to macOS investigations? <a href={guideHref()}>Read the guide</a>: how to
               capture, what the events and fields mean, what an intrusion looks like, and a safe practice run.</p>
           </section>

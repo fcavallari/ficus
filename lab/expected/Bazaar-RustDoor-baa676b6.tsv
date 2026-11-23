@@ -1,0 +1,14 @@
+# Bazaar-RustDoor-baa676b6: what public reports say RustDoor does. Only what the reports state; written before the capture was read.
+# Sample: MalwareBazaar, tagged RustDoor, apt and DPRK, x86_64 Mach-O, 3,022,328 bytes, file name localfile.x64, first seen 2024-09-17,
+# sha256 baa676b671e771bf04b245e648f49516b338e1f49cbd9b4d237cc36d57ab858d.
+#
+# CAVEAT: these rows describe the RustDoor family as Bitdefender reported it in February 2024 (a fake Visual Studio for Mac updater),
+# read from secondary summaries of that report (Dark Reading, SecurityWeek, The Hacker News, SC Media): I did not open the Bitdefender
+# report itself. This sample was first seen seven months later and carries a DPRK tag, so it may be a different build, and a miss may
+# only mean the build differs. The summaries state no MITRE ATT&CK IDs for these behaviors.
+behavior	mitre	rule	source
+Registers with its command-and-control server over HTTP, sending the hostname, the macOS version and the current directory	not stated	-	Bitdefender RustDoor report (February 2024), as summarized by SecurityWeek and Dark Reading
+Collects files from the Desktop and Documents folders and the user's notes, and packs them into a ZIP archive	not stated	archive-staging	Bitdefender RustDoor report (February 2024), as summarized by Dark Reading
+Uploads the archive to its command-and-control server	not stated	file-upload	Bitdefender RustDoor report (February 2024), as summarized by SecurityWeek
+Persists with a cron job, or by adding itself to the Dock	not stated	-	Bitdefender RustDoor report (February 2024), as summarized by The Hacker News
+Its configuration has an option for a spoofed administrator password dialog	not stated	fake-prompt	Bitdefender RustDoor report (February 2024), as summarized by SecurityWeek

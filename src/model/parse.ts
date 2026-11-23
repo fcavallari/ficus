@@ -9,6 +9,7 @@ const KIND_BY_KEY = new Map<string, EventKind>([
   ['fork', 'fork'], ['exec', 'exec'], ['exit', 'exit'], ['create', 'create'], ['rename', 'rename'],
   ['unlink', 'unlink'], ['write', 'write'], ['setextattr', 'setextattr'],
   ['btm_launch_item_add', 'btm_add'], ['btm_launch_item_remove', 'btm_remove'],
+  ['clone', 'copy'], ['copyfile', 'copy'],
 ]);
 
 function tokenOf(t: Json): TokenKey | null {
@@ -51,6 +52,18 @@ function destPath(d: Json): string | undefined {
     return (dir.endsWith('/') ? dir : dir + '/') + np.filename;
   }
   return undefined;
+}
+
+/**
+ * clone and copyfile destination: `target_file.path` when the target already existed (copyfile), else
+ * `target_dir.path + '/' + target_name`.
+ */
+function copyDest(e: Json): string | undefined {
+  if (typeof e.target_file?.path === 'string') return e.target_file.path;
+  const dir = e.target_dir?.path;
+  const name = e.target_name;
+  if (typeof dir !== 'string' || typeof name !== 'string') return undefined;
+  return (dir.endsWith('/') ? dir : dir + '/') + name;
 }
 
 /** An optional embedded process object; null when absent or without a usable audit_token. */
@@ -122,6 +135,10 @@ function normalize(o: Json): NormEvent {
     case 'rename':
       ev.path = e.source?.path;
       ev.toPath = destPath(e.destination);
+      break;
+    case 'copy':
+      ev.path = e.source?.path;
+      ev.toPath = copyDest(e);
       break;
     case 'unlink':
     case 'write':

@@ -46,7 +46,7 @@ export function TimelineRow({ cap, e, self, multiDay, onSelect, onAnchor, anchor
     case 'spawn': body = <>forked {link(e.other!)}</>; break;
     case 'exec': body = <code className="mono wrap">{e.args && e.args.length > 0 ? fmtArgs(e.args) : (e.path ?? '?')}</code>; break;
     case 'image': body = <><code className="mono wrap">{e.path ?? '?'}</code> <span className="muted small">(its exec is not in the capture)</span></>; break;
-    case 'rename': body = <code className="mono wrap">{e.path} <span className="muted">→</span> {e.toPath ?? '?'}</code>; break;
+    case 'rename': case 'copy': body = <code className="mono wrap">{e.path} <span className="muted">→</span> {e.toPath ?? '?'}</code>; break;
     case 'setextattr': body = <code className="mono wrap">{e.path}{e.xattr !== undefined && <span className="muted"> ({e.xattr})</span>}</code>; break;
     case 'btm_add': case 'btm_remove': {
       const verb = e.kind === 'btm_add' ? 'added' : 'removed';

@@ -32,7 +32,7 @@ scripts/ficus-lab.sh synthetic   # writes scratch/ficus-lab-synthetic.jsonl
 Or record the Mac you are investigating, and stop with Ctrl-C:
 
 ```bash
-sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > capture.jsonl
+sudo eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove > capture.jsonl
 ```
 
 **3. Drop the `.jsonl` file into a session** and work through the Triage queue.

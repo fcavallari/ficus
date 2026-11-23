@@ -39,6 +39,9 @@ function Row({ row, selected, onSelect, style, showTip, hideTip }: {
         <span aria-hidden="true">{STATUS_ICON[row.status]}</span><span className="status-label">{VERDICT_LABEL[row.status]}</span>
       </span>
       <span className="qname truncate" onMouseEnter={e => { showTip(e.currentTarget, row.name); }} onMouseLeave={hideTip}>{row.name}</span>
+      {item.members.length > 1 && (
+        <span className="reps" title={`${item.members.length} identical processes: same program, arguments, parent and findings`}>×{item.members.length}</span>
+      )}
       <span className="args truncate" onMouseEnter={e => { showTip(e.currentTarget, row.args); }} onMouseLeave={hideTip}>{row.args}</span>
       {row.routineKept !== null && (
         <span className="chain-mark" title="This program is marked routine, but a routine mark never hides a row with a high or persistence finding">

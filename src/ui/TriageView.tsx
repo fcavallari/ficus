@@ -12,6 +12,9 @@ import {
 const STATUS_FILTERS: TriageFilters['status'][] = ['all', 'unreviewed', 'confirmed', 'benign'];
 const SEVERITIES: Severity[] = ['high', 'med', 'low'];
 
+/** True when the queue row is `key`'s own row, or the group it was folded into. */
+const holds = (q: QueueItem, key: string | null): boolean => key !== null && (verdictKey(q) === key || q.members.includes(key));
+
 const NON_TEXT_INPUTS = new Set(['radio', 'checkbox', 'button', 'submit', 'reset', 'range']);
 /** True where letters belong to the field. Radios and checkboxes keep focus after a click, so they do not count. */
 const isTyping = (t: EventTarget | null): boolean => {
@@ -85,7 +88,7 @@ export function TriageView() {
   }, [capture, triage, verdicts, status, sev, search, showHidden, chainOnly, haystacks]);
 
   const selKey: string | null = selected ?? selectedItem;
-  const selIndex = rows.findIndex(r => verdictKey(r.item) === selKey);
+  const selIndex = rows.findIndex(r => holds(r.item, selKey));
   const selectedRowKey = selIndex >= 0 ? rows[selIndex]!.item.key : null;
   useEffect(() => {
     if (selIndex >= 0) anchor.current = { key: selKey!, index: selIndex };
@@ -103,7 +106,7 @@ export function TriageView() {
     const move = (d: 1 | -1) => {
       e.preventDefault();
       if (rows.length === 0) return;
-      const i = rows.findIndex(r => verdictKey(r.item) === selKey);
+      const i = rows.findIndex(r => holds(r.item, selKey));
       // The selected row can have left the list (confirming it under the "unreviewed" filter): carry on from where it
       // stood. The row now at that index took its place, so "next" is that row and "previous" the one before it.
       const at = i < 0 && selKey !== null && anchor.current?.key === selKey ? anchor.current.index : null;

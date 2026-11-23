@@ -1,11 +1,11 @@
-import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
+import type { CaptureModel, FileOp, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath, timeMs } from '../model/util';
 import {
-  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
-  SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
+  CURL_SPEC, curlUploads, hasOpt, hasShortFlag, isBareIp, isLoopbackHost, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin, type OptSpec,
+  SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, urlHost, WGET_SPEC, wgetUploads, type PipeLang,
 } from './args';
 import { PASTE_WINDOW_MS, agentRuntime, originalParentImage, siblings, sourcesAgentSnapshot, sshAncestor, underAgentShell } from './context';
-import { COPY_TOOLS, credentialStore, isBrowserEngine } from './credentials';
+import { COPY_TOOLS, credentialStore, developerCredential, isBrowserEngine } from './credentials';
 import { fileLedger } from './ledger';
 import { INDICATOR_FAMILIES, matchArgs, matchPath, matchPlist, matchSigning, matchTeam, type Indicator } from './indicators';
 import { HOME, LOCATION_WORDS, hiddenName, inBuildDir, oddLocation, resolvePath, strongPlace, type LocationKind, type OddLocation } from './locations';
@@ -67,8 +67,10 @@ const STAGING_KINDS: ReadonlySet<LocationKind> = new Set<LocationKind>(['temp', 
 const CREDENTIAL_MITRE: Record<string, string> = {
   'login keychain': 'T1555.001', 'saved Wi-Fi/keychain data': 'T1555.001',
   'browser logins or cookies': 'T1555.003', 'Firefox logins': 'T1555.003',
+  'SSH private key': 'T1552.004', 'AWS credentials': 'T1552.001', 'Kubernetes credentials': 'T1552.001', 'Docker credentials': 'T1552.001',
+  'Google Cloud credentials': 'T1552.001', 'saved passwords (netrc or git)': 'T1552.001',
 };
-const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, or the Notes database. Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
+const CREDENTIAL_COPY_EXPLANATION = 'Copied, packed or read a file that holds credentials: a browser\'s saved logins or cookies, a keychain, the Notes database, or the files a developer\'s tools keep (SSH private keys, AWS, Kubernetes, Docker and Google Cloud credentials, netrc and git passwords). Stealers stage these files in a temporary, shared, Downloads or hidden folder before uploading them, and the tools that do it (cp, ditto, rsync, scp, zip, tar, sqlite3, cat) are ordinary ones. Backup tools and Migration Assistant copy the same files for legitimate reasons, so check what ran it and where the copy went. A browser engine writing its own profile (browser automation does this in a temporary folder) is ignored, and so is a developer\'s tool writing its own file where it belongs (ssh-keygen and `aws configure` make `~/.ssh/id_ed25519` and `~/.aws/credentials`): only a copy somewhere else, by an unsigned, ad-hoc or oddly placed program or into a staging place, counts. High when the program is unsigned, ad-hoc signed or runs from an odd place, or when a copy tool also names a staging place.';
 
 /** The path an argument names: `--file=/x` is `/x`, an option alone names nothing. */
 function pathArgument(a: string): string | null {
@@ -84,7 +86,8 @@ function inStrongPlace(path: string): boolean {
 
 /** The writer's judgment: unsigned, ad-hoc signed, or run from a strong odd place. */
 function writerIsOdd(p: Process): boolean {
-  const last = [...p.images].reverse().find(i => !i.inherited);
+  // A process that forked and never exec'd runs its parent's program (the copy it started with), so that is its program.
+  const last = [...p.images].reverse().find(i => !i.inherited) ?? p.images[p.images.length - 1];
   if (!last) return false;
   return isUnsigned(last) || isAdhoc(last) || (last.path !== null && oddLocation(last.path)?.strength === 'strong');
 }
@@ -112,6 +115,15 @@ function hasAppleIdentity(img: Image): boolean {
   return img.isPlatform || (claimsApple(img) && !isAdhoc(img) && !!img.teamId && APPLE_TEAM_IDS.has(img.teamId));
 }
 
+/** At least this many renames to one new extension, inside the window, make a mass rename. First guess from one sample (HeartBreaker: 15 files in 1.3 s). */
+export const MASS_RENAME_MIN_FILES = 10;
+export const MASS_RENAME_WINDOW_MS = 10_000;
+/** Extensions of files that are written under a temporary name and renamed into place (downloads, editors, compilers): never a sign of encryption. */
+export const TEMP_EXTENSIONS: ReadonlySet<string> = new Set(['tmp', 'part', 'download', 'crdownload', 'swp', 'bak', 'partial']);
+const MASS_RENAME_EXPLANATION = `One process renamed ${MASS_RENAME_MIN_FILES} or more files to the same new extension within ${MASS_RENAME_WINDOW_MS / 1000} seconds. That is how ransomware marks the files it has encrypted in place (\`report.docx\` becomes \`report.docx.locked\`). A bulk rename script or a batch converter does the same thing harmlessly, so look at which files were renamed and whether they are still readable. Only files that already existed and are renamed where they stand count. Files the program created itself and moved into place (a temporary file renamed to its real name, or moved to another folder, or named \`.tmp\`, \`.part\`, \`.download\`) are ignored: that is how macOS itself, downloads, editors and compilers save.`;
+const FILE_UPLOAD_EXPLANATION = 'curl or wget sent a local file to a server: `-T`, `-F name=@file`, `--data-binary @file` and the like. Stealers do this last, posting the archive they staged to their own server. Developers and build tools upload files all the time, so look at the file and the server: a file from a temporary, Downloads or hidden folder, an archive, or a server that is a bare IP address (no name) makes it high; anything else is medium. A server on this Mac (localhost, 127.0.0.1) is ignored.';
+/** Archives and disk images: what a stealer packs its loot into. */
+const ARCHIVE_NAME = /\.(?:zip|tar|tgz|gz|bz2|xz|7z|rar|zst|dmg)$/i;
 const APPLE_MASQUERADE_EXPLANATION = 'Code wearing an Apple name it does not have. Two forms: a program that signed itself with a `com.apple.…` signing ID without being Apple\'s (Apple\'s own code is platform-signed or carries one of Apple\'s team IDs, and anyone can pick a signing ID, ad-hoc, self-signed with no team ID, or under a Developer ID certificate), or a program that is not Apple\'s writing a launch plist labelled `com.apple.…`, so the persistence looks like part of macOS. High in a user\'s `~/Library/LaunchAgents` or when the writer is unsigned or ad-hoc signed; med otherwise. Apple\'s installers and updaters write such plists legitimately, which is why a platform binary or a genuine Apple signature is never flagged.';
 
 function trimSlash(p: string): string {
@@ -838,6 +850,21 @@ function dropCandidate(path: string): boolean {
   return hiddenName(path) && HOME.test(normPath(path)) && !inBuildDir(path);
 }
 
+/** Where a file operation put a file: a create's path, or the destination of a rename or a copy (clone, copyfile). */
+const landedAt = (op: FileOp): string | undefined => (op.kind === 'create' ? op.path : op.kind === 'rename' || op.kind === 'copy' ? op.toPath : undefined);
+/** How evidence words what the operation did. */
+const landedVerb = (op: FileOp): string => (op.kind === 'create' ? 'created' : op.kind === 'copy' ? 'copied to' : 'renamed to');
+
+/** The lower-cased folder part of a path. */
+const dirOf = (path: string): string => normPath(path).slice(0, normPath(path).lastIndexOf('/')).toLowerCase();
+
+/** The lower-cased extension of a file name (text after its last dot), or '' for none or a hidden file such as `.zshrc`. */
+function extensionOf(path: string): string {
+  const name = basename(path);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
@@ -944,7 +971,7 @@ export const RULES: Rule[] = [
       for (const op of p.fileOps) {
         // A temp file renamed over the plist counts through the rename's destination; a write (a `write` event, or a
         // `close` marked modified) is a plist that already existed, overwritten in place.
-        const target = op.kind === 'create' || op.kind === 'write' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = op.kind === 'write' ? op.path : landedAt(op);
         if (target === undefined) continue;
         const n = normPath(target);
         const key = n.toLowerCase();
@@ -1118,6 +1145,44 @@ export const RULES: Rule[] = [
     },
   },
   {
+    id: 'file-upload', title: 'Local file sent to a server', severity: 'med', levels: ['high', 'med'],
+    explanation: FILE_UPLOAD_EXPLANATION,
+    mitre: ['T1041'], scope: 'image',
+    match: ({ img }) => {
+      const n = basename(img.path);
+      if (n !== 'curl' && n !== 'wget') return null;
+      const a = rest(img);
+      let files: string[];
+      let urls: string[];
+      if (n === 'wget') {
+        const o = parseOpts(a, WGET_SPEC);
+        files = wgetUploads(o);
+        urls = o.positionals.filter(looksLikeUrl);
+      } else {
+        const o = parseOpts(a, CURL_SPEC);
+        files = curlUploads(o);
+        urls = [...o.positionals.filter(looksLikeUrl), ...optValues(o, null, ['--url']).filter((u): u is string => u !== undefined)];
+      }
+      const hosts = urls.map(urlHost).filter((h): h is string => h !== null);
+      if (files.length === 0 || hosts.length === 0 || hosts.every(isLoopbackHost)) return null;
+      // Where the file is: a relative name counts through the working directory, when that is itself a strong place.
+      const cwdStrong = img.cwd !== null && strongPlace(normPath(`${img.cwd}/`)) !== null && !inBuildDir(img.cwd);
+      const reasons: string[] = [];
+      for (const f of files) {
+        const full = f.startsWith('/') ? f : cwdStrong ? resolvePath(f, img.cwd) : null;
+        const where = full !== null ? oddLocation(full) : null;
+        if (where !== null && where.strength === 'strong') reasons.push(`${f} staged in ${LOCATION_WORDS[where.kind].short}`);
+        else if (ARCHIVE_NAME.test(f)) reasons.push(`${f} is an archive`);
+      }
+      const bare = hosts.find(isBareIp);
+      if (bare !== undefined) reasons.push(`the server is a bare IP address (${bare})`);
+      const sends = `sends ${files.join(', ')} to ${[...new Set(hosts)].join(', ')}`;
+      return reasons.length > 0
+        ? { evidence: `${cmdline(img)}; ${sends} (${reasons.join('; ')})`, severity: 'high' }
+        : { evidence: `${cmdline(img)}; ${sends}`, severity: 'med' };
+    },
+  },
+  {
     id: 'archive-staging', title: 'Files packed into an archive', severity: 'med', levels: ['high', 'med'],
     explanation: 'Packed files into an archive. Stealers stage collected data this way before sending it out.',
     mitre: ['T1560.001'], scope: 'image',
@@ -1248,7 +1313,7 @@ export const RULES: Rule[] = [
   {
     id: 'credential-store-copy', title: 'Credential store copied', severity: 'med', levels: ['high', 'med'],
     explanation: CREDENTIAL_COPY_EXPLANATION,
-    mitre: ['T1555.001', 'T1555.003', 'T1005', 'T1074.001'], scope: 'process',
+    mitre: ['T1555.001', 'T1555.003', 'T1552.001', 'T1552.004', 'T1005', 'T1074.001'], scope: 'process',
     matchProcess: (p) => {
       const evidence: string[] = [];
       const labels = new Set<string>();
@@ -1257,7 +1322,7 @@ export const RULES: Rule[] = [
       const seen = new Set<string>();
       // (a) A credential store created, or renamed into place, in a temporary, shared, Downloads or hidden folder, by something other than a browser.
       for (const op of p.fileOps) {
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = landedAt(op);
         if (target === undefined) continue;
         const label = credentialStore(target);
         const where = oddLocation(target);
@@ -1267,7 +1332,43 @@ export const RULES: Rule[] = [
         const key = normPath(target).toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        evidence.push(`${op.kind === 'create' ? 'created' : 'renamed to'} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
+        evidence.push(`${landedVerb(op)} ${target} (${label}, in ${LOCATION_WORDS[where.kind].short})`);
+        labels.add(label);
+        staged = true;
+      }
+      // (a2) A developer credential (an SSH key, cloud credentials) created or renamed into place away from where its own tool keeps it:
+      // in a staging place, or by an unsigned, ad-hoc or oddly placed program (RustDoor cloned a home folder into ~/.docks).
+      for (const op of p.fileOps) {
+        const target = landedAt(op);
+        const dev = target === undefined ? null : developerCredential(target);
+        if (target === undefined || dev === null || dev.home) continue;
+        const where = oddLocation(`${dev.base}/x`);   // the folder holding the tool's own folder: its own hidden folder is no hiding place
+        const inStaging = where !== null && where.strength === 'strong' && STAGING_KINDS.has(where.kind);
+        if (!inStaging && !writerIsOdd(p)) continue;
+        const key = normPath(target).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`${landedVerb(op)} ${target} (${dev.label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ', a copy away from its own folder'})`);
+        labels.add(dev.label);
+        staged = true;
+      }
+      // (a3) A clone or copyfile whose source is a credential store or a developer credential, whatever the copy is called:
+      // into a staging place, or by an unsigned, ad-hoc or oddly placed program. The copy is the theft; its name proves nothing.
+      for (const op of p.fileOps) {
+        if (op.kind !== 'copy' || op.toPath === undefined) continue;
+        const store = credentialStore(op.path);
+        const dev = store === null ? developerCredential(op.path) : null;
+        const label = store ?? dev?.label ?? null;
+        if (label === null) continue;
+        if (isBrowserEngine(imageAt(p, op.seq)?.path ?? null)) continue;
+        const where = oddLocation(op.toPath);
+        const inStaging = where !== null && where.strength === 'strong' && STAGING_KINDS.has(where.kind);
+        if (!inStaging && !writerIsOdd(p)) continue;
+        // Its destination may already be listed above (named like a store, or a create beside the copy).
+        const key = normPath(op.toPath).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        evidence.push(`copied ${op.path} to ${op.toPath} (${label}${inStaging ? `, in ${LOCATION_WORDS[where!.kind].short}` : ''})`);
         labels.add(label);
         staged = true;
       }
@@ -1282,6 +1383,17 @@ export const RULES: Rule[] = [
         // Another argument in a strong place: the copy goes to, or comes from, a staging place.
         if (found.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) { staged = true; copyToPlace = true; }
       }
+      // (b2) The same tools naming a developer credential and, apart from it, a staging place: `cp ~/.ssh/id_rsa /tmp/loot/`.
+      // Reading one alone (`cat ~/.aws/credentials`) is what developers do, so it is not enough.
+      for (const img of p.images) {
+        if (img.inherited || !COPY_TOOLS.has(basename(img.path)) || !img.args) continue;
+        const named = img.args.slice(1).flatMap(a => { const x = pathArgument(a); return x === null ? [] : [resolvePath(x, img.cwd)]; });
+        const dev = named.flatMap((x, i) => { const d = developerCredential(x); return d === null ? [] : [{ i, d }]; });
+        if (dev.length === 0 || !dev.some(f => named.some((x, i) => i !== f.i && inStrongPlace(x)))) continue;
+        for (const { d } of dev) labels.add(d.label);
+        evidence.push(`${cmdline(img)} (${dev[0]!.d.label})`);
+        staged = true; copyToPlace = true;
+      }
       if (evidence.length === 0) return null;
       const mitre = new Set(['T1005']);
       for (const l of labels) if (CREDENTIAL_MITRE[l]) mitre.add(CREDENTIAL_MITRE[l]!);
@@ -1290,6 +1402,48 @@ export const RULES: Rule[] = [
         evidence: evidence.join('; '), severity: copyToPlace || writerIsOdd(p) ? 'high' : 'med',
         mitre: [...mitre].sort(),
       };
+    },
+  },
+  {
+    id: 'mass-rename', title: 'Many files renamed to one new extension', severity: 'high',
+    explanation: MASS_RENAME_EXPLANATION,
+    mitre: ['T1486'], scope: 'process',
+    matchProcess: (p) => {
+      // New extension (lower-cased) -> the renames to it, in time order.
+      const byExt = new Map<string, { ms: number; to: string }[]>();
+      const created = new Set<string>();   // files this process made itself, so far
+      for (const f of p.fileOps) {
+        if (f.kind === 'create') { created.add(normPath(f.path).toLowerCase()); continue; }
+        if (f.kind !== 'rename' || f.toPath === undefined) continue;
+        const ms = timeMs(f.time);
+        const from = extensionOf(f.path);
+        const ext = extensionOf(f.toPath);
+        // Same extension kept, no extension, or a file written under a temporary name and renamed into place.
+        if (ms === null || ext === '' || ext === from || TEMP_EXTENSIONS.has(ext) || TEMP_EXTENSIONS.has(from)) continue;
+        // Encrypting in place renames files that already existed, where they stand. Daemons save differently: they create
+        // a temporary file (`tmp.PHod7U`, `name.plist.a1B2c3`) and move it into place, often into another folder. The rule
+        // reads no relation between the two names, because a cleaned capture gives every name its own placeholder.
+        if (dirOf(f.path) !== dirOf(f.toPath) || created.has(normPath(f.path).toLowerCase())) continue;
+        const list = byExt.get(ext);
+        if (list) list.push({ ms, to: f.toPath });
+        else byExt.set(ext, [{ ms, to: f.toPath }]);
+      }
+      let best: { ext: string; count: number; spanMs: number; names: string[] } | null = null;
+      for (const [ext, list] of byExt) {
+        list.sort((a, b) => a.ms - b.ms);
+        // Sliding window: the most renames that fall within MASS_RENAME_WINDOW_MS of the one that opens it.
+        let lo = 0;
+        for (let hi = 0; hi < list.length; hi++) {
+          while (list[hi]!.ms - list[lo]!.ms > MASS_RENAME_WINDOW_MS) lo++;
+          const count = hi - lo + 1;
+          if (count >= MASS_RENAME_MIN_FILES && (best === null || count > best.count)) {
+            best = { ext, count, spanMs: list[hi]!.ms - list[lo]!.ms, names: list.slice(lo, lo + 3).map(x => basename(x.to)) };
+          }
+        }
+      }
+      if (best === null) return null;
+      const seconds = (best.spanMs / 1000).toFixed(1);
+      return { evidence: `${best.count} files renamed to .${best.ext} in ${seconds} s: ${best.names.join(', ')}` };
     },
   },
   {
@@ -1316,7 +1470,7 @@ export const RULES: Rule[] = [
       if (p.images.findIndex(i => !i.inherited) === imgIndex) {
         const seen = new Set<string>();
         for (const f of p.fileOps) {
-          const target = f.kind === 'create' ? f.path : f.kind === 'rename' ? f.toPath : undefined;
+          const target = landedAt(f);
           if (!target) continue;
           const n = normPath(target);
           if (!APPLE_LABEL_PLIST.test(n) || seen.has(n.toLowerCase())) continue;
@@ -1325,7 +1479,7 @@ export const RULES: Rule[] = [
           // interpreter or curl is only copying someone's plist into place, however Apple-signed the tool is.
           if (writer === undefined || (isAppleSigned(writer) && !(USER_AGENT_DIR.test(n) && writer.isPlatform && GENERAL_TOOL.test(basename(writer.path))))) continue;
           seen.add(n.toLowerCase());
-          evidence.push(`${writer.path ?? 'a program'} ${f.kind === 'create' ? 'created' : 'renamed to'} ${target}`);
+          evidence.push(`${writer.path ?? 'a program'} ${landedVerb(f)} ${target}`);
           mitre.add('T1036.005');
           for (const t of launchMitre(launchKind(null, n))) mitre.add(t);
           if (USER_AGENT_DIR.test(n) || isUnsigned(writer) || isAdhoc(writer)) severity = 'high';
@@ -1449,9 +1603,9 @@ export const RULES: Rule[] = [
         for (const { indicator, arg } of matchArgs(img.args)) hits.push({ i: indicator, what: `names ${arg.length > 80 ? `${arg.slice(0, 80)}…` : arg} in its command line` });
       }
       for (const op of p.fileOps) {
-        const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
+        const target = landedAt(op);
         if (target === undefined) continue;
-        const verb = op.kind === 'create' ? 'created' : 'moved into place';
+        const verb = op.kind === 'create' ? 'created' : op.kind === 'copy' ? 'copied to' : 'moved into place';
         for (const i of matchPath(target)) hits.push({ i, what: `${verb} ${target}` });
         for (const { hit, mitre } of matchPlist(target)) hits.push({ i: hit, what: `${verb} the launch plist ${target}`, mitre });
       }

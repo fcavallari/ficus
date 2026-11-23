@@ -1,0 +1,22 @@
+# Bazaar-AMOS-fdcd5d21: what public reports say AMOS-family stealers do. Only what the articles state; written before the capture was read.
+# Sample: MalwareBazaar, AMOS, x86_64 Mach-O, 442,752 bytes, file name u78676388, first seen 2026-11-16, sha256
+# fdcd5d218a0cc440c6da0e7e4189d92f9d6792db48bedcf07137991f965ebc96.
+#
+# CAVEAT: no report covers this build. The behaviors below come from Objective-See's guest post "Catching macOS Stealers in the Wild"
+# (Pablo Redondo Castro, 2026-04-01), about a sample it says is "probably related to AMOS Stealer": a ClickFix-delivered helper that runs
+# obfuscated AppleScripts. This lab sample is a Mach-O run directly, so some rows may not apply to it, and a miss may mean the variant
+# differs. The Iru article (Mayers and Lopez, 2024-03-01) adds only that AMOS Mach-Os decode their strings at run time and that an error
+# dialog through osascript is common; it states no persistence, no commands and no network. Neither article lists MITRE ATT&CK IDs.
+behavior	mitre	rule	source
+Runs system_profiler SPMemoryDataType and SPHardwareDataType and looks for QEMU, VMware or KVM before going on	not stated	recon	Objective-See blog 0x88, stage 1
+Shows a fake password dialog through osascript (display dialog, hidden answer, titled "System Helper Installation")	not stated	fake-prompt	Objective-See blog 0x88, stage 2
+Checks the typed password and shows the dialog again until it is correct (the article does not say how it checks)	not stated	dscl-authonly	Objective-See blog 0x88, stage 2
+Kills security tools: killall -9 "Little Snitch" and "BlockBlock", and launchctl unload of the LuLu plist	not stated	-	Objective-See blog 0x88, stage 2
+Copies browser data (Login Data, Cookies, Web Data, Local Extension Settings of Chrome, Brave, Edge, Opera, Firefox)	not stated	credential-store-copy	Objective-See blog 0x88, stage 2
+Copies the Apple Notes database and its media with cp -r to /tmp/exfil	not stated	credential-store-copy	Objective-See blog 0x88, stage 2
+Reads the Safari keychain item with security find-generic-password -ga 'Safari' -w, as administrator	not stated	keychain-access	Objective-See blog 0x88, stage 2
+Archives what it collected with tar -czf /tmp/archive.tar.gz	not stated	archive-staging	Objective-See blog 0x88, stage 2
+Uploads the archive with curl -X POST -F file=@/tmp/archive.tar.gz to an /upload endpoint (eslogger cannot see the network)	not stated	file-upload	Objective-See blog 0x88, exfiltration
+Writes a LaunchAgent named com.apple.mdworker.plist (label com.apple.systemupdate, RunAtLoad, KeepAlive) that runs the stealer	not stated	apple-masquerade	Objective-See blog 0x88, persistence
+Loads that LaunchAgent with launchctl load	not stated	launchctl-load	Objective-See blog 0x88, persistence
+Keeps the typed password in a hidden file, ~/.pwd	not stated	-	Objective-See blog 0x88, indicators

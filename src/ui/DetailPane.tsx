@@ -4,6 +4,7 @@ import { ancestry, childrenIndex, displayName, type ParentMode } from '../model/
 import type { ProcId, Process } from '../model/types';
 import { basename, latestImage, persistenceItem } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
+import { queueItemFor } from '../rules/group';
 import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
@@ -136,7 +137,7 @@ function Dl({ rows }: { rows: [string, ReactNode][] }) {
 
 const COUNT_WORDS: [TimelineKind[], string][] = [
   [['exec'], 'exec'], [['image'], 'program change without exec'], [['spawn'], 'fork'],
-  [['create', 'rename', 'unlink', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
+  [['create', 'rename', 'unlink', 'copy', 'write', 'setextattr'], 'file event'], [['btm_add', 'btm_remove'], 'launch item event'], [['exit'], 'exit'],
 ];
 
 function Details({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
@@ -226,6 +227,38 @@ function Timeline({ cap, p, anchor, onAnchor, onSelect }: {
   );
 }
 
+/**
+ * For a row that stands for several identical processes (a loop): says so and lists them, so any one can be opened. The
+ * findings and the verdict above and below are the same for all of them.
+ */
+function Repeats({ cap, item, current, onSelect }: { cap: LoadedCapture; item: QueueItem; current: ProcId; onSelect(id: ProcId): void }) {
+  const [all, setAll] = useState(false);
+  if (item.members.length < 2) return null;
+  const shown = all ? item.members : item.members.slice(0, SHOW_FIRST);
+  return (
+    <Section id="d-repeats" title={`Repeated ${item.members.length} times`}>
+      <p className="muted small">
+        {item.members.length} identical processes (same program, arguments, parent and findings) are listed as one row. A verdict you
+        set on the row applies to all of them; open one to see what it did.
+      </p>
+      <ul className="kids">
+        {shown.map(id => {
+          const proc = cap.model.processes.get(id);
+          const at = proc ? latestImage(proc)?.time ?? proc.startTime : null;
+          return (
+            <li key={id}>
+              <button className="link" aria-current={id === current ? 'true' : undefined} onClick={() => { onSelect(id); }}>
+                pid {proc?.pid ?? id}{at ? ` · ${fmtClock(at)}` : ''}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {item.members.length > SHOW_FIRST && !all && <button onClick={() => { setAll(true); }}>Show all {item.members.length}</button>}
+    </Section>
+  );
+}
+
 function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; own: TimelineEvent[]; onSelect(id: ProcId): void }) {
   const [allKids, setAllKids] = useState(false);
   // The event the nearby panel is built around: one the person picked on the Timeline, else the most telling own event.
@@ -237,7 +270,7 @@ function DidWhat({ cap, p, own, onSelect }: { cap: LoadedCapture; p: Process; ow
   const kids = useMemo(() => childrenIndex(cap.model, 'original').get(p.id) ?? [], [cap, p.id]);
   const severity = useMemo(() => {
     const m = new Map<ProcId, Severity>();
-    for (const q of cap.analysis.queue) if (q.procId !== null) m.set(q.procId, q.severity);
+    for (const q of cap.analysis.queue) if (q.procId !== null) for (const id of q.members) m.set(id, q.severity);
     return m;
   }, [cap]);
   const kidsShown = allKids ? kids : kids.slice(0, SHOW_FIRST);
@@ -544,7 +577,7 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
   const { verdicts } = useSession();
   const img = latestImage(p);
   const findings = cap.analysis.findings.get(p.id) ?? [];
-  const item = cap.analysis.queue.find(x => x.procId === p.id);
+  const item = queueItemFor(cap.analysis, p.id);
   const own = useMemo(() => processTimeline(cap, p.id, false).events, [cap, p.id]);
   const execArgs = [...p.images].reverse().find(i => i.args !== null)?.args ?? null;
   const commandLine = execArgs && execArgs.length > 0 ? fmtArgs(execArgs) : null;
@@ -577,6 +610,7 @@ function ProcessDetail({ cap, p, onSelectProc, noteRef }: {
         <Jumps />
       </header>
       <Why findings={findings} item={item} />
+      {item && <Repeats key={item.key} cap={cap} item={item} current={p.id} onSelect={onSelectProc} />}
       <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
       <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
       <Details cap={cap} p={p} own={own} onSelect={onSelectProc} />
